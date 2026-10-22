@@ -32,24 +32,7 @@ OfficeFileFormat format = OfficeFileFormats.Detect("input.bin");
 
 Markdown 是纯文本、没有文件头签名，只能由 `OfficeFile.Load(path)` 在识别失败后按扩展名（`.md` / `.markdown` / `.mkd`）兜底；从流或字节数组加载时要把 `OfficeFileFormat.Markdown` 显式传给 `Load(byte[], OfficeFileFormat)`。
 
-## 项目结构
-
-```text
-src/
-  Wisdom.Office.Core/   统一文档模型、工作簿模型、演示模型、OLE2、模板引擎、基础工具
-  Wisdom.Pdf/           PDF 1.7 生成、解析、文本与表格提取、字体嵌入
-  Wisdom.Word/          DOCX/DOTX/RTF/HTML/ODT/TXT 读写、DOC 读取、模板填充、标签纸/信封、修订跟踪、SmartArt/数字签名检查、文档整理与校验
-  Wisdom.Excel/         XLSX 读写、模板填充、图表/条件格式/图片、XLS 读取
-  Wisdom.Ppt/           PPTX 读写（PresentationML）、幻灯片版式与形状
-  Wisdom.Markdown/      Markdown 解析、HTML 渲染与文档模型回写
-  Wisdom.Office/        统一门面、格式互转、报表现成导出
-tests/
-  Wisdom.Office.Tests/  端到端测试、真实 DOC/XLS 样本、OOXML 包结构校验
-samples/                四类真实场景的验证程序
-docs/                   七个包各一份分步使用教程 + 一篇四场景功能导读
-```
-
-每个 `src/<包名>/README.md` 是该包的独立说明文档，打包时自动作为对应 NuGet 包内的 README（缺失时才回退到本文件）。
+每个 `src/<包名>/README.md` 是该包的独立说明文档，同时也是发布到 nuget.org 后包内的 README。
 
 ## 构建与测试
 
@@ -98,7 +81,7 @@ dotnet build tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj -c Release -f 
 
 ## 安装（NuGet）
 
-> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。发布步骤见下一节。
+> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
 
 ```bash
 dotnet add package Wisdom.Office
@@ -106,45 +89,6 @@ dotnet add package Wisdom.Office
 # 或指定版本
 dotnet add package Wisdom.Office --version 1.0.1
 ```
-
-## 发布流程（nuget.org Trusted Publishing）
-
-发布由 `.github/workflows/publish-nupkg.yml` 完成，走 nuget.org 的可信发布（OIDC 短期凭据），仓库内不保存长期 API Key。
-
-1. 在 nuget.org 打开头像菜单的 **Trusted Publishing**，按下表新建策略（大小写不敏感，必须逐字一致）：
-
-   | 表单项 | 取值 |
-   | --- | --- |
-   | Policy Name | `wisdom-office-github-actions` |
-   | Package Owner | `YF.f` |
-   | CI/CD Provider | `GitHub Actions` |
-   | Repository Owner | `To-Effort` |
-   | Repository | `Wisdom.Office` |
-   | Workflow File | `publish-nupkg.yml` |
-   | Environment | 留空 |
-
-   `Workflow File` 只填文件名，不带 `.github/workflows/` 路径；策略作用于该 Owner 名下的全部包，若只想覆盖部分包，可在 Policy Scopes 里用 glob 限定 `Wisdom.*`。`Environment` 留空表示不校验 GitHub 环境；若填了名字（如 `production`），必须在 workflow 的 job 上声明同名 `environment:`，否则令牌校验失败。
-
-2. 把 `Directory.Build.props` 里的 `<Version>` 改成新版本号，提交并推送到 `master`。
-
-3. 打标签触发发布，标签必须与版本号一致（流水线会校验，不一致直接失败）：
-
-   ```bash
-   git tag v1.0.1
-   git push origin v1.0.1
-   ```
-
-4. 在 Actions 的 `Publish NuGet packages` 流水线查看结果；包在 nuget.org 索引生效需要几分钟。
-
-私有仓库首次发布的策略会先进入 7 天待激活状态，期间成功发布一次即转为永久生效。
-
-临时手工发布（仅在 CI 不可用时）：创建一个仅对 `Wisdom.*` 前缀生效、带过期时间的 scoped API Key，然后执行：
-
-```powershell
-dotnet pack Wisdom.Office.sln -c Release -o ./nupkg
-dotnet nuget push .\nupkg\*.nupkg --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
-```
-
 ### 支持的运行环境
 
 每个包同时提供六份资产，安装后 NuGet 按目标框架精确匹配、未命中时向前回退：
