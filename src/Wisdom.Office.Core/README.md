@@ -3,7 +3,7 @@
 `Wisdom.Office.Core` 是整套库的**共享内核**：统一文档模型、工作簿模型、演示文稿模型、模板引擎、OLE2 复合文档读取、ZIP 安全读取和二进制/压缩基础工具。`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Markdown`、`Wisdom.Office` 全部依赖它；只想要模型对象或模板引擎的场合也可以单独引用。
 
 - 包名：`Wisdom.Office.Core`
-- 版本：`1.0.0`
+- 版本：`1.0.1`
 - 依赖：无（其余六个包的共同底座）
 - 命名空间：`Wisdom.Office.Core`
 
@@ -25,7 +25,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Office.Core --version 1.0.0
+dotnet add package Wisdom.Office.Core --version 1.0.1
 ```
 
 ## 文档模型（Word / PDF 共用）

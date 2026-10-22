@@ -3,7 +3,7 @@
 `Wisdom.Excel` 负责 **Excel 侧的全部读写**：XLSX 读取与生成（样式、数字格式、公式、合并、冻结窗格、打印设置、原生图表、条件格式、单元格图片、自动筛选、数据验证、超链接与标签色）、集合 / `DataTable` 映射、CSV 导入导出、低内存流式查询、区域与行列编辑、工作表管理、XLSX 模板填充，以及旧版 `.xls`（BIFF8，Excel 97-2003）读取。
 
 - 包名：`Wisdom.Excel`
-- 版本：`1.0.0`
+- 版本：`1.0.1`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Excel`（数据模型位于 `Wisdom.Office.Core`）
@@ -28,7 +28,7 @@ XLSX 包由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理；`.xl
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Excel --version 1.0.0
+dotnet add package Wisdom.Excel --version 1.0.1
 ```
 
 需要把 Excel 转成 PDF / DOCX 时请改引 `Wisdom.Office` 门面包。

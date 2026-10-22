@@ -3,7 +3,7 @@
 `Wisdom.Word` 负责 **Word 侧的全部读写**：DOCX/DOTX/RTF/HTML/ODT/纯文本的读取与生成、DOCX 生成与模板填充、旧版 `.doc` 读取、流式文档构建、邮件合并、查找替换、文档克隆与合并、自定义文档属性、标签纸与信封生成，以及建立在统一文档模型之上的修订跟踪、SmartArt/数字签名检查、文档整理、一致性校验、差异比对与字数统计引擎。
 
 - 包名：`Wisdom.Word`
-- 版本：`1.0.0`
+- 版本：`1.0.1`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Word`
@@ -26,7 +26,7 @@ DOCX 由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理，六份�
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Word --version 1.0.0
+dotnet add package Wisdom.Word --version 1.0.1
 ```
 
 需要把 Word 转成 PDF 时请改引 `Wisdom.Office` 门面包（本包不依赖 `Wisdom.Pdf`）。

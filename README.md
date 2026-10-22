@@ -98,13 +98,13 @@ dotnet build tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj -c Release -f 
 
 ## 安装（NuGet）
 
-> 七个包（`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Markdown`）版本号保持一致，当前为 `1.0.0`。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。发布步骤见下一节。
+> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。发布步骤见下一节。
 
 ```bash
 dotnet add package Wisdom.Office
 
 # 或指定版本
-dotnet add package Wisdom.Office --version 1.0.0
+dotnet add package Wisdom.Office --version 1.0.1
 ```
 
 ## 发布流程（nuget.org Trusted Publishing）
@@ -130,8 +130,8 @@ dotnet add package Wisdom.Office --version 1.0.0
 3. 打标签触发发布，标签必须与版本号一致（流水线会校验，不一致直接失败）：
 
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag v1.0.1
+   git push origin v1.0.1
    ```
 
 4. 在 Actions 的 `Publish NuGet packages` 流水线查看结果；包在 nuget.org 索引生效需要几分钟。

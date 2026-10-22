@@ -3,7 +3,7 @@
 `Wisdom.Pdf` 是**自研的 PDF 引擎**：按统一文档模型排版生成 PDF 1.7（含 TrueType 子集字体嵌入与图片），解析既有 PDF 并提取文本与表格，还能在对象级编辑文档——合并拆分页面、页面旋转、文字与图像水印、口令加密读写、AcroForm 填表与扁平化。不依赖任何第三方 PDF 库，也不调用打印驱动。
 
 - 包名：`Wisdom.Pdf`
-- 版本：`1.0.0`
+- 版本：`1.0.1`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无
 - 命名空间：`Wisdom.Pdf`
@@ -26,7 +26,7 @@ ZIP、XML、压缩流全部自行实现；.NET Framework 与 .NET 上的 inflate
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Pdf --version 1.0.0
+dotnet add package Wisdom.Pdf --version 1.0.1
 ```
 
 只需要「任意文档 → PDF」的转换或报表导出时，请引用 `Wisdom.Office` 门面包；本包接收的是 `Wisdom.Office.Core` 的 `OfficeDocument` 模型。
