@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Wisdom.Sample.Word</RootNamespace>
+    <AssemblyName>Wisdom.Sample.Word</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Wisdom.Word\Wisdom.Word.csproj" />
+    <ProjectReference Include="..\..\src\Wisdom.Office\Wisdom.Office.csproj" />
+  </ItemGroup>
+</Project>

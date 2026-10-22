@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net461;netstandard2.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Wisdom.Word</RootNamespace>
+    <AssemblyName>Wisdom.Word</AssemblyName>
+    <Description>自研 DOCX 读写、流式构建、模板填充、邮件合并、自定义属性、标签纸与信封、旧版 DOC 读取。Self-contained DOCX reader/writer, fluent builder, template engine, mail merge, custom properties, label sheets, envelopes and legacy DOC text reader.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net461;netstandard2.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Wisdom.Office</RootNamespace>
+    <AssemblyName>Wisdom.Office</AssemblyName>
+    <Description>Word/Excel/PowerPoint/PDF/Markdown 统一读写与转换门面。Unified facade for reading, writing and converting Word, Excel, PowerPoint, PDF and Markdown files.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+    <ProjectReference Include="..\Wisdom.Pdf\Wisdom.Pdf.csproj" />
+    <ProjectReference Include="..\Wisdom.Word\Wisdom.Word.csproj" />
+    <ProjectReference Include="..\Wisdom.Excel\Wisdom.Excel.csproj" />
+    <ProjectReference Include="..\Wisdom.Ppt\Wisdom.Ppt.csproj" />
+    <ProjectReference Include="..\Wisdom.Markdown\Wisdom.Markdown.csproj" />
+  </ItemGroup>
+</Project>

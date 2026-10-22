@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net461;netstandard2.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Wisdom.Office.Core</RootNamespace>
+    <AssemblyName>Wisdom.Office.Core</AssemblyName>
+    <Description>核心统一文档模型、工作簿模型、模板引擎与 OLE 复合文档读取。Wisdom.Office core document model, template engine and OLE compound file reader.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+</Project>

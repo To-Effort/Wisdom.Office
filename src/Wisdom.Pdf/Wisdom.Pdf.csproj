@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net461;netstandard2.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Wisdom.Pdf</RootNamespace>
+    <AssemblyName>Wisdom.Pdf</AssemblyName>
+    <Description>自研 PDF 生成、解析、文本表格提取与字体嵌入。Self-contained PDF writer, renderer, font subsetter and text extractor.</Description>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+  </ItemGroup>
+</Project>

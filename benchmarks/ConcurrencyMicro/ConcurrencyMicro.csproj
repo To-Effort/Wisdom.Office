@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AssemblyName>ConcurrencyMicro</AssemblyName>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Wisdom.Office/Wisdom.Office.csproj" />
+    <ProjectReference Include="../../src/Wisdom.Word/Wisdom.Word.csproj" />
+    <ProjectReference Include="../../src/Wisdom.Excel/Wisdom.Excel.csproj" />
+    <ProjectReference Include="../../src/Wisdom.Ppt/Wisdom.Ppt.csproj" />
+    <ProjectReference Include="../../src/Wisdom.Pdf/Wisdom.Pdf.csproj" />
+    <ProjectReference Include="../../src/Wisdom.Markdown/Wisdom.Markdown.csproj" />
+  </ItemGroup>
+
+</Project>

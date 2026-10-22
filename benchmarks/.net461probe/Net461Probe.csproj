@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net461</TargetFramework>
+    <Configuration>Release</Configuration>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Net461Probe</AssemblyName>
+    <RootNamespace>Net461Probe</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Wisdom.Excel\Wisdom.Excel.csproj" />
+    <ProjectReference Include="..\..\src\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+  </ItemGroup>
+
+</Project>

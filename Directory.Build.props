@@ -1,0 +1,43 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS0618;CS0649</NoWarn>
+    <Authors>Wisdom</Authors>
+    <Company>Wisdom</Company>
+    <Product>Wisdom.Office</Product>
+    <Version>1.0.1</Version>
+    <!-- NuGet 打包公共元数据 -->
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/To-Effort/Wisdom.Office</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/To-Effort/Wisdom.Office.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>Copyright (c) 2026 Wisdom</Copyright>
+    <PackageTags>Office;Word;Excel;Pdf;Docx;Xlsx;OpenXml;Report</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <!-- .NET Framework 需显式引用压缩程序集；.NET/ netstandard 由框架自带。
+       .NET Framework needs explicit compression assembly references; other targets get them from the framework. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net461'">
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <!-- 各库自带 README.md 时优先打包本库说明文档，否则回退到根 README。
+       A library ships its own README.md when present; otherwise the root README is packed. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true' And Exists('$(MSBuildProjectDirectory)\README.md')">
+    <None Include="$(MSBuildProjectDirectory)\README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IsPackable)' == 'true' And !Exists('$(MSBuildProjectDirectory)\README.md')">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+</Project>

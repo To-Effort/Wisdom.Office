@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Configuration>Release</Configuration>
+    <Optimize>true</Optimize>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AssemblyName>PptMicro</AssemblyName>
+    <RootNamespace>PptMicro</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Wisdom.Ppt\Wisdom.Ppt.csproj" />
+    <ProjectReference Include="..\..\src\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+  </ItemGroup>
+
+</Project>

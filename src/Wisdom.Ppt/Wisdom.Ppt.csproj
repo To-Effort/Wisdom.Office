@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net461;netstandard2.0;net7.0;net8.0;net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>Wisdom.Ppt</RootNamespace>
+    <AssemblyName>Wisdom.Ppt</AssemblyName>
+    <Description>自研 PPTX 演示文稿读写。Self-contained PPTX presentation reader and writer.</Description>
+    <IsPackable>true</IsPackable>
+    <!-- 本模块自 1.0.0 起源码未变，版本保持不动，避免发布内容相同的重复包。
+         This module is unchanged since 1.0.0, so its version stays put instead of shipping a duplicate package. -->
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />
+  </ItemGroup>
+</Project>
