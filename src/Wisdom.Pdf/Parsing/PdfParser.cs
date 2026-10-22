@@ -207,8 +207,21 @@ namespace Wisdom.Pdf
             switch (value)
             {
                 case (byte)'/':
-                    Position++;
-                    return new PdfName(ReadNameRaw());
+                    {
+                        // 光杆斜杠（紧跟分隔符）名称正文为空，属于畸形词元，必须按读取端的统一异常上报；
+                        // PdfName 构造函数的 ArgumentException 只保留给写侧的调用方传参错误。
+                        // A bare slash is a malformed token and must surface as a read failure; PdfName's
+                        // ArgumentException stays reserved for caller mistakes on the writing side.
+                        int nameStart = Position;
+                        Position++;
+                        string nameBody = ReadNameRaw();
+                        if (nameBody.Length == 0)
+                        {
+                            throw new InvalidDataException("Invalid PDF name at position "
+                                + nameStart.ToString(CultureInfo.InvariantCulture) + ".");
+                        }
+                        return new PdfName(nameBody);
+                    }
                 case (byte)'(':
                     return ReadLiteralString();
                 case (byte)'<':
