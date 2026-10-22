@@ -32,8 +32,7 @@ OfficeFileFormat format = OfficeFileFormats.Detect("input.bin");
 
 Markdown 是纯文本、没有文件头签名，只能由 `OfficeFile.Load(path)` 在识别失败后按扩展名（`.md` / `.markdown` / `.mkd`）兜底；从流或字节数组加载时要把 `OfficeFileFormat.Markdown` 显式传给 `Load(byte[], OfficeFileFormat)`。
 
-
-每个 `src/<包名>/README.md` 是该包的独立说明文档，打包时自动作为对应 NuGet 包内的 README（缺失时才回退到本文件）。
+每个 `src/<包名>/README.md` 是该包的独立说明文档，同时也是发布到 nuget.org 后包内的 README。
 
 ## 构建与测试
 
@@ -82,7 +81,7 @@ dotnet build tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj -c Release -f 
 
 ## 安装（NuGet）
 
-> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。发布步骤见下一节。
+> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
 
 ```bash
 dotnet add package Wisdom.Office
