@@ -32,24 +32,7 @@ OfficeFileFormat format = OfficeFileFormats.Detect("input.bin");
 
 Markdown 是纯文本、没有文件头签名，只能由 `OfficeFile.Load(path)` 在识别失败后按扩展名（`.md` / `.markdown` / `.mkd`）兜底；从流或字节数组加载时要把 `OfficeFileFormat.Markdown` 显式传给 `Load(byte[], OfficeFileFormat)`。
 
-## 项目结构
-
-```text
-src/
-  Wisdom.Office.Core/   统一文档模型、工作簿模型、演示模型、OLE2、模板引擎、基础工具
-  Wisdom.Pdf/           PDF 1.7 生成、解析、文本与表格提取、字体嵌入
-  Wisdom.Word/          DOCX/DOTX/RTF/HTML/ODT/TXT 读写、DOC 读取、模板填充、标签纸/信封、修订跟踪、SmartArt/数字签名检查、文档整理与校验
-  Wisdom.Excel/         XLSX 读写、模板填充、图表/条件格式/图片、XLS 读取
-  Wisdom.Ppt/           PPTX 读写（PresentationML）、幻灯片版式与形状
-  Wisdom.Markdown/      Markdown 解析、HTML 渲染与文档模型回写
-  Wisdom.Office/        统一门面、格式互转、报表现成导出
-tests/
-  Wisdom.Office.Tests/  端到端测试、真实 DOC/XLS 样本、OOXML 包结构校验
-samples/                四类真实场景的验证程序
-docs/                   七个包各一份分步使用教程 + 一篇四场景功能导读
-```
-
-每个 `src/<包名>/README.md` 是该包的独立说明文档，打包时自动作为对应 NuGet 包内的 README（缺失时才回退到本文件）。
+每个 `src/<包名>/README.md` 是该包的独立说明文档，同时也是发布到 nuget.org 后包内的 README。
 
 ## 构建与测试
 
