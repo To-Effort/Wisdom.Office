@@ -205,6 +205,9 @@ namespace Wisdom.Pdf
     /// top-left origin (y = pageHeight - y), so table coordinates match <see cref="PdfTextFragment"/>.</remarks>
     internal static class PdfTableDetector
     {
+        private const long MaxTableCells = 250000;
+        private const long MaxGridIntersections = 4000000;
+
         /// <summary>一条网格线：Position 为垂直于自身的坐标，Start/End 为沿线方向的跨度。One grid line: Position is the perpendicular coordinate, Start/End the span along the line.</summary>
         private sealed class GridLine
         {
@@ -315,6 +318,9 @@ namespace Wisdom.Pdf
             verticals = Merge(verticals);
             if (horizontals.Count < 2 || verticals.Count < 2) return result;
 
+            // 交叉遍历是 O(h*v)，先按上限拒掉恶意网格。
+            // The intersection walk is O(h*v), so an oversized grid is rejected up front.
+            if ((long)horizontals.Count * verticals.Count > MaxGridIntersections) return result;
             UnionFind union = new UnionFind(horizontals.Count + verticals.Count);
             for (int h = 0; h < horizontals.Count; h++)
             {
@@ -496,6 +502,10 @@ namespace Wisdom.Pdf
             int columnCount = columns.Count - 1;
             int rowCount = rows.Count - 1;
             if (columnCount <= 0 || rowCount <= 0) return null;
+            // 样本数乘积直接决定两个矩形数组的大小，必须在分配前检查。
+            // The product of the two grid sample counts sizes two rectangular arrays, so it is checked
+            // before anything is allocated; a hostile page can otherwise suggest a 100k x 100k matrix.
+            if ((long)rowCount * columnCount > MaxTableCells) return null;
 
             double left = columns[0];
             double top = rows[0];

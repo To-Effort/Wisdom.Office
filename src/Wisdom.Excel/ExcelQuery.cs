@@ -267,7 +267,7 @@ namespace Wisdom.Excel
             MemoryStream memory = new MemoryStream();
             try
             {
-                stream.CopyTo(memory);
+                OfficePackageLimits.CopyBounded(stream, memory);
                 memory.Position = 0;
                 foreach (ExcelRowData row in ReadRowsCore(memory, sheetName)) yield return row;
             }

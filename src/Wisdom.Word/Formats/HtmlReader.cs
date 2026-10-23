@@ -40,11 +40,7 @@ namespace Wisdom.Word
         public static OfficeDocument Load(Stream stream)
         {
             if (stream == null) throw new ArgumentNullException("stream");
-            using (MemoryStream memory = new MemoryStream())
-            {
-                stream.CopyTo(memory);
-                return Load(memory.ToArray());
-            }
+            return Load(OfficePackageLimits.ReadAllBytes(stream));
         }
 
         /// <summary>从字节数组加载 HTML 文档，按 BOM 或 UTF-8 解码。Loads an HTML document from a byte array, decoding by BOM or UTF-8.</summary>

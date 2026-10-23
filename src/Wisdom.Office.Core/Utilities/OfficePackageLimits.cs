@@ -178,5 +178,52 @@ namespace Wisdom.Office.Core
             }
             return filled - offset;
         }
+
+        /// <summary>
+        /// 在 <see cref="MaxEntryBytes"/> 上限内把流整体读入内存。
+        /// Reads a whole stream into memory within the <see cref="MaxEntryBytes"/> limit.
+        /// </summary>
+        /// <param name="source">待读取的流。The stream to read.</param>
+        /// <returns>读到的字节数组。The bytes read.</returns>
+        /// <exception cref="InvalidDataException">流的实际长度超过单件上限。The stream is longer than the per-entry limit.</exception>
+        /// <remarks>读取端不能凭 <see cref="Stream.Length"/> 决定分配：管道流与网络流长度未知，声明值也可能造假。
+        /// The length reported by a stream cannot decide the allocation: pipes and network streams have no
+        /// known length and a declared one may be forged, so the copy is charged byte by byte.</remarks>
+        public static byte[] ReadAllBytes(Stream source)
+        {
+            if (source == null) throw new ArgumentNullException("source");
+            using (MemoryStream memory = new MemoryStream())
+            {
+                CopyBounded(source, memory);
+                return memory.ToArray();
+            }
+        }
+
+        /// <summary>
+        /// 把流按块复制到目标，累计字节数超过 <see cref="MaxEntryBytes"/> 即中止。
+        /// Copies a stream to a target in chunks, aborting once the running total passes <see cref="MaxEntryBytes"/>.
+        /// </summary>
+        /// <param name="source">数据源。The source stream.</param>
+        /// <param name="target">写入目标。The destination stream.</param>
+        /// <returns>复制的字节数。The number of bytes copied.</returns>
+        /// <exception cref="InvalidDataException">数据超过单件上限。The data exceeds the per-entry limit.</exception>
+        public static long CopyBounded(Stream source, Stream target)
+        {
+            if (source == null) throw new ArgumentNullException("source");
+            if (target == null) throw new ArgumentNullException("target");
+            byte[] buffer = new byte[81920];
+            long total = 0;
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                total += read;
+                if (total > MaxEntryBytes)
+                {
+                    throw new InvalidDataException("输入流超过安全上限(" + MaxEntryBytes + " 字节)。");
+                }
+                target.Write(buffer, 0, read);
+            }
+            return total;
+        }
     }
 }

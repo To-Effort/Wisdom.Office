@@ -164,6 +164,31 @@ namespace Wisdom.Pdf
             if (documentId == null) documentId = new byte[0];
             string candidate = password ?? string.Empty;
 
+            // 先定算法再验口令：/CF 无法解析时继续做密钥派生只会把算法混淆掩盖在口令错误之下。
+            // The algorithm is settled before the password is checked: deriving a key when /CF cannot be
+            // resolved would hide an algorithm confusion behind a password error.
+            bool encryptStrings = true;
+            bool encryptStreams = true;
+            bool stringAes = version >= 5;
+            bool streamAes = version >= 5;
+
+            if (version >= 4)
+            {
+                string streamFilter = GetName(dictionary, "StmF");
+                string stringFilter = GetName(dictionary, "StrF");
+                string streamMethod = GetCryptFilterMethod(dictionary, streamFilter);
+                string stringMethod = GetCryptFilterMethod(dictionary, stringFilter);
+                encryptStreams = streamMethod != null;
+                encryptStrings = stringMethod != null;
+                streamAes = streamMethod == "AESV2" || streamMethod == "AESV3";
+                stringAes = stringMethod == "AESV2" || stringMethod == "AESV3";
+                if (version >= 5)
+                {
+                    if (encryptStreams) streamAes = true;
+                    if (encryptStrings) stringAes = true;
+                }
+            }
+
             byte[] key;
             bool owner = false;
 
@@ -200,27 +225,6 @@ namespace Wisdom.Pdf
                 }
             }
 
-            bool encryptStrings = true;
-            bool encryptStreams = true;
-            bool stringAes = version >= 5;
-            bool streamAes = version >= 5;
-
-            if (version >= 4)
-            {
-                string streamFilter = GetName(dictionary, "StmF");
-                string stringFilter = GetName(dictionary, "StrF");
-                string streamMethod = GetCryptFilterMethod(dictionary, streamFilter);
-                string stringMethod = GetCryptFilterMethod(dictionary, stringFilter);
-                encryptStreams = streamMethod != null;
-                encryptStrings = stringMethod != null;
-                streamAes = streamMethod == "AESV2" || streamMethod == "AESV3";
-                stringAes = stringMethod == "AESV2" || stringMethod == "AESV3";
-                if (version >= 5)
-                {
-                    if (encryptStreams) streamAes = true;
-                    if (encryptStrings) stringAes = true;
-                }
-            }
 
             if (owner) permissions = PdfPermissions.All;
             return new PdfStandardSecurityHandler(dictionary, key, permissions, encryptMetadata,
@@ -791,9 +795,25 @@ namespace Wisdom.Pdf
         /// 读取 crypt filter 的加密方法；Identity 或缺失时返回 null。
         /// Reads the crypt filter method; returns null for Identity or when absent.
         /// </summary>
+        // /StmF 或 /StrF 点名了某个密码过滤器却在 /CF 里找不到、或 CFM 认不出来时，
+        // 静默按不加密处理会把密文当成明文交给上层；这种情况必须报错。
+        // When /StmF or /StrF names a crypt filter that cannot be resolved in /CF, or whose /CFM is not
+        // recognised, silently treating the file as unencrypted hands ciphertext to the caller as if it
+        // were plaintext; that case must raise instead.
         private static string GetCryptFilterMethod(PdfDictionary dictionary, string filterName)
         {
             if (string.IsNullOrEmpty(filterName) || filterName == "Identity") return null;
+            // 规范把 /CF 列为 /StmF 或 /StrF 存在时的必填项，缺席或未定义同样无法判定算法。
+            // The specification makes /CF a required entry whenever /StmF or /StrF is present; a missing /CF
+            // or an undefined name leaves the algorithm undetermined either way.
+            if (!string.IsNullOrEmpty(filterName) && filterName != "Identity")
+            {
+                PdfDictionary namedFilters = dictionary.Get("CF") as PdfDictionary;
+                if (namedFilters == null || namedFilters.Get(filterName) == null)
+                {
+                    throw new InvalidDataException("The encryption dictionary names a crypt filter that /CF does not define: " + filterName);
+                }
+            }
             PdfDictionary filters = dictionary.Get("CF") as PdfDictionary;
             if (filters == null) return null;
             PdfDictionary filter = filters.Get(filterName) as PdfDictionary;
@@ -801,7 +821,7 @@ namespace Wisdom.Pdf
             string method = GetName(filter, "CFM");
             if (string.IsNullOrEmpty(method) || method == "None") return null;
             if (method == "V2" || method == "AESV2" || method == "AESV3") return method;
-            return null;
+            throw new InvalidDataException("Unsupported crypt filter method: " + method);
         }
 
         /// <summary>读取字典中的名称值。Reads a name value from the dictionary.</summary>

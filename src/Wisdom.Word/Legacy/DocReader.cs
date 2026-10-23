@@ -38,11 +38,7 @@ namespace Wisdom.Word
         public static OfficeDocument Load(Stream stream)
         {
             if (stream == null) throw new ArgumentNullException("stream");
-            using (MemoryStream memory = new MemoryStream())
-            {
-                stream.CopyTo(memory);
-                return Load(memory.ToArray());
-            }
+            return Load(OfficePackageLimits.ReadAllBytes(stream));
         }
 
         /// <summary>

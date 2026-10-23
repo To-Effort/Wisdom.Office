@@ -202,6 +202,8 @@ namespace Wisdom.Pdf
         /// <summary>q/Q 状态栈。The q/Q graphics-state stack.</summary>
         private readonly Stack<GraphicsState> _stack = new Stack<GraphicsState>();
         /// <summary>当前尚未绘出的路径。The current path not yet painted.</summary>
+        private const int MaxOperands = 512;
+        private const int MaxPathSegments = 65536;
         private readonly List<PdfVectorSegment> _path = new List<PdfVectorSegment>();
 
         /// <summary>当前变换矩阵 CTM，元素顺序为 a b c d e f。The current transformation matrix CTM, in a b c d e f order.</summary>
@@ -283,6 +285,10 @@ namespace Wisdom.Pdf
                 byte value = parser.Data[parser.Position];
                 if (IsObjectStart(parser, value))
                 {
+                    // 注册表外的长操作数不合法：取个远大于任何算符入参的上限，避免无限堆叠。
+                    // No operator legitimately takes this many operands, so the ceiling stops a hostile
+                    // stream of bare tokens from stacking operands until memory is exhausted.
+                    if (operands.Count >= MaxOperands) operands.Clear();
                     try
                     {
                         operands.Add(parser.ParseObject());
@@ -721,7 +727,10 @@ namespace Wisdom.Pdf
             segment.Y1 = ty1;
             segment.X2 = tx2;
             segment.Y2 = ty2;
-            _path.Add(segment);
+            // 路径缓冲区同样要封顶：连续 m/l 而不 S/f 会把几万段线条堆到一次 AddRange 里。
+            // The path buffer needs its own ceiling: a run of m/l without S or f otherwise piles tens of
+            // thousands of segments into a single AddRange and blows past the segment cap.
+            if (_path.Count < MaxPathSegments) _path.Add(segment);
         }
 
         /// <summary>

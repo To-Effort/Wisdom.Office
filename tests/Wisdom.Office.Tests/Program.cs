@@ -30,6 +30,7 @@ namespace Wisdom.Office.Tests
             RunPdfWatermarkTest(pdfPath, outputDirectory);
             RunPdfFormTest(pdfPath, outputDirectory);
             RunPdfEncryptionTest(pdfPath, outputDirectory);
+            RunPdfHostileInputTest(outputDirectory);
 
             string fixtureDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "fixtures"));
             string chromePdfPath = Path.Combine(fixtureDirectory, "chrome-print.pdf");
@@ -4308,6 +4309,49 @@ namespace Wisdom.Office.Tests
             long mutatedPdfMs = watch.ElapsedMilliseconds;
             Require(mutatedPdfFailure == null, "mutated pdf raised an unexpected exception: " + mutatedPdfFailure);
             Require(mutatedPdfMs < 10000, "mutated pdf fuzzing too slow: " + mutatedPdfMs + " ms");
+
+            // 空名称（光杆斜杠）属畸形词元，必须按已声明的 InvalidDataException 上报；
+            // PdfName 构造函数的 ArgumentException 只留给写侧调用方，不能漏过交叉表与内容流的窄 catch。
+            // A bare slash is a malformed token and must surface as the documented InvalidDataException:
+            // PdfName's ArgumentException belongs to the writing side and must not slip past the narrow
+            // recovery catches in the cross-reference walk or the content interpreter.
+            byte[] bareNameTrailer = Encoding.ASCII.GetBytes(
+                "%PDF-1.7\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                + "2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n"
+                + "xref\n0 3\n0000000000 65535 f \ntrailer\n<< /Size 3 /Root 1 0 R / >>\nstartxref\n15\n%%EOF\n");
+            Exception bareNameTrailerFailure = null;
+            try
+            {
+                PdfDocument.Load(bareNameTrailer);
+            }
+            catch (InvalidDataException)
+            {
+            }
+            catch (Exception ex)
+            {
+                bareNameTrailerFailure = ex;
+            }
+            Require(bareNameTrailerFailure == null, "trailer slash name leaked " + bareNameTrailerFailure);
+
+            if (File.Exists(seedPdfPath))
+            {
+                byte[] slashSeed = File.ReadAllBytes(seedPdfPath);
+                string slashBefore = PdfDocument.Load(slashSeed).ExtractText();
+                PdfFile slashFile = PdfFile.Load(slashSeed);
+                slashFile.PrependPageContent(0, Encoding.ASCII.GetBytes("/ "));
+                Exception slashContentFailure = null;
+                string slashAfter = null;
+                try
+                {
+                    slashAfter = PdfDocument.Load(slashFile.SaveToBytes()).ExtractText();
+                }
+                catch (Exception ex)
+                {
+                    slashContentFailure = ex;
+                }
+                Require(slashContentFailure == null, "content stream slash name leaked " + slashContentFailure);
+                Require(slashAfter == slashBefore, "content stream slash name changed the extracted text");
+            }
 
             Exception mutatedDocxFailure = null;
             int mutatedDocxAccepted = 0;

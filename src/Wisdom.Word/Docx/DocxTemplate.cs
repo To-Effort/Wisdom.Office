@@ -182,7 +182,7 @@ namespace Wisdom.Word
             if (outputStream == null) throw new ArgumentNullException("outputStream");
             using (MemoryStream memory = new MemoryStream())
             {
-                templateStream.CopyTo(memory);
+                OfficePackageLimits.CopyBounded(templateStream, memory);
                 byte[] result = Fill(memory.ToArray(), context, options);
                 outputStream.Write(result, 0, result.Length);
             }

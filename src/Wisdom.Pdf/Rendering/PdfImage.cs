@@ -116,6 +116,8 @@ namespace Wisdom.Pdf
     /// <summary>解码后的图像位图数据，供写出图像 XObject 使用。Decoded image bitmap data used when writing the image XObject.</summary>
     internal sealed class PdfImageData
     {
+        private const long MaxPixelBytes = 256L * 1024 * 1024;
+
         /// <summary>像素宽度。The pixel width.</summary>
         public int Width;
         /// <summary>像素高度。The pixel height.</summary>
@@ -319,6 +321,10 @@ namespace Wisdom.Pdf
             }
 
             if (width <= 0 || height <= 0) throw new InvalidDataException("Invalid PNG dimensions.");
+            // 单边与像素总量双重上限：int 相乘会翻负或落到很小的正值，像素缓冲区正是按它分配的。
+            // Both a single side and the total area are capped: int multiplication can wrap negative or
+            // land on a small positive value, and the pixel buffer is sized from that product.
+            if (width > 65535 || height > 65535) throw new InvalidDataException("PNG dimensions exceed the safety limit.");
             if (interlace != 0) throw new NotSupportedException("Interlaced PNG images are not supported.");
             if (bitDepth != 8 && bitDepth != 16 && bitDepth != 4 && bitDepth != 2 && bitDepth != 1)
             {
@@ -337,6 +343,7 @@ namespace Wisdom.Pdf
             }
 
             int rowBytes = (width * channels * bitDepth + 7) / 8;
+            if ((long)rowBytes * height > MaxPixelBytes) throw new InvalidDataException("PNG pixel buffer exceeds the safety limit.");
             int bpp = Math.Max(1, channels * bitDepth / 8);
             byte[] decompressed;
             using (MemoryStream idat = new MemoryStream())
@@ -345,10 +352,13 @@ namespace Wisdom.Pdf
                 {
                     idat.Write(idatChunks[i], 0, idatChunks[i].Length);
                 }
-                decompressed = Zlib.Decompress(idat.ToArray());
+                byte[] idatBytes = idat.ToArray();
+                // IDAT 拼起来可能是压缩爆弹，解压后字节数必须受上限约束。
+                // The concatenated IDAT stream may be a zip bomb, so the inflated size stays bounded.
+                decompressed = Zlib.Decompress(idatBytes, 0, idatBytes.Length, PdfReadLimits.MaxDecodedStreamBytes);
             }
 
-            int expected = (rowBytes + 1) * height;
+            int expected = rowBytes * height + height;
             if (decompressed.Length < expected)
             {
                 byte[] padded = new byte[expected];

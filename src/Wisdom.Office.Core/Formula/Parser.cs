@@ -18,6 +18,8 @@ namespace Wisdom.Office.Core.Formulas
     {
         private readonly List<Token> _tokens;
         private int _pos;
+        private int _depth;
+        private const int MaxDepth = 128;
 
         /// <summary>用 token 列表构造解析器。Constructs a parser from a token list.</summary>
         /// <param name="tokens">词法单元。The tokens.</param>
@@ -79,24 +81,39 @@ namespace Wisdom.Office.Core.Formulas
 
         private Node ParseBinary(int minPrec)
         {
-            Node left = ParseUnary();
-            while (true)
+            // 嵌套只能靠深度计数裁断：无限括号或一元符链会打爆调用栈，而栈溢出在 .NET 里会直接结束进程。
+            // Only a depth counter can stop nesting: an unbounded run of parentheses or unary signs tears
+            // down the call stack, and a stack overflow is a process-killer under .NET.
+            if (++_depth > MaxDepth)
             {
-                Token t = Current();
-                if (t.Kind != TokKind.Operator) break;
-                int prec = BinaryPrecedence(t.Text);
-                if (prec == 0 || prec < minPrec) break;
-                Advance();
-                int nextMin = t.Text == "^" ? prec : prec + 1;
-                Node right = ParseBinary(nextMin);
-                BinaryNode node = new BinaryNode();
-                node.Kind = NodeKind.Binary;
-                node.Op = t.Text;
-                node.Left = left;
-                node.Right = right;
-                left = node;
+                _depth--;
+                throw new FormatException("Formula nesting is too deep.");
             }
-            return left;
+            try
+            {
+                Node left = ParseUnary();
+                while (true)
+                {
+                    Token t = Current();
+                    if (t.Kind != TokKind.Operator) break;
+                    int prec = BinaryPrecedence(t.Text);
+                    if (prec == 0 || prec < minPrec) break;
+                    Advance();
+                    int nextMin = t.Text == "^" ? prec : prec + 1;
+                    Node right = ParseBinary(nextMin);
+                    BinaryNode node = new BinaryNode();
+                    node.Kind = NodeKind.Binary;
+                    node.Op = t.Text;
+                    node.Left = left;
+                    node.Right = right;
+                    left = node;
+                }
+                return left;
+            }
+            finally
+            {
+                _depth--;
+            }
         }
 
         private Node ParseUnary()

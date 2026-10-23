@@ -49,11 +49,7 @@ namespace Wisdom.Word
         public static OfficeDocument Load(Stream stream, WordDocumentFormat format)
         {
             if (stream == null) throw new ArgumentNullException("stream");
-            using (MemoryStream memory = new MemoryStream())
-            {
-                stream.CopyTo(memory);
-                return Load(memory.ToArray(), format);
-            }
+            return Load(OfficePackageLimits.ReadAllBytes(stream), format);
         }
 
         /// <summary>自动识别格式并从流加载文档；流保持打开。Auto-detects the format and loads a document from a stream, leaving the stream open.</summary>

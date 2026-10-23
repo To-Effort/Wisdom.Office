@@ -170,11 +170,7 @@ namespace Wisdom.Pdf
         public static PdfFile Load(Stream stream, string password = null)
         {
             if (stream == null) throw new ArgumentNullException("stream");
-            using (MemoryStream memory = new MemoryStream())
-            {
-                stream.CopyTo(memory);
-                return Load(memory.ToArray(), password);
-            }
+            return Load(OfficePackageLimits.ReadAllBytes(stream), password);
         }
 
         /// <summary>从字节加载 PDF。Loads a PDF from bytes.</summary>
@@ -827,7 +823,11 @@ namespace Wisdom.Pdf
                 long count = ranges[r + 1];
                 for (long i = 0; i < count; i++)
                 {
-                    if (position + rowLength > body.Length) return;
+                    // 先减后比，避免 position + rowLength 溢出；条目号超界直接收尾。
+                    // Subtract before comparing to avoid overflow; stop when the entry number leaves int range.
+                    if (position > body.Length - rowLength) return;
+                    long numberLong = start + i;
+                    if (numberLong > int.MaxValue) return;
                     long[] fields = new long[widthValues.Length];
                     for (int f = 0; f < widthValues.Length; f++)
                     {
@@ -870,6 +870,10 @@ namespace Wisdom.Pdf
             if (number < 0) return;
             if (entry.Type == 0 && entry.Generation == 0) return;
             if (_xref.ContainsKey(number)) return;
+            // 上限兜底：畸形交叉表可以声明数百万条目，字典会无节制长大直到内存耗尽。
+            // Ceiling: a malformed cross-reference table can declare millions of entries and grow
+            // this dictionary until the process runs out of memory.
+            if (_xref.Count >= PdfReadLimits.MaxXrefEntries) return;
             _xref[number] = entry;
             if (number > _maxObjectNumber) _maxObjectNumber = number;
         }
@@ -999,6 +1003,10 @@ namespace Wisdom.Pdf
                 if (entry == null) return null;
                 if (entry.Type == 1)
                 {
+                    // 64 位偏移直接 (int) 截断会翻成负数或落到文件中部，先做范围校验。
+                    // Casting a 64-bit offset straight to int can wrap negative or land mid-file, so
+                    // the offset is range-checked first.
+                    if (entry.Offset < 0 || entry.Offset > _data.Length) return null;
                     PdfParser parser = new PdfParser(_data, (int)entry.Offset, ResolveReference);
                     result = parser.ParseIndirectObjectAt(entry.Offset);
                     bool encryptionDictionary = _sourceEncryptNumber > 0 && number == _sourceEncryptNumber;

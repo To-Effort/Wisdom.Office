@@ -69,7 +69,18 @@ namespace Wisdom.Office.Core
                 throw new InvalidDataException("Invalid compound file sector size.");
             }
             _sectorSize = 1 << sectorShift;
+            // 小扇区指数同样要验：uint16 直接当位移量会被 & 31 截断，得到一个错误的大小。
+            // The mini-sector shift needs its own check: a raw uint16 used as a shift count is truncated by
+            // '& 31', yielding a wrong size, and a value above the sector size breaks every mini-chain read.
+            if (miniSectorShift > 14)
+            {
+                throw new InvalidDataException("Invalid compound file mini-sector size.");
+            }
             _miniSectorSize = 1 << miniSectorShift;
+            if (_miniSectorSize <= 0 || _miniSectorSize > _sectorSize)
+            {
+                throw new InvalidDataException("Invalid compound file mini-sector size.");
+            }
             _miniStreamCutoff = ByteUtils.ReadUInt32LittleEndian(data, 56);
 
             uint numFatSectors = ByteUtils.ReadUInt32LittleEndian(data, 44);

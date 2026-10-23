@@ -653,7 +653,10 @@ namespace Wisdom.Pdf
         {
             int start = Position;
             int length = ResolveLength(dictionary.Get("Length"));
-            if (length >= 0 && start + length <= _data.Length)
+            // 先减后比：start + length 在 /Length 接近 int.MaxValue 时会溢出为负数而绕过边界检查。
+            // Compare after subtraction: start + length overflows to a negative number when /Length is
+            // near int.MaxValue, which would sail past the bound and allocate gigabytes from a tiny file.
+            if (length >= 0 && length <= _data.Length - start)
             {
                 int end = start + length;
                 int saved = end;

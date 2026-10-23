@@ -67,7 +67,10 @@ namespace Wisdom.Pdf
                 info.Checksum = ReadU32(record + 4);
                 info.Offset = (int)ReadU32(record + 8);
                 info.Length = (int)ReadU32(record + 12);
-                if (info.Offset < 0 || info.Length < 0 || info.Offset + info.Length > file.Length)
+                // 用 long 相加：offset 与 length 都是无符号 32 位读入，int 相加会翻负而绕过校验。
+                // Add in long: offset and length come from unsigned 32-bit reads, so int addition can wrap
+                // negative and sail past the bound, later allocating or reading out of range.
+                if (info.Offset < 0 || info.Length < 0 || (long)info.Offset + info.Length > file.Length)
                 {
                     continue;
                 }

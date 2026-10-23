@@ -525,7 +525,7 @@ namespace Wisdom.Pdf
             _pageNodes = new List<PageNode>();
             PdfDictionary pages = Resolve(Catalog.Get("Pages")) as PdfDictionary;
             if (pages == null) return;
-            CollectPageNodes(pages, null, null, null, 0, new HashSet<PdfDictionary>());
+            CollectPageNodes(pages, null, null, null, 0, 0, new HashSet<PdfDictionary>());
         }
 
         /// <summary>递归收集页面节点并下传继承属性。Recursively collects pages and propagates inherited attributes.</summary>
@@ -534,11 +534,15 @@ namespace Wisdom.Pdf
         /// <param name="inheritedResources">继承资源。Inherited resources.</param>
         /// <param name="inheritedMediaBox">继承媒体框。Inherited media box.</param>
         /// <param name="inheritedRotation">继承旋转。Inherited rotation.</param>
+        /// <param name="depth">当前深度，超过 <see cref="PdfReadLimits.MaxPageTreeDepth"/> 即停止。Current depth; recursion stops at the configured limit.</param>
         /// <param name="visited">已访问节点。Visited nodes.</param>
         private void CollectPageNodes(PdfDictionary node, PdfReference reference, PdfDictionary inheritedResources,
-            PdfObject inheritedMediaBox, int inheritedRotation, HashSet<PdfDictionary> visited)
+            PdfObject inheritedMediaBox, int inheritedRotation, int depth, HashSet<PdfDictionary> visited)
         {
-            if (node == null || visited.Contains(node)) return;
+            // visited 只挡同一对象，挡不住每层新建对象的深链；深度上限防止栈溢出。
+            // visited only catches repeated objects, not a chain of fresh nodes per level, so the depth
+            // cap is what keeps a hand-built page tree from exhausting the stack.
+            if (node == null || depth > PdfReadLimits.MaxPageTreeDepth || visited.Contains(node)) return;
             visited.Add(node);
 
             PdfDictionary resources = Resolve(node.Get("Resources")) as PdfDictionary ?? inheritedResources;
@@ -553,7 +557,7 @@ namespace Wisdom.Pdf
                 {
                     PdfReference kidReference = kids[i] as PdfReference;
                     PdfDictionary kid = Resolve(kids[i]) as PdfDictionary;
-                    if (kid != null) CollectPageNodes(kid, kidReference, resources, mediaBox, rotation, visited);
+                    if (kid != null) CollectPageNodes(kid, kidReference, resources, mediaBox, rotation, depth + 1, visited);
                 }
                 return;
             }

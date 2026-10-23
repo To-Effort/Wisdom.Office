@@ -49,11 +49,7 @@ namespace Wisdom.Excel
         public static OfficeWorkbook Load(Stream stream, ExcelReadOptions options)
         {
             if (stream == null) throw new ArgumentNullException("stream");
-            using (MemoryStream memory = new MemoryStream())
-            {
-                stream.CopyTo(memory);
-                return Load(memory.ToArray(), options);
-            }
+            return Load(OfficePackageLimits.ReadAllBytes(stream), options);
         }
 
         /// <summary>从字节数组加载 .xls 工作簿（包含全部隐藏内容）。</summary>

@@ -417,10 +417,6 @@ namespace Wisdom.Office.Core.Formulas
             {
                 result = FxValue.Err(FxError.Name);
             }
-            catch (StackOverflowException)
-            {
-                result = FxValue.Err(FxError.Value);
-            }
             catch (Exception)
             {
                 result = FxValue.Err(FxError.Value);
