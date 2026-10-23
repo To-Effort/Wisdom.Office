@@ -90,7 +90,7 @@ dotnet add package Wisdom.Office
 dotnet add package Wisdom.Office --version 1.0.1
 ```
 
-## 支持的运行环境
+### 支持的运行环境
 
 每个包同时提供六份资产，安装后 NuGet 按目标框架精确匹配、未命中时向前回退：
 
