@@ -278,7 +278,13 @@ namespace Wisdom.Pdf
             int metrics = NumberOfHMetrics > 0 ? NumberOfHMetrics : 1;
             if (glyphId < metrics)
             {
-                return ReadS16(hmtx.Offset + glyphId * 4 + 2);
+                int advance = hmtx.Offset + glyphId * 4;
+                // 取游标前先对照 hmtx 表长：numberOfHMetrics 也来自文件，恶意字体可以声明超过实际存在的度量数，
+                // 不加检查就会读到相邻表的字节上，把附近表的内容当成游标用到排版里。
+                // Check against the hmtx length before reading: numberOfHMetrics is also attacker-controlled, so a
+                // font can claim more metrics than the table holds and the read would land in the neighbouring table.
+                if (advance + 4 > hmtx.Offset + hmtx.Length) return 0;
+                return ReadS16(advance + 2);
             }
             int offset = hmtx.Offset + metrics * 4 + (glyphId - metrics) * 2;
             if (offset + 2 > hmtx.Offset + hmtx.Length) return 0;

@@ -116,11 +116,32 @@ namespace Wisdom.Word
         }
 
         /// <summary>
-        /// 核心填充流程：逐条复制 ZIP 条目，仅对主文档及 word/header*、word/footer* 部件执行
-        /// 循环展开与占位符替换，其余部件原样写出。
-        /// Core fill routine: copies every ZIP entry, expanding loops and replacing placeholders only in the
-        /// main document and the word/header*, word/footer* parts; all other parts are written out unchanged.
+        /// 核心填充流程：先整包读入（累计解压量仍受同一上限约束），剥离宏与嵌入对象部件及其关系，
+        /// 再逐条写出；只有主文档与 word/header*、word/footer* 部件执行循环展开与占位符替换，
+        /// 但任何部件的悬空引用都会被清理。
+        /// Core fill routine: the package is read in full first (the same cumulative inflated-size limit still
+        /// applies), macro and embedded-object parts together with the relationships pointing at them are
+        /// stripped, and the remaining entries are written out; loop expansion and placeholder replacement only
+        /// happen in the main document part and the word/header*, word/footer* parts, but dangling references
+        /// in any part are cleaned.
         /// </summary>
+        /// <remarks>
+        /// 模板来自第三方时，宏工程（vbaProject.bin、vbaData.xml）与嵌入对象（word/embeddings/*、
+        /// word/activeX/*）会随填充结果一起交到最终收件人手里，一次「填表」因此变成一次带宏文档的分发；
+        /// 这些部件不再随填充结果带走，无论引用它们的是主文档还是脚注、词汇表之类不展开占位符的部件。
+        /// 指向本机磁盘或网络共享的外部关系（file:、smb: 等）同样剔除，只留文字。
+        /// 剥离是自洽的：部件被删时它自己的 .rels 一并删除并继续下探，引用者里失效的 r:id 同步清理，
+        /// [Content_Types].xml 里对应的 Override 也删掉，绝不留指向不存在部件的关系。
+        /// When the template came from somebody else, the macro project (vbaProject.bin, vbaData.xml) and the
+        /// embedded objects (word/embeddings/*, word/activeX/*) would travel from the fill step straight to the
+        /// final recipient, turning "fill a form" into "distribute a macro-enabled document"; those parts are no
+        /// longer carried over, whether the referrer is the main document or a part without placeholders such as
+        /// footnotes or the glossary. External relationships that reach a local disk or a network share (file:,
+        /// smb: and the like) are dropped too, keeping only their text. The strip stays self-consistent: when a
+        /// part goes, its own .rels goes with it and the walk continues through it, the relationship ids that
+        /// stop resolving are cleaned from every referrer, and the matching Override entries in
+        /// [Content_Types].xml go with the part, so no relationship is ever left pointing at a missing part.
+        /// </remarks>
         /// <param name="templateData">模板 .docx 字节内容。The bytes of the template .docx package.</param>
         /// <param name="context">占位符数据上下文。The data context that supplies placeholder values.</param>
         /// <param name="options">模板选项。The template options.</param>
@@ -132,37 +153,348 @@ namespace Wisdom.Word
             using (MemoryStream output = new MemoryStream())
             {
                 long totalBytes = 0;
-                // 根关系部件也计入累计解压量，模板包的每一个字节都受同一总量上限约束。
-                // The root relationship part is counted too, so every byte of the template package is covered
-                // by the same cumulative limit.
-                string mainPart = FindMainPart(source, ref totalBytes);
+                // 整包一次性读入：根关系部件与每一个原样保留的条目都计入累计解压量，
+                // 模板包的字节数上限因此不受「是否会被改写」影响。
+                // The package is read in full: the root relationships part and every carried-over entry count
+                // toward the cumulative limit, so the size ceiling does not depend on whether a part is rewritten.
+                List<string> names = new List<string>();
+                Dictionary<string, byte[]> parts = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                foreach (ZipArchiveEntry entry in source.Entries)
+                {
+                    string entryName = entry.FullName.Replace('\\', '/');
+                    byte[] data = OfficePackageLimits.ReadEntryBytes(entry, ref totalBytes);
+                    if (!parts.ContainsKey(entryName)) names.Add(entryName);
+                    parts[entryName] = data;
+                }
+
+                string mainPart = FindMainPart(GetPartBytes(parts, "_rels/.rels"));
+                HashSet<string> droppedParts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // 每个部件登记自己失效的关系 ID，写出前据此清理引用，避免留下悬空 r:id。
+                // Every part records the relationship ids that stop resolving, so the references can be cleaned
+                // before writing and no dangling r:id is left behind.
+                Dictionary<string, HashSet<string>> dangling =
+                    new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                CollectUnsafeParts(parts, droppedParts, dangling);
+                HashSet<string> droppedPartNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string dropped in droppedParts) droppedPartNames.Add("/" + dropped);
+
                 using (ZipArchive target = new ZipArchive(output, ZipArchiveMode.Create, true))
                 {
-                    foreach (ZipArchiveEntry entry in source.Entries)
+                    foreach (string name in names)
                     {
-                        string name = entry.FullName.Replace('\\', '/');
-                        if (IsProcessedPart(name, mainPart))
+                        if (droppedParts.Contains(name)) continue;
+                        byte[] data = parts[name];
+                        if (IsRelationshipPart(name)) data = PruneRelationships(name, data, droppedParts, dangling);
+                        else if (string.Equals(name, "[Content_Types].xml", StringComparison.OrdinalIgnoreCase))
+                            data = PruneContentTypes(data, droppedPartNames);
+
+                        bool expandPlaceholders = IsProcessedPart(name, mainPart);
+                        HashSet<string> ids;
+                        bool hasDeadIds = dangling.TryGetValue(name, out ids) && ids.Count > 0;
+                        // 引用清理与占位符替换各自独立：上下文为 null 时不展开文本，但悬空 r:id 照样要清；
+                        // 反过来脚注、词汇表这类不展开占位符的部件，也只在被波及时才改写。
+                        // Reference cleanup and placeholder expansion are independent: with a null context no text
+                        // is expanded but dangling ids are still removed, and parts without placeholders, such as
+                        // footnotes or the glossary, are only rewritten when they are affected.
+                        if ((expandPlaceholders || hasDeadIds)
+                            && name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
                         {
-                            byte[] data = OfficePackageLimits.ReadEntryBytes(entry, ref totalBytes);
                             XDocument document = Wml.LoadXml(data);
-                            if (document != null && document.Root != null && context != null)
+                            if (document != null && document.Root != null)
                             {
-                                ProcessPart(document.Root, context, options);
-                                byte[] updated = Wml.SerializeXml(document);
-                                WriteEntry(target, name, updated);
-                            }
-                            else
-                            {
-                                WriteEntry(target, name, data);
+                                if (hasDeadIds) RemoveDanglingReferences(document.Root, ids);
+                                if (expandPlaceholders && context != null) ProcessPart(document.Root, context, options);
+                                data = Wml.SerializeXml(document);
                             }
                         }
-                        else
-                        {
-                            WriteEntry(target, name, OfficePackageLimits.ReadEntryBytes(entry, ref totalBytes));
-                        }
+                        WriteEntry(target, name, data);
                     }
                 }
                 return output.ToArray();
+            }
+        }
+
+        /// <summary>取某个部件的字节，不存在时返回 null。Returns the bytes of a part, or null when the package has no such entry.</summary>
+        /// <param name="parts">部件名到字节的映射。The map from part name to bytes.</param>
+        /// <param name="name">部件名。The part name.</param>
+        /// <returns>字节或 null。The bytes or null.</returns>
+        private static byte[] GetPartBytes(Dictionary<string, byte[]> parts, string name)
+        {
+            byte[] data;
+            return parts.TryGetValue(name, out data) ? data : null;
+        }
+
+        /// <summary>
+        /// 找出不能随填充结果带走的部件，并登记引用它们、因此不再可解析的关系 ID。
+        /// 剥离会向下递归：被删部件自己的 .rels 一并删除，其中引用的部件同样删除。
+        /// Collects the parts that must not be carried over and registers the relationship ids that reference
+        /// them and therefore stop resolving. The strip recurses: a dropped part loses its own .rels, and the
+        /// parts referenced from there are dropped as well.
+        /// </summary>
+        /// <param name="parts">全部部件字节。Every part in the package.</param>
+        /// <param name="droppedParts">需要剥离的部件名。The parts to strip.</param>
+        /// <param name="dangling">部件名到失效关系 ID 集合。The map from part name to its dead relationship ids.</param>
+        private static void CollectUnsafeParts(Dictionary<string, byte[]> parts, HashSet<string> droppedParts,
+            Dictionary<string, HashSet<string>> dangling)
+        {
+            Stack<string> pending = new Stack<string>();
+            foreach (KeyValuePair<string, byte[]> pair in parts)
+            {
+                if (IsRelationshipPart(pair.Key)) pending.Push(pair.Key);
+            }
+            HashSet<string> scanned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            while (pending.Count > 0)
+            {
+                string relsName = pending.Pop();
+                if (!scanned.Add(relsName)) continue;
+                string owner = OwnerPartOf(relsName);
+                XDocument document = Wml.LoadXml(GetPartBytes(parts, relsName));
+                if (document == null || document.Root == null) continue;
+                foreach (XElement relationship in document.Root.Elements())
+                {
+                    string id = (string)relationship.Attribute("Id");
+                    string target = (string)relationship.Attribute("Target");
+                    string mode = (string)relationship.Attribute("TargetMode");
+                    if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(target)) continue;
+                    if (string.Equals(mode, "External", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!WordFormatUtil.IsSafeHyperlinkTarget(target)) AddDeadId(dangling, owner, id);
+                        continue;
+                    }
+                    string resolved = ResolvePartPath(owner, target);
+                    if (resolved == null || !IsUnsafeCarryoverPart(resolved)) continue;
+                    DropPartWithReferences(parts, droppedParts, resolved, pending);
+                    // 主文档、页眉页脚之外的部件同样要记下失效 ID，否则正文里会留下指向已删部件的 r:id。
+                    // Parts other than the main document and the headers and footnotes must record the dead id
+                    // too, otherwise their text keeps an r:id pointing at a part that no longer exists.
+                    AddDeadId(dangling, owner, id);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 删除部件并连同它自己的关系文件一起下探。Drops a part together with its own relationships part.
+        /// </summary>
+        /// <param name="parts">全部部件字节。Every part in the package.</param>
+        /// <param name="droppedParts">被剥离的部件名。The stripped parts.</param>
+        /// <param name="name">待删部件路径。The part to drop.</param>
+        /// <param name="pending">待扫描的关系文件。The relationship parts still to scan.</param>
+        private static void DropPartWithReferences(Dictionary<string, byte[]> parts, HashSet<string> droppedParts,
+            string name, Stack<string> pending)
+        {
+            if (!droppedParts.Add(name)) return;
+            string childRels = RelationshipPartOf(name);
+            if (childRels == null || !parts.ContainsKey(childRels)) return;
+            droppedParts.Add(childRels);
+            pending.Push(childRels);
+        }
+
+        /// <summary>登记某个部件里失效的关系 ID。Records a dead relationship id inside a part.</summary>
+        /// <param name="dangling">部件名到失效关系 ID 集合。The map from part name to its dead ids.</param>
+        /// <param name="owner">归属部件路径。The owning part path.</param>
+        /// <param name="id">失效的关系 ID。The dead relationship id.</param>
+        private static void AddDeadId(Dictionary<string, HashSet<string>> dangling, string owner, string id)
+        {
+            if (string.IsNullOrEmpty(owner)) return;
+            HashSet<string> ids;
+            if (!dangling.TryGetValue(owner, out ids))
+            {
+                ids = new HashSet<string>(StringComparer.Ordinal);
+                dangling[owner] = ids;
+            }
+            ids.Add(id);
+        }
+
+        /// <summary>判断部件是否为宏工程或嵌入对象。Reports whether a part is a macro project or an embedded object.</summary>
+        /// <remarks>
+        /// 判定不能挂在 word/ 前缀上：../ 相对目标规范化后可能落在根级的 embeddings/、activeX/，
+        /// 挂前缀会让同一条关系绕开剥离。
+        /// The test must not hang on the word/ prefix: a normalised relative target can land on a root-level
+        /// embeddings/ or activeX/, and a prefix-bound test would let that same relationship dodge the strip.
+        /// </remarks>
+        /// <param name="name">部件路径名。The part path.</param>
+        /// <returns>不可随填充结果带走时返回 true。True when the part must not be carried over.</returns>
+        private static bool IsUnsafeCarryoverPart(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            string normalized = "/" + name.Replace('\\', '/');
+            if (normalized.IndexOf("/embeddings/", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            if (normalized.IndexOf("/activex/", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            string file = normalized.Substring(normalized.LastIndexOf('/') + 1);
+            return string.Equals(file, "vbaProject.bin", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(file, "vbaData.xml", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(file, "printers.bin", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 把关系目标解析为包内绝对部件路径；外部目标或解析失败返回 null。
+        /// Resolves a relationship target to an absolute part path inside the package; null for external
+        /// targets or when it cannot be resolved.
+        /// </summary>
+        /// <remarks>
+        /// 必须走 DocxPackage.ResolvePartPath 这条会消解 . 与 .. 的规范化路径：Word 与 LibreOffice 都会写出
+        /// ../embeddings/oleObject1.bin 这类相对目标，若只是字符串拼接就得到 word/../embeddings/... ，
+        /// 前缀判定永远不成立，宏与嵌入对象照样被带走，剥离逻辑静默失效。
+        /// The target has to go through DocxPackage.ResolvePartPath, which collapses dot segments: Word and
+        /// LibreOffice both emit relative targets such as ../embeddings/oleObject1.bin, and plain string
+        /// concatenation would yield word/../embeddings/... where the prefix test never matches, so the macro
+        /// and embedded parts would still be carried over and the strip would fail silently.
+        /// </remarks>
+        /// <param name="owner">引用者部件路径。The path of the part that owns the relationship.</param>
+        /// <param name="target">关系目标。The relationship target.</param>
+        /// <returns>包内部件路径。The part path inside the package.</returns>
+        private static string ResolvePartPath(string owner, string target)
+        {
+            if (string.IsNullOrEmpty(target)) return null;
+            string value = target.Replace('\\', '/');
+            if (Uri.IsWellFormedUriString(value, UriKind.Absolute)) return null;
+            return DocxPackage.ResolvePartPath(owner, value);
+        }
+
+        /// <summary>由 .rels 路径推出其归属部件。Derives the part a .rels file belongs to.</summary>
+        /// <param name="relsName">.rels 条目路径。The .rels entry path.</param>
+        /// <returns>归属部件路径；包级关系返回空字符串。The owning part path, empty for package-level relationships.</returns>
+        private static string OwnerPartOf(string relsName)
+        {
+            string normalized = relsName.Replace('\\', '/');
+            int index = normalized.LastIndexOf("_rels/", StringComparison.OrdinalIgnoreCase);
+            if (index < 0) return string.Empty;
+            // _rels/ 之前的前缀自带结尾斜杠，直接再拼 "/" 会得到 word//document.xml 这样的双斜杠路径。
+            // The prefix before _rels/ already ends with a slash, so appending another one would give
+            // word//document.xml and the owner would never match the part it belongs to.
+            string directory = normalized.Substring(0, index).TrimEnd('/');
+            string file = normalized.Substring(index + "_rels/".Length);
+            if (!file.EndsWith(".rels", StringComparison.OrdinalIgnoreCase)) return string.Empty;
+            string owner = file.Substring(0, file.Length - ".rels".Length);
+            if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(owner)) return owner;
+            return directory + "/" + owner;
+        }
+
+        /// <summary>
+        /// 由归属部件路径推出其关系文件路径。Derives the relationships part path of an owning part.
+        /// </summary>
+        /// <param name="part">部件路径。The part path.</param>
+        /// <returns>关系文件路径，部件名为空时返回 null。The relationships part path, null when the part name has no file name.</returns>
+        private static string RelationshipPartOf(string part)
+        {
+            if (string.IsNullOrEmpty(part)) return null;
+            string normalized = part.Replace('\\', '/');
+            int index = normalized.LastIndexOf('/');
+            string directory = index < 0 ? string.Empty : normalized.Substring(0, index);
+            string file = index < 0 ? normalized : normalized.Substring(index + 1);
+            if (file.Length == 0) return null;
+            return directory.Length == 0 ? "_rels/" + file + ".rels" : directory + "/_rels/" + file + ".rels";
+        }
+
+        /// <summary>判断条目是否为关系部件。Reports whether an entry is a relationships part.</summary>
+        /// <param name="name">条目路径。The entry path.</param>
+        /// <returns>是关系部件时返回 true。True for a .rels entry.</returns>
+        private static bool IsRelationshipPart(string name)
+        {
+            return name.IndexOf("_rels/", StringComparison.OrdinalIgnoreCase) >= 0
+                && name.EndsWith(".rels", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 删除指向被剥离部件或危险外部目标的关系条目。Removes relationship entries whose target was stripped or whose external target is unsafe.
+        /// </summary>
+        /// <param name="relsName">.rels 条目路径。The .rels entry path.</param>
+        /// <param name="data">关系部件字节。The relationship part bytes.</param>
+        /// <param name="droppedParts">被剥离的部件名。The stripped parts.</param>
+        /// <param name="dangling">部件名到失效关系 ID。The map from part to dead ids.</param>
+        /// <returns>改写后的关系部件字节。The rewritten relationship bytes.</returns>
+        private static byte[] PruneRelationships(string relsName, byte[] data, HashSet<string> droppedParts,
+            Dictionary<string, HashSet<string>> dangling)
+        {
+            string owner = OwnerPartOf(relsName);
+            HashSet<string> ids;
+            dangling.TryGetValue(owner, out ids);
+            XDocument document = Wml.LoadXml(data);
+            if (document == null || document.Root == null) return data;
+            List<XElement> dead = new List<XElement>();
+            foreach (XElement relationship in document.Root.Elements())
+            {
+                string id = (string)relationship.Attribute("Id");
+                string target = (string)relationship.Attribute("Target");
+                string mode = (string)relationship.Attribute("TargetMode");
+                if (id != null && ids != null && ids.Contains(id))
+                {
+                    dead.Add(relationship);
+                    continue;
+                }
+                if (!string.Equals(mode, "External", StringComparison.OrdinalIgnoreCase))
+                {
+                    string resolved = ResolvePartPath(owner, target);
+                    if (resolved != null && droppedParts.Contains(resolved)) dead.Add(relationship);
+                }
+            }
+            if (dead.Count == 0) return data;
+            for (int i = 0; i < dead.Count; i++) dead[i].Remove();
+            return Wml.SerializeXml(document);
+        }
+
+        /// <summary>删除 [Content_Types].xml 里指向被剥离部件的 Override。Removes the [Content_Types].xml overrides describing stripped parts.</summary>
+        /// <param name="data">内容类型部件字节。The content types part bytes.</param>
+        /// <param name="droppedPartNames">形如 /word/vbaProject.bin 的部件名。Part names shaped like /word/vbaProject.bin.</param>
+        /// <returns>改写后的字节。The rewritten bytes.</returns>
+        private static byte[] PruneContentTypes(byte[] data, HashSet<string> droppedPartNames)
+        {
+            if (droppedPartNames.Count == 0) return data;
+            XDocument document = Wml.LoadXml(data);
+            if (document == null || document.Root == null) return data;
+            XNamespace types = "http://schemas.openxmlformats.org/package/2006/content-types";
+            List<XElement> dead = new List<XElement>();
+            foreach (XElement entry in document.Root.Elements())
+            {
+                if (entry.Name != types + "Override") continue;
+                string partName = (string)entry.Attribute("PartName");
+                if (partName != null && droppedPartNames.Contains(partName)) dead.Add(entry);
+            }
+            if (dead.Count == 0) return data;
+            for (int i = 0; i < dead.Count; i++) dead[i].Remove();
+            return Wml.SerializeXml(document);
+        }
+
+        /// <summary>
+        /// 清理指向已删除关系的元素：超链接只去掉 r:id 保留文字，嵌入对象与控件整体移除，
+        /// 其余命名空间里无法判断的元素只摘掉 r:id，避免破坏它自己的结构。
+        /// Cleans up elements that pointed at a removed relationship: a hyperlink loses only its r:id and keeps
+        /// its text, an embedded object or an activeX control is removed whole, and for elements outside the
+        /// WordprocessingML namespace only the r:id is taken off so that their own structure stays intact.
+        /// </summary>
+        /// <param name="root">部件根元素。The part root element.</param>
+        /// <param name="ids">失效的关系 ID。The dead relationship ids.</param>
+        private static void RemoveDanglingReferences(XElement root, HashSet<string> ids)
+        {
+            List<XElement> objects = new List<XElement>();
+            List<XElement> hyperlinks = new List<XElement>();
+            foreach (XElement element in root.DescendantsAndSelf())
+            {
+                XAttribute attribute = element.Attribute(Wml.R + "id");
+                if (attribute == null || !ids.Contains(attribute.Value)) continue;
+                if (element.Name == Wml.W + "hyperlink") hyperlinks.Add(element);
+                else objects.Add(element);
+            }
+            for (int i = 0; i < hyperlinks.Count; i++)
+            {
+                XAttribute reference = hyperlinks[i].Attribute(Wml.R + "id");
+                if (reference != null) reference.Remove();
+            }
+            for (int i = 0; i < objects.Count; i++)
+            {
+                XElement target = objects[i];
+                XElement container = target.Ancestors(Wml.W + "object").FirstOrDefault();
+                if (container == null && target.Name.Namespace == Wml.W)
+                {
+                    container = target;
+                }
+                if (container == null)
+                {
+                    XAttribute reference = target.Attribute(Wml.R + "id");
+                    if (reference != null) reference.Remove();
+                    continue;
+                }
+                container.Remove();
             }
         }
 
@@ -207,20 +539,18 @@ namespace Wisdom.Word
 
         /// <summary>
         /// 通过包级关系 _rels/.rels 定位 officeDocument 主部件路径；解析失败时回退为 word/document.xml。
-        /// Locates the officeDocument main part through the package-level _rels/.rels file and falls back to
+        /// Locates the officeDocument main part through the package-level _rels/.rels bytes and falls back to
         /// word/document.xml when it cannot be resolved.
         /// </summary>
-        /// <param name="archive">模板 ZIP 包。The template ZIP package.</param>
-        /// <param name="totalBytes">已累计解压的字节数，读取根关系部件时同步累加。 Running total of decompressed bytes, increased while reading the root relationships part.</param>
+        /// <param name="rootRelationships">包级关系部件字节，包内没有该条目时为 null。The bytes of the package-level relationships part, null when the package has no such entry.</param>
         /// <returns>主文档部件路径。The path of the main document part.</returns>
-        private static string FindMainPart(ZipArchive archive, ref long totalBytes)
+        private static string FindMainPart(byte[] rootRelationships)
         {
-            ZipArchiveEntry rels = archive.GetEntry("_rels/.rels");
-            if (rels != null)
+            if (rootRelationships != null)
             {
                 try
                 {
-                    XDocument document = Wml.LoadXml(OfficePackageLimits.ReadEntryBytes(rels, ref totalBytes));
+                    XDocument document = Wml.LoadXml(rootRelationships);
                     if (document != null && document.Root != null)
                     {
                         foreach (XElement relationship in document.Root.Elements())

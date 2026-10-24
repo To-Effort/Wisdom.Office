@@ -141,12 +141,17 @@ namespace Wisdom.Pdf
         }
 
         /// <summary>
-        /// AES-CBC 解密（输入前 16 字节为 IV，使用 PKCS#7 填充）。
-        /// AES-CBC decryption (the first 16 bytes are the IV, using PKCS#7 padding).
+        /// AES-CBC 解密（输入前 16 字节为 IV，末尾按 PKCS#7 填充）。
+        /// AES-CBC decryption (the first 16 bytes are the IV, the tail is PKCS#7 padded).
         /// </summary>
         /// <param name="key">密钥。The key.</param>
         /// <param name="data">IV 加密文。The IV followed by the ciphertext.</param>
         /// <returns>明文。The plaintext.</returns>
+        /// <remarks>填充按宽容方式剥离：规范允许最后一个填充块写得随意，写出器也确实会漏掉补齐或填进非法字节；
+        /// 若交给框架校验，一个畸形对象就会让整份文档读不出来。剥离失败时保留原文，交给上层解析器容错。
+        /// Padding is stripped leniently: the specification leaves the final padding block free, and writers do
+        /// emit payloads that are unaligned or badly padded — strict validation would turn one malformed object
+        /// into an unreadable document. When the padding does not parse, the plaintext is kept as is.</remarks>
         public static byte[] AesDecrypt(byte[] key, byte[] data)
         {
             if (data == null || data.Length < 16) return new byte[0];
@@ -154,17 +159,46 @@ namespace Wisdom.Pdf
             {
                 aes.Key = key;
                 aes.Mode = CipherMode.CBC;
-                aes.Padding = PaddingMode.PKCS7;
+                aes.Padding = PaddingMode.None;
                 byte[] iv = new byte[16];
                 Buffer.BlockCopy(data, 0, iv, 0, 16);
                 aes.IV = iv;
-                byte[] cipher = new byte[data.Length - 16];
-                Buffer.BlockCopy(data, 16, cipher, 0, cipher.Length);
+                int start = 16;
+                int length = data.Length - 16;
+                // 末尾不足 16 字节的残块无法解密，只能丢弃：CBC 的完整块仍然给出全部可用明文。
+                // A trailing partial block cannot be decrypted, so it is dropped: the whole blocks still
+                // yield every usable plaintext byte.
+                length -= length % 16;
+                if (length <= 0) return new byte[0];
+                byte[] cipher = new byte[length];
+                Buffer.BlockCopy(data, start, cipher, 0, length);
+                byte[] plain;
                 using (ICryptoTransform decryptor = aes.CreateDecryptor())
                 {
-                    return decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
+                    plain = decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
                 }
+                return StripPkcs7Padding(plain);
             }
+        }
+
+        /// <summary>剥离 PKCS#7 填充；填充值不合法或越界时原样返回。Strips PKCS#7 padding; returns the input unchanged when the padding is invalid or overlong.</summary>
+        /// <param name="plain">解密后的明文。The decrypted bytes.</param>
+        /// <returns>去掉填充的明文。The plaintext without padding.</returns>
+        private static byte[] StripPkcs7Padding(byte[] plain)
+        {
+            if (plain.Length == 0) return plain;
+            int count = plain[plain.Length - 1];
+            // 先排除 0 与超过整块的填充值，再用固定长度比较：越界的字节数会让逐字节校验跑向负下标。
+            // Rule out 0 and a count larger than one block first; a byte-by-byte check alone could walk
+            // below the array start.
+            if (count <= 0 || count > 16 || count > plain.Length) return plain;
+            for (int i = plain.Length - count; i < plain.Length; i++)
+            {
+                if (plain[i] != (byte)count) return plain;
+            }
+            byte[] result = new byte[plain.Length - count];
+            Buffer.BlockCopy(plain, 0, result, 0, result.Length);
+            return result;
         }
 
         /// <summary>无填充、无 IV 的 AES-CBC 加密，用于 R6 的 UE/OE 与 Perms。Padding-free AES-CBC without an IV, used for R6 UE/OE and Perms.</summary>

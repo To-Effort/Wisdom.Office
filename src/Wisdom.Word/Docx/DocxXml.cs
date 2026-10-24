@@ -309,6 +309,10 @@ namespace Wisdom.Word
             settings.Encoding = new UTF8Encoding(false);
             settings.Indent = false;
             settings.OmitXmlDeclaration = document.Declaration == null;
+            // 正文里一个 0x01 就能让 XmlWriter 抛异常，整份文档写不出来；先丢弃 XML 不接受的字符。
+            // A single 0x01 in the body makes XmlWriter throw and the whole document unwritable, so the
+            // characters XML forbids are dropped first.
+            OfficeXmlText.Sanitize(document);
             using (MemoryStream stream = new MemoryStream())
             {
                 using (XmlWriter writer = XmlWriter.Create(stream, settings))

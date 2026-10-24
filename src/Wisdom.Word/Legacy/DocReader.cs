@@ -109,7 +109,16 @@ namespace Wisdom.Word
             {
                 int fcMin = ByteUtils.ReadInt32LittleEndian(wordStream, 0x18);
                 int fcMac = ByteUtils.ReadInt32LittleEndian(wordStream, 0x1C);
-                if (fcMac > fcMin && fcMac <= wordStream.Length)
+                // 两个偏移都直接来自文件，下界必须先钉住：fcMin 为负时 fcMac > fcMin 照样通过，
+                // 减法随即溢出成负数或正的越界长度，把 ArgumentOutOfRangeException 直接丢给调用方，
+                // 而不是文档约定的 InvalidDataException。钉住 0 <= fcMin < fcMac <= Length 之后
+                // 差值天然不会溢出，也不必再补一次减法比较。
+                // Both offsets come straight from the file, so the lower bound has to be pinned first: with a
+                // negative fcMin the "fcMac > fcMin" gate still passes, the subtraction then wraps into a
+                // negative or an out-of-range length, and ArgumentOutOfRangeException escapes to the caller
+                // instead of the documented InvalidDataException. Once 0 <= fcMin < fcMac <= Length holds the
+                // difference cannot overflow and no extra subtractive check is needed.
+                if (fcMin >= 0 && fcMac > fcMin && fcMac <= wordStream.Length)
                 {
                     text = DecodeAnsi(wordStream, fcMin, fcMac - fcMin, codePage);
                 }
@@ -450,7 +459,10 @@ namespace Wisdom.Word
                 int sections = ByteUtils.ReadInt32LittleEndian(stream, 24);
                 if (sections < 1) return;
                 int sectionOffset = ByteUtils.ReadInt32LittleEndian(stream, 44);
-                if (sectionOffset < 0 || sectionOffset + 8 > stream.Length) return;
+                // 减法比较：sectionOffset 来自文件，加上 8 之后可能回绕成负数而骗过上限。
+                // Compare by subtraction: sectionOffset comes from the file and adding 8 can wrap into a
+                // negative that then slips past the upper bound.
+                if (sectionOffset < 0 || 8 > stream.Length - sectionOffset) return;
                 int propertyCount = ByteUtils.ReadInt32LittleEndian(stream, sectionOffset + 4);
                 if (propertyCount <= 0 || propertyCount > 1024) return;
 
@@ -458,12 +470,15 @@ namespace Wisdom.Word
 
                 for (int i = 0; i < propertyCount; i++)
                 {
+                    // i 与 propertyCount 同量级，两处偏移都用减法核对，避免相加回绕。
+                    // i scales with propertyCount, so both offsets are checked subtractively instead of by
+                    // adding them together.
                     int entry = sectionOffset + 8 + i * 8;
-                    if (entry + 8 > stream.Length) break;
+                    if (entry < 0 || 8 > stream.Length - entry) break;
                     int propertyId = ByteUtils.ReadInt32LittleEndian(stream, entry);
                     int valueOffset = ByteUtils.ReadInt32LittleEndian(stream, entry + 4);
                     int position = sectionOffset + valueOffset;
-                    if (position < 0 || position + 4 > stream.Length) continue;
+                    if (position < 0 || 4 > stream.Length - position) continue;
                     int type = ByteUtils.ReadInt32LittleEndian(stream, position);
                     switch (propertyId)
                     {
@@ -528,7 +543,7 @@ namespace Wisdom.Word
                 int length = ByteUtils.ReadInt32LittleEndian(stream, position + 4);
                 if (length <= 0) return string.Empty;
                 int start = position + 8;
-                if (start + length > stream.Length) return null;
+                if (length > stream.Length - start) return null;
                 int textLength = length;
                 while (textLength > 0 && stream[start + textLength - 1] == 0) textLength--;
                 return DecodeAnsi(stream, start, textLength, codePage);
@@ -538,7 +553,10 @@ namespace Wisdom.Word
                 int chars = ByteUtils.ReadInt32LittleEndian(stream, position + 4);
                 if (chars <= 0) return string.Empty;
                 int start = position + 8;
-                if (start + chars * 2 > stream.Length) return null;
+                // UTF-16 的长度要先除后比：chars * 2 这一乘就能回绕成负数而通过上限检查。
+                // Divide before comparing for the UTF-16 length: the multiply by 2 alone can wrap into a
+                // negative that then passes the upper bound.
+                if (chars > (stream.Length - start) / 2) return null;
                 int textChars = chars;
                 while (textChars > 0 && stream[start + textChars * 2 - 2] == 0 && stream[start + textChars * 2 - 1] == 0) textChars--;
                 return Encoding.Unicode.GetString(stream, start, textChars * 2);

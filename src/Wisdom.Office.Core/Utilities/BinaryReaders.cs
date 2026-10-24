@@ -51,7 +51,10 @@ namespace Wisdom.Office.Core
         /// <returns>足够可读返回 true。True when enough bytes remain.</returns>
         public bool CanRead(int count)
         {
-            return _position + count <= End;
+            // 先减后比：count 是调用方给的声明长度，相加回绕成负数就会说"读得下"。
+            // Subtract before comparing: count is a declared length, and an additive check that wraps
+            // negative would claim the bytes are there.
+            return count >= 0 && count <= End - _position;
         }
 
         /// <summary>读取一个字节并前移位置。Reads one byte and advances the position.</summary>
@@ -120,7 +123,7 @@ namespace Wisdom.Office.Core
         /// <exception cref="EndOfStreamException">count 为负或剩余不足。count is negative or fewer bytes remain.</exception>
         public byte[] ReadBytes(int count)
         {
-            if (count < 0 || _position + count > End) throw new EndOfStreamException();
+            if (count < 0 || count > End - _position) throw new EndOfStreamException();
             byte[] result = new byte[count];
             Buffer.BlockCopy(_data, _position, result, 0, count);
             _position += count;
@@ -142,7 +145,7 @@ namespace Wisdom.Office.Core
         /// <exception cref="EndOfStreamException">count 为负或超出窗口。count is negative or exceeds the window.</exception>
         public void Skip(int count)
         {
-            if (count < 0 || _position + count > End) throw new EndOfStreamException();
+            if (count < 0 || count > End - _position) throw new EndOfStreamException();
             _position += count;
         }
 
@@ -150,6 +153,10 @@ namespace Wisdom.Office.Core
         /// <param name="position">新的绝对偏移。The new absolute offset.</param>
         public void Seek(int position)
         {
+            // 位置必须留在窗口内，否则后续读取会直接撞上数组越界而不是干净的流末尾。
+            // The position has to stay inside the window, otherwise the next read hits an index-out-of-range
+            // instead of a clean end-of-stream.
+            if (position < Offset || position > End) throw new EndOfStreamException();
             _position = position;
         }
     }
@@ -249,7 +256,7 @@ namespace Wisdom.Office.Core
         /// <exception cref="EndOfStreamException">count 为负或剩余不足。count is negative or fewer bytes remain.</exception>
         public byte[] ReadBytes(int count)
         {
-            if (count < 0 || _position + count > _end) throw new EndOfStreamException();
+            if (count < 0 || count > _end - _position) throw new EndOfStreamException();
             byte[] result = new byte[count];
             Buffer.BlockCopy(_data, _position, result, 0, count);
             _position += count;
@@ -261,7 +268,7 @@ namespace Wisdom.Office.Core
         /// <exception cref="EndOfStreamException">count 为负或超出窗口。count is negative or exceeds the window.</exception>
         public void Skip(int count)
         {
-            if (count < 0 || _position + count > _end) throw new EndOfStreamException();
+            if (count < 0 || count > _end - _position) throw new EndOfStreamException();
             _position += count;
         }
 
@@ -269,6 +276,7 @@ namespace Wisdom.Office.Core
         /// <param name="position">新的绝对偏移。The new absolute offset.</param>
         public void Seek(int position)
         {
+            if (position < 0 || position > _end) throw new EndOfStreamException();
             _position = position;
         }
     }

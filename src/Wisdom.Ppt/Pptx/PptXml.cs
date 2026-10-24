@@ -248,6 +248,10 @@ namespace Wisdom.Ppt
             settings.Encoding = new UTF8Encoding(false);
             settings.Indent = false;
             settings.OmitXmlDeclaration = document.Declaration == null;
+            // 形状里的文字同样可能带着 XML 不接受的控制字符，先清掉再序列化，避免整个包写不出来。
+            // Shape text can carry characters XML forbids too; they are dropped before serialising so the
+            // package stays writable.
+            OfficeXmlText.Sanitize(document);
             using (MemoryStream stream = new MemoryStream())
             {
                 using (XmlWriter writer = XmlWriter.Create(stream, settings))

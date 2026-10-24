@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using Wisdom.Office;
@@ -24,13 +25,331 @@ namespace Wisdom.Office.Tests
             RunStreamLengthOverflow();
             RunXrefStreamSizeBomb();
             RunDeepPageTree();
+            RunSyntaxNestingBomb();
             RunOutOfRangeObjectOffset();
             RunBareOperandBomb();
             RunHostilePngDimensions(outputDirectory);
             RunFormulaNestingBomb();
             RunStreamInputCeiling();
             RunUnresolvableCryptFilter();
+            RunAesPaddingTolerance();
+            RunXrefStartNumberWrap();
+            RunDeletedObjectNotResurrected();
+            RunObjectStreamFirstOutOfRange();
             Console.WriteLine("[hostile] hostile-input limits ok");
+        }
+
+        /// <summary>
+        /// 交叉表把区段起始号报成 int 上界附近：截断成 int 之后要么回绕成真实对象号、把对象指到别处，
+        /// 要么把写出端的 /Size 抬成负数。起始号必须封顶，越界的条目一律作废。
+        /// A classic xref subsection whose start number sits next to the int ceiling: truncated to int it either
+        /// wraps onto a real object number and redirects that object, or it lifts the writer's /Size into
+        /// negative territory. Object numbers have to be capped and out-of-range entries dropped.
+        /// </summary>
+        private static void RunXrefStartNumberWrap()
+        {
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << >> >>",
+                "<< /Length 17 >>\nstream\nBT (KEEPME) Tj ET\nendstream"
+            };
+            // 新节起始 4294967298 截断成 int 正好是 2，也就是真实的 Pages 节点。
+            // Truncating 4294967298 to int lands exactly on object 2, the real Pages node.
+            byte[] pdf = AssembleTwoSectionPdf(bodies, 1, 4294967298L,
+                new long[] { 12345L }, new int[] { 0 }, new string[] { "n" });
+
+            Exception failure = null;
+            int pages = -1;
+            int docPages = -1;
+            try
+            {
+                pages = PdfFile.Load(pdf).PageCount;
+                docPages = PdfDocument.Load(pdf).Pages.Count;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            Require(failure == null, "wrapped xref start number threw " + failure);
+            Require(pages == 1, "wrapped xref start number left " + pages + " pages");
+            Require(docPages == 1, "wrapped xref start number redirected the Pages node to " + docPages
+                + " pages");
+
+            // 起始号逼近 int 上界的第二节不能把写出端的 /Size 抬成负数。
+            // A second section near the int ceiling must not lift the writer's /Size into negatives.
+            byte[] high = AssembleTwoSectionPdf(bodies, 1, 2147483645L,
+                new long[] { 12345L, 12346L, 12347L }, new int[] { 0, 0, 0 },
+                new string[] { "n", "n", "f" });
+            byte[] saved = PdfFile.Load(high).SaveToBytes();
+            string savedText = Encoding.ASCII.GetString(saved);
+            Require(savedText.IndexOf("/Size -") < 0, "high xref start number wrote a negative /Size");
+            Require(savedText.IndexOf("-214748") < 0, "high xref start number wrote a wrapped object number");
+            Require(PdfFile.Load(saved).PageCount == 1, "the saved document no longer has its page");
+            Console.WriteLine("[hostile] xref start numbers capped");
+        }
+
+        /// <summary>
+        /// 最后一次增量更新标记为已释放的对象，绝不能从更早的 /Prev 段里复活：
+        /// 内容流一旦被复活，涂黑与删除就成了摆设。
+        /// An object the newest incremental update marks free must never be resurrected from an older /Prev
+        /// section: once a content stream comes back, redaction and deletion become cosmetic.
+        /// </summary>
+        private static void RunDeletedObjectNotResurrected()
+        {
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << >> >>",
+                "<< /Length 17 >>\nstream\nBT (SECRET) Tj ET\nendstream"
+            };
+            // 新节把页面对象标成 f，其余条目仍由基节供给。
+            // The newer section frees the page object; every other entry still comes from the base.
+            byte[] pdf = AssembleTwoSectionPdf(bodies, 1, 3L,
+                new long[] { 0L }, new int[] { 0 }, new string[] { "f" });
+
+            Exception failure = null;
+            int filePages = -1;
+            int docPages = -1;
+            try
+            {
+                filePages = PdfFile.Load(pdf).PageCount;
+                docPages = PdfDocument.Load(pdf).Pages.Count;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            Require(failure == null, "a freed object threw " + failure);
+            Require(filePages == 0, "the base section resurrected the deleted page: " + filePages + " pages");
+            Require(docPages == 0, "the reading model still resolved the freed page: " + docPages + " pages");
+            Console.WriteLine("[hostile] freed entries stay freed");
+        }
+
+        /// <summary>
+        /// 对象流的 /First 声明到正文之外：先减后比，越界就当作没有这个对象，
+        /// 不能拿 int 相加之后的位置去读，也不能按声明长度分配。
+        /// An object stream whose /First points beyond its body: bounds are checked by subtracting first, so the
+        /// entry is treated as absent instead of reading from a wrapped position or allocating the declared size.
+        /// </summary>
+        private static void RunObjectStreamFirstOutOfRange()
+        {
+            string[] bodies = new string[]
+            {
+                "<< /Type /ObjStm /N 1 /First 999999999 >>\nstream\n0 0\nendstream",
+                "<< /Type /Pages /Kids [] /Count 0 >>"
+            };
+            long[] offsets = ObjectOffsets(bodies);
+            byte[] rows = new byte[]
+            {
+                0, 0, 0, 0, 0, 0, 0,
+                1, (byte)(offsets[0] >> 24), (byte)(offsets[0] >> 16), (byte)(offsets[0] >> 8), (byte)offsets[0], 0, 0,
+                2, 0, 0, 0, 1, 0, 0
+            };
+            byte[] pdf = AssembleXrefStreamPdf(bodies, rows, 2, 3L, 0L, 3L);
+
+            Stopwatch watch = Stopwatch.StartNew();
+            int pages = -1;
+            Exception failure = null;
+            try
+            {
+                pages = PdfFile.Load(pdf).PageCount;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            watch.Stop();
+            Require(!(failure is OutOfMemoryException) && !(failure is OverflowException),
+                "an out-of-range /First leaked to " + (failure == null ? "null" : failure.GetType().Name));
+            Require(failure == null || failure is InvalidDataException,
+                "an out-of-range /First failed with " + (failure == null ? "none" : failure.GetType().Name));
+            Require(pages <= 0, "an out-of-range /First produced " + pages + " pages");
+            Require(watch.ElapsedMilliseconds < 10000,
+                "an out-of-range /First took " + watch.ElapsedMilliseconds + " ms");
+            Console.WriteLine("[hostile] object stream /First range-checked");
+        }
+
+        /// <summary>
+        /// 组装带两段经典交叉表的 PDF：基节按真实对象号登记，新节用给定的起始号与条目登记，
+        /// 新 trailer 通过 /Prev 指向基节，于是读取端先消费新节。
+        /// Assembles a PDF with two classic cross-reference sections: the base section lists the real object
+        /// numbers, the newer section lists the start number and rows supplied here, and the newer trailer
+        /// reaches the base through /Prev, so the reader consumes the newer section first.
+        /// </summary>
+        /// <param name="bodies">全部对象正文。The bodies of every object.</param>
+        /// <param name="rootNumber">trailer /Root 对象号。The trailer /Root object number.</param>
+        /// <param name="newerStart">新节起始对象号。The start number of the newer subsection.</param>
+        /// <param name="newerOffsets">新节条目偏移。The entry offsets of the newer subsection.</param>
+        /// <param name="newerGenerations">新节条目代次。The entry generations of the newer subsection.</param>
+        /// <param name="newerTypes">新节条目类型（n 或 f）。The entry types of the newer subsection.</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] AssembleTwoSectionPdf(string[] bodies, int rootNumber, long newerStart,
+            long[] newerOffsets, int[] newerGenerations, string[] newerTypes)
+        {
+            Encoding ascii = Encoding.ASCII;
+            long[] offsets = ObjectOffsets(bodies);
+            StringBuilder builder = new StringBuilder("%PDF-1.7\n");
+            for (int i = 0; i < bodies.Length; i++) builder.Append(RenderObject(i + 1, bodies[i]));
+
+            long baseAt = ascii.GetByteCount(builder.ToString());
+            builder.Append("xref\n0 ").Append(bodies.Length + 1).Append("\n0000000000 65535 f \n");
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                builder.Append(offsets[i].ToString("D10")).Append(" 00000 n \n");
+            }
+            builder.Append("trailer\n<< /Size ").Append(bodies.Length + 1)
+                .Append(" /Root ").Append(rootNumber).Append(" 0 R >>\nstartxref\n")
+                .Append(baseAt.ToString(CultureInfo.InvariantCulture)).Append("\n%%EOF\n");
+
+            long newerAt = ascii.GetByteCount(builder.ToString());
+            builder.Append("xref\n").Append(newerStart.ToString(CultureInfo.InvariantCulture))
+                .Append(' ').Append(newerOffsets.Length).Append('\n');
+            for (int i = 0; i < newerOffsets.Length; i++)
+            {
+                builder.Append(newerOffsets[i].ToString("D10")).Append(' ')
+                    .Append(newerGenerations[i].ToString("D5")).Append(' ')
+                    .Append(newerTypes[i]).Append(" \n");
+            }
+            builder.Append("trailer\n<< /Size ").Append(bodies.Length + 1)
+                .Append(" /Root ").Append(rootNumber).Append(" 0 R /Prev ")
+                .Append(baseAt.ToString(CultureInfo.InvariantCulture)).Append(" >>\nstartxref\n")
+                .Append(newerAt.ToString(CultureInfo.InvariantCulture)).Append("\n%%EOF\n");
+            return ascii.GetBytes(builder.ToString());
+        }
+
+        /// <summary>
+        /// AES-128 文档里填充不合规的串对象：写出器留下非 16 字节对齐的密文，或者填进非法填充字节时，
+        /// 口令校验通过后读取端仍要交出它本来可以还原的明文。
+        /// String objects whose AES-128 padding does not conform: when a writer leaves the ciphertext unaligned
+        /// or fills the padding with illegal bytes, the reader still owes the user the plaintext it is able to
+        /// recover once the password has been accepted.
+        /// </summary>
+        private static void RunAesPaddingTolerance()
+        {
+            byte[] id = Md5(Encoding.ASCII.GetBytes("aes-padding-probe"));
+            byte[] o = Concat(Md5(Encoding.ASCII.GetBytes("owner-a")), Md5(Encoding.ASCII.GetBytes("owner-b")));
+            byte[] key = ReferenceFileKey(PadPassword("pw"), o, -39, id, 4, 128, true);
+            byte[] u = Concat(Slice(Rc4Rounds(key, Md5(Concat(PasswordPaddingValue, id))), 0, 16), id);
+
+            Require(TitleOfEncryptedDocument(key, o, u, id, "PADTOLERANCE", false)
+                .StartsWith("PADTOLERANCE"),
+                "the whole blocks of an unaligned ciphertext must still decrypt");
+            Require(TitleOfEncryptedDocument(key, o, u, id, "PADTOLERANCE", true)
+                .StartsWith("PADTOLERANCE"),
+                "illegal padding bytes must not cost the reader the plaintext in front of them");
+            Console.WriteLine("[hostile] aes padding tolerated");
+        }
+
+        /// <summary>组装一份 AES-128 加密文档，把 /Title 写成填充有缺陷的密文串，返回读取端解密出的标题。
+        /// Assembles an AES-128 document whose /Title is a string with defective padding and returns the title
+        /// the reader decrypts from it.</summary>
+        /// <param name="key">文件密钥。The file key.</param>
+        /// <param name="o">/O 值。The /O value.</param>
+        /// <param name="u">/U 值。The /U value.</param>
+        /// <param name="id">trailer /ID 首元素。The first /ID element.</param>
+        /// <param name="plain">标题明文。The plaintext title.</param>
+        /// <param name="badPadding">true 写入非法填充字节，false 剪掉密文尾部使其不再对齐。
+        /// When true the padding bytes are illegal; when false the ciphertext tail is cut so it no longer
+        /// aligns to a block.</param>
+        /// <returns>解密后的标题。The decrypted title.</returns>
+        private static string TitleOfEncryptedDocument(byte[] key, byte[] o, byte[] u, byte[] id,
+            string plain, bool badPadding)
+        {
+            byte[] aesKey = AesObjectKey(key, 5, 0);
+            byte[] iv = Md5(Encoding.ASCII.GetBytes("initial-vector"));
+            byte[] data = Encoding.ASCII.GetBytes(plain);
+            // 明文至少要跨两个密集块：裁掉尾部字节后仍然留有可解密的整块。
+            // The plaintext has to span at least two blocks, so cutting the tail still leaves whole blocks.
+            int padded = ((data.Length + 15) / 16) * 16 + 16;
+            byte[] block = new byte[padded];
+            Buffer.BlockCopy(data, 0, block, 0, data.Length);
+            if (badPadding)
+            {
+                for (int i = data.Length; i < padded; i++) block[i] = 153;
+                // 只有最后一个字节像样合法：严格的 PKCS#7 校验在这里必然失败。
+                // Only the final byte looks legal, so strict PKCS#7 validation fails right here.
+                block[padded - 1] = 4;
+            }
+            byte[] cipher = Concat(iv, AesRaw(aesKey, iv, block));
+            if (!badPadding) cipher = Slice(cipher, 0, cipher.Length - 3);
+
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R /Info 5 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> >>",
+                "<< /Filter /Standard /V 4 /R 4 /Length 128 /P -39 /O <" + ToHex(o) + "> /U <" + ToHex(u) + ">"
+                    + " /CF << /StdCF << /CFM /AESV2 /Length 16 /AuthEvent /DocOpen >> >>"
+                    + " /StmF /StdCF /StrF /StdCF >>",
+                "<< /Title <" + ToHex(cipher) + "> >>"
+            };
+            byte[] pdf = AssembleClassicPdf(bodies, 1, null, "/Encrypt 4 0 R /ID [<" + ToHex(id)
+                + "> <" + ToHex(id) + ">] ");
+
+            PdfFile file = PdfFile.Load(pdf, "pw");
+            PdfDictionary catalog = file.Resolve(file.Trailer.Get("Root")) as PdfDictionary;
+            Require(catalog != null, "the crafted document must expose its catalog");
+            PdfDictionary info = file.Resolve(catalog.Get("Info")) as PdfDictionary;
+            Require(info != null, "the crafted document must expose its /Info dictionary through the catalog");
+            PdfString title = file.Resolve(info.Get("Title")) as PdfString;
+            Require(title != null, "the /Title entry must be a string");
+            return Encoding.ASCII.GetString(title.Bytes);
+        }
+
+        /// <summary>按算法 1 推出某个对象的 AES-128 子密钥（追加 sAlT）。
+        /// Derives the per-object AES-128 subkey through algorithm 1, appending the sAlT suffix.</summary>
+        /// <param name="fileKey">文件密钥。The file key.</param>
+        /// <param name="number">对象号。The object number.</param>
+        /// <param name="generation">代次。The generation number.</param>
+        /// <returns>16 字节子密钥。The 16-byte subkey.</returns>
+        private static byte[] AesObjectKey(byte[] fileKey, int number, int generation)
+        {
+            return Slice(Md5(Concat(Slice(fileKey, 0, 16), new byte[]
+            {
+                (byte)number,
+                (byte)(number >> 8),
+                (byte)(number >> 16),
+                (byte)generation,
+                (byte)(generation >> 8),
+                (byte)115,
+                (byte)65,
+                (byte)108,
+                (byte)84
+            })), 0, 16);
+        }
+
+        /// <summary>无填充的 AES-CBC 加密，用来精确控制密文末尾内容。
+        /// AES-CBC encryption without padding, so the ciphertext tail is exactly what the test writes.</summary>
+        /// <param name="key">子密钥。The subkey.</param>
+        /// <param name="iv">初始向量。The initialization vector.</param>
+        /// <param name="data">已对齐的明文。The aligned plaintext.</param>
+        /// <returns>密文。The ciphertext.</returns>
+        private static byte[] AesRaw(byte[] key, byte[] iv, byte[] data)
+        {
+            using (System.Security.Cryptography.Aes aes = System.Security.Cryptography.Aes.Create())
+            {
+                aes.Key = key;
+                aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+                aes.Padding = System.Security.Cryptography.PaddingMode.None;
+                aes.IV = iv;
+                using (System.Security.Cryptography.ICryptoTransform transform = aes.CreateEncryptor())
+                {
+                    return transform.TransformFinalBlock(data, 0, data.Length);
+                }
+            }
+        }
+
+        /// <summary>把字节写成 PDF 十六进制串的内容。Writes bytes as the body of a PDF hex string.</summary>
+        /// <param name="data">字节。The bytes.</param>
+        /// <returns>大写十六进制。Upper-case hexadecimal.</returns>
+        private static string ToHex(byte[] data)
+        {
+            StringBuilder builder = new StringBuilder(data.Length * 2);
+            for (int i = 0; i < data.Length; i++) builder.Append(((int)data[i]).ToString("X2"));
+            return builder.ToString();
         }
 
         /// <summary>/StmF 点名了 /CF 里不存在的过滤器时必须报错，而不是把密文当明文返回。A /StmF naming a filter that /CF never defines must raise instead of handing ciphertext back as plaintext.</summary>
@@ -178,6 +497,46 @@ namespace Wisdom.Office.Tests
             Require(watch.ElapsedMilliseconds < 10000, "xref stream /Size bomb took " + watch.ElapsedMilliseconds + " ms");
             Require(!(failure is OutOfMemoryException), "xref stream /Size bomb exhausted memory: " + failure);
             Require(pages <= 1, "xref stream /Size bomb reported " + pages + " pages");
+        }
+
+        /// <summary>
+        /// 十几万个左方括号构成的语法对象：数组与字典靠自递归下降，栈溢出不可捕获，会带走宿主进程，
+        /// 因此深度必须封顶成可捕获的读取失败。
+        /// A syntactic object built from a hundred thousand opening brackets: arrays and dictionaries descend by
+        /// recursion, and a stack overflow cannot be caught — it takes the host process with it — so the depth
+        /// has to be capped into a catchable read failure.
+        /// </summary>
+        private static void RunSyntaxNestingBomb()
+        {
+            int depth = 100000;
+            string nested = new string('[', depth) + new string(']', depth);
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [] /Count 0 /Probe " + nested + " >>"
+            };
+            byte[] pdf = AssembleClassicPdf(bodies, 1, null);
+
+            Stopwatch watch = Stopwatch.StartNew();
+            int pageCount = -1;
+            Exception failure = null;
+            try
+            {
+                pageCount = PdfFile.Load(pdf).PageCount;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            watch.Stop();
+            Require(watch.ElapsedMilliseconds < 15000, "nested-bracket object took " + watch.ElapsedMilliseconds + " ms");
+            Require(!(failure is OutOfMemoryException), "nested-bracket object exhausted memory: " + failure);
+            Require(failure == null || failure is InvalidDataException,
+                "nested-bracket object failed with " + (failure == null ? "none" : failure.GetType().Name + ": " + failure.Message));
+            Require(pageCount <= 0, "nested-bracket object reported " + pageCount + " pages");
+            Console.WriteLine("[hostile] syntactic nesting capped, failure="
+                + (failure == null ? "none, pages=" + pageCount.ToString(CultureInfo.InvariantCulture)
+                                    : failure.GetType().Name));
         }
 
         /// <summary>两万个单子节点的 Pages 链必须被深度上限掐断，而不是撑爆调用栈。A 20 000-deep chain of single-kid Pages nodes must be cut by the depth cap instead of the stack.</summary>

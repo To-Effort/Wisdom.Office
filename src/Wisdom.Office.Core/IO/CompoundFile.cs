@@ -121,9 +121,15 @@ namespace Wisdom.Office.Core
                 difatSector = ByteUtils.ReadUInt32LittleEndian(_data, sectorOffset + (entriesPerSector - 1) * 4);
             }
 
-            if (numFatSectors > 0 && fatSectorIds.Count > (int)numFatSectors)
+            // 扇区数是无符号声明值，直接强转 int 会得到负数，RemoveRange 随即抛
+            // ArgumentOutOfRangeException；按无符号比较截断，畸形头仍归为文件损坏。
+            // The declared sector count is unsigned; casting it to int yields a negative number and
+            // RemoveRange then throws ArgumentOutOfRangeException. Comparing as unsigned truncates the
+            // list instead, so a malformed header stays a corrupt-file case.
+            if (numFatSectors > 0 && numFatSectors < (uint)fatSectorIds.Count)
             {
-                fatSectorIds.RemoveRange((int)numFatSectors, fatSectorIds.Count - (int)numFatSectors);
+                int declaredFatSectors = (int)numFatSectors;
+                fatSectorIds.RemoveRange(declaredFatSectors, fatSectorIds.Count - declaredFatSectors);
             }
 
             List<uint> fat = new List<uint>();

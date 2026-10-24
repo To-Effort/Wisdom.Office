@@ -199,6 +199,10 @@ namespace Wisdom.Excel
         /// <returns>序列化后的字节内容。 The serialized byte content.</returns>
         public static byte[] SerializeXml(XDocument document)
         {
+            // 共享字符串、表名与文档属性都来路不明，一个 0x01 就会让 XmlWriter 抛异常，先去掉 XML 不接受的字符。
+            // Shared strings, sheet names and properties come from anywhere, and one 0x01 makes XmlWriter throw,
+            // so the characters XML forbids are dropped first.
+            OfficeXmlText.Sanitize(document);
             using (MemoryStream stream = new MemoryStream())
             {
                 using (XmlWriter writer = CreateStreamingWriter(stream, document.Declaration == null))

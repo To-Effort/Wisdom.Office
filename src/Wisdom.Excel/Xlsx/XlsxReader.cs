@@ -13,6 +13,10 @@ namespace Wisdom.Excel
     /// <summary>将 SpreadsheetML（.xlsx）包读取为统一工作簿模型。 Reads a SpreadsheetML (.xlsx) package into the unified workbook model.</summary>
     public static class XlsxReader
     {
+        /// <summary>Excel 网格的行上限。The Excel grid row limit.</summary>
+        private const int MaxGridRows = 1048576;
+        /// <summary>Excel 网格的列上限。The Excel grid column limit.</summary>
+        private const int MaxGridColumns = 16384;
         /// <summary>流式读取时逐节点比较用的主命名空间 URI。 The main namespace URI compared per node while streaming.</summary>
         private static readonly string MainNamespace = Xlsx.Main.NamespaceName;
 
@@ -677,10 +681,17 @@ namespace Wisdom.Excel
         {
             int rowIndex = Xlsx.ParseInt(reader.GetAttribute("r"), lastRowIndex + 1);
             if (rowIndex < 1) rowIndex = lastRowIndex + 1;
+            // 行号只是文件里的声明值：越出网格的行照样推进计数，但一个单元格也不写。
+            // 否则一行伪造的 r="2000000000" 就能把 LastRow 抬到二十亿，按行导出的循环
+            // 于是没完没了。
+            // The row number is only a declared value. A row past the grid still advances the counter but
+            // writes no cell, otherwise one forged r="2000000000" lifts LastRow into the billions and every
+            // row-by-row export spins forever.
+            bool withinGrid = rowIndex <= MaxGridRows;
             lastRowIndex = rowIndex;
             double height = Xlsx.ParseDouble(reader.GetAttribute("ht"), 0);
-            if (height > 0) sheet.SetRowHeight(rowIndex, height);
-            if (Xlsx.ParseBool(reader.GetAttribute("hidden"), false)) sheet.SetRowHidden(rowIndex, true);
+            if (withinGrid && height > 0) sheet.SetRowHeight(rowIndex, height);
+            if (withinGrid && Xlsx.ParseBool(reader.GetAttribute("hidden"), false)) sheet.SetRowHidden(rowIndex, true);
 
             if (reader.IsEmptyElement) return;
             int rowDepth = reader.Depth;
@@ -690,7 +701,7 @@ namespace Wisdom.Excel
                 if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == rowDepth) return;
                 if (reader.NodeType != XmlNodeType.Element) continue;
                 if (reader.Depth != rowDepth + 1 || reader.LocalName != "c") continue;
-                ReadCellStreaming(reader, sheet, styles, sharedStrings, date1904, rowIndex, ref lastColumnIndex);
+                ReadCellStreaming(reader, sheet, styles, sharedStrings, date1904, rowIndex, ref lastColumnIndex, withinGrid);
             }
         }
 
@@ -706,8 +717,9 @@ namespace Wisdom.Excel
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
         /// <param name="rowIndex">所属行号。 The owning row index.</param>
         /// <param name="lastColumnIndex">上一列号，用于缺失 r 属性时续列。 The previous column index, used to continue when the r attribute is missing.</param>
+        /// <param name="withinRow">所属行是否落在网格内；越界的行不写任何单元格。 Whether the owning row is inside the grid; a row outside it writes no cell at all.</param>
         private static void ReadCellStreaming(XmlReader reader, Worksheet sheet, XlsxStyles styles,
-            List<string> sharedStrings, bool date1904, int rowIndex, ref int lastColumnIndex)
+            List<string> sharedStrings, bool date1904, int rowIndex, ref int lastColumnIndex, bool withinRow)
         {
             string reference = reader.GetAttribute("r");
             string type = reader.GetAttribute("t");
@@ -790,6 +802,11 @@ namespace Wisdom.Excel
             {
                 return;
             }
+
+            // 列号同样不可信：缺 r 属性时按上一列续排，伪造的窄列能一路推出网格之外。
+            // Column numbers are just as untrusted: with no r attribute a cell continues from the previous
+            // column, so a forged run of narrow cells can walk straight out of the grid.
+            if (!withinRow || column < 1 || column > MaxGridColumns) return;
 
             Cell cell = sheet.GetCell(row, column);
             cell.Value = cellValue;

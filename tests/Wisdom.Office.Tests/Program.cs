@@ -89,9 +89,14 @@ namespace Wisdom.Office.Tests
             RunPptThemeTest(outputDirectory);
             RunPptTemplateTest(outputDirectory);
             RunMarkdownTest();
+            RunMarkdownLimitTest(outputDirectory);
             RunFormulaEngineTest();
             RunExcelEnhancementTest(outputDirectory);
             RunBatchConversionTest(outputDirectory);
+            RunOutputHardeningTest(outputDirectory);
+            RunExcelGridLimitTest(outputDirectory);
+            RunWriteOutputTest(outputDirectory);
+            RunResourceLimitTest(outputDirectory);
             RunSecurityTest(outputDirectory, pdfPath, docxPath, xlsxPath);
 
             Console.WriteLine("All tests finished.");

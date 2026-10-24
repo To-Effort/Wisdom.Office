@@ -172,9 +172,15 @@ namespace Wisdom.Pdf
             int colors = Math.Max(1, GetInt(parms, "Colors", 1, resolve));
             int bits = Math.Max(1, GetInt(parms, "BitsPerComponent", 8, resolve));
             int columns = Math.Max(1, GetInt(parms, "Columns", 1, resolve));
-            int bytesPerPixel = Math.Max(1, (colors * bits + 7) / 8);
-            int rowLength = (colors * bits * columns + 7) / 8;
-            if (rowLength <= 0) return data;
+            // 行长按 long 计算并设上限：三个参数相乘会溢出成小正值或负值，而上一行缓冲区正是按行宽分配的。
+            // The row length is computed in long arithmetic and capped: the product of the three parameters
+            // can overflow into a small positive or negative value, and the previous-row buffer is sized
+            // from that row length.
+            long rowBits = (long)colors * bits * columns;
+            if (rowBits <= 0 || rowBits > (long)PdfReadLimits.MaxDecodedStreamBytes * 8) return data;
+            int rowLength = (int)((rowBits + 7) / 8);
+            if (rowLength <= 0 || rowLength > data.Length) return data;
+            int bytesPerPixel = (int)Math.Min(rowLength, Math.Max(1, ((long)colors * bits + 7) / 8));
 
             if (predictor == 2)
             {

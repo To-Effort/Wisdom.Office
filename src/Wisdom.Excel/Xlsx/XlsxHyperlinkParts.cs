@@ -74,9 +74,20 @@ namespace Wisdom.Excel
             return parts;
         }
 
-        /// <summary>判断外部链接是否安全且长度合法：拒绝控制字符、超长地址与脚本类协议。Checks that an external target is safe and short enough: control characters, overlong targets and script schemes are rejected.</summary>
+        /// <summary>
+        /// 判断外部链接是否安全且长度合法：拒绝控制字符、超长地址、脚本类协议与指向本机或共享盘的协议。
+        /// Checks that an external target is safe and short enough: control characters, overlong targets, script
+        /// schemes and schemes that reach a local disk or a network share are rejected.
+        /// </summary>
         /// <param name="target">外部链接目标。The external target.</param>
         /// <returns>可写出时返回 true。True when it can be written.</returns>
+        /// <remarks>协议白名单与 <c>WordFormatUtil.IsSafeHyperlinkTarget</c> 保持一致：file: 与 smb: 会让收到文件的
+        /// 人点开自己并无意识的本地路径或 UNC 共享（Windows 打开 UNC 路径还会顺带发出凭据协商），
+        /// 因此不再放行，Markdown 侧早已禁止。
+        /// The allow-list mirrors <c>WordFormatUtil.IsSafeHyperlinkTarget</c>: file: and smb: are no longer accepted,
+        /// because a recipient can click a path on their own machine or a UNC share they never intended to touch
+        /// (opening a UNC path on Windows also triggers credential negotiation), and the Markdown side already
+        /// refused them.</remarks>
         private static bool IsSafeTarget(string target)
         {
             if (target.Length > MaxTargetLength) return false;
@@ -90,7 +101,7 @@ namespace Wisdom.Excel
             if (colon == 0) return false;
             string scheme = target.Substring(0, colon).ToLowerInvariant();
             return scheme == "http" || scheme == "https" || scheme == "mailto" || scheme == "ftp"
-                || scheme == "ftps" || scheme == "file" || scheme == "tel" || scheme == "smb";
+                || scheme == "ftps" || scheme == "tel" || scheme == "sms";
         }
 
         /// <summary>判断指定工作表是否含可写出的超链接。Reports whether a sheet has any writable hyperlink.</summary>

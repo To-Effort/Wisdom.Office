@@ -102,6 +102,8 @@ namespace Wisdom.Excel
             private readonly Dictionary<CellStyle, int> _styleIndexes = new Dictionary<CellStyle, int>();
             /// <summary>日期补格式场景下样式对象引用到索引的缓存。 Same cache for the date-format case where a cloned style with a default date format is registered.</summary>
             private readonly Dictionary<CellStyle, int> _dateStyleIndexes = new Dictionary<CellStyle, int>();
+            /// <summary>空样式日期单元所用补格式索引，首次需要时登记；-1 表示尚未登记。 CellXfs index of the date format used by an unstyled date cell, registered on first need; -1 until then.</summary>
+            private int _plainDateStyleIndex = -1;
             /// <summary>复用的单元格地址字符缓冲区，避免每个地址分配中间字符串。 Reusable character buffer for cell addresses, avoiding intermediate string allocations per address.</summary>
             private readonly char[] _addressBuffer = new char[24];
             /// <summary>索引值到其文本的懒分配缓存。 Lazily filled cache mapping an index value to its text.</summary>
@@ -815,23 +817,23 @@ namespace Wisdom.Excel
                     {
                         writer.WriteAttributeString("errorStyle", validation.ErrorStyle == DataValidationErrorStyle.Warning ? "warning" : "information");
                     }
-                    if (!string.IsNullOrEmpty(validation.PromptTitle)) writer.WriteAttributeString("promptTitle", validation.PromptTitle);
-                    if (!string.IsNullOrEmpty(validation.Prompt)) writer.WriteAttributeString("prompt", validation.Prompt);
-                    if (!string.IsNullOrEmpty(validation.ErrorTitle)) writer.WriteAttributeString("errorTitle", validation.ErrorTitle);
-                    if (!string.IsNullOrEmpty(validation.ErrorMessage)) writer.WriteAttributeString("error", validation.ErrorMessage);
+                    if (!string.IsNullOrEmpty(validation.PromptTitle)) writer.WriteAttributeString("promptTitle", OfficeXmlText.Strip(validation.PromptTitle));
+                    if (!string.IsNullOrEmpty(validation.Prompt)) writer.WriteAttributeString("prompt", OfficeXmlText.Strip(validation.Prompt));
+                    if (!string.IsNullOrEmpty(validation.ErrorTitle)) writer.WriteAttributeString("errorTitle", OfficeXmlText.Strip(validation.ErrorTitle));
+                    if (!string.IsNullOrEmpty(validation.ErrorMessage)) writer.WriteAttributeString("error", OfficeXmlText.Strip(validation.ErrorMessage));
                     writer.WriteAttributeString("sqref", reference);
                     string formula1 = NormalizeListFormula(validation);
                     if (!string.IsNullOrEmpty(formula1))
                     {
                         writer.WriteStartElement("formula1", main);
-                        writer.WriteString(formula1);
+                        writer.WriteString(OfficeXmlText.Strip(formula1));
                         writer.WriteEndElement();
                     }
                     if (!string.IsNullOrEmpty(validation.Formula2)
                         && (validation.Operator == DataValidationOperator.Between || validation.Operator == DataValidationOperator.NotBetween))
                     {
                         writer.WriteStartElement("formula2", main);
-                        writer.WriteString(validation.Formula2);
+                        writer.WriteString(OfficeXmlText.Strip(validation.Formula2));
                         writer.WriteEndElement();
                     }
                     writer.WriteEndElement();
@@ -1148,8 +1150,26 @@ namespace Wisdom.Excel
             private int GetStyleIndex(Cell cell)
             {
                 CellStyle style = cell.Style;
-                if (style == null) return 0;
-                bool dateFallback = cell.Value is DateTime && !style.IsDateFormat();
+                bool isDate = cell.Value is DateTime;
+                if (style == null)
+                {
+                    // 空样式不等于「这一格不需要日期格式」：不补 numFmt，日期就以 General 写成 45064 这样的
+                    // 序列号，收件人看到的是一串数字而不是日期。补的格式必须从 xf 0 的默认样式派生，
+                    // 直接 new CellStyle() 会顺带把 Calibri 预设写进包里。
+                    // A null style does not mean "this cell needs no date format": without a numFmt the date goes
+                    // out as a General-format serial such as 45064 and the recipient sees digits. The format has to
+                    // be derived from the default style behind xf 0, because a plain new CellStyle() would carry the
+                    // preset Calibri font into the package.
+                    if (!isDate) return 0;
+                    if (_plainDateStyleIndex < 0)
+                    {
+                        CellStyle adjusted = _styles.DefaultStyle.Clone();
+                        adjusted.NumberFormat = "yyyy-mm-dd";
+                        _plainDateStyleIndex = _styles.Register(adjusted);
+                    }
+                    return _plainDateStyleIndex;
+                }
+                bool dateFallback = isDate && !style.IsDateFormat();
                 Dictionary<CellStyle, int> cache = dateFallback ? _dateStyleIndexes : _styleIndexes;
                 int cached;
                 if (cache.TryGetValue(style, out cached)) return cached;
@@ -1233,7 +1253,20 @@ namespace Wisdom.Excel
                         double number;
                         if (TryGetNumber(value, out number))
                         {
-                            text = NumberText(number);
+                            if (double.IsNaN(number) || double.IsInfinity(number))
+                            {
+                                // 数字单元存不下 NaN 与无穷：写出 <v>NaN</v> 是非法数值，Excel 会把整包判为
+                                // 需要修复；按 Excel 自己的表示法落成 #NUM! 错误单元。
+                                // A numeric cell cannot hold NaN or infinity: <v>NaN</v> is not a legal number and
+                                // Excel declares the whole package in need of repair, so the value lands on
+                                // Excel's own representation of an unrepresentable result, the #NUM! error.
+                                type = "e";
+                                text = "#NUM!";
+                            }
+                            else
+                            {
+                                text = NumberText(number);
+                            }
                         }
                         else
                         {
@@ -1259,13 +1292,18 @@ namespace Wisdom.Excel
                 if (hasFormula)
                 {
                     writer.WriteStartElement("f", main);
-                    writer.WriteString(formula);
+                    // 流式写法绕开了 SerializeXml 的统一清洗，公式与缓存值自己把非法字符去掉，
+                    // 否则一格脏文本就让 XmlWriter 抛异常、整份工作簿写坏。
+                    // This streaming path bypasses the clean-up inside SerializeXml, so the formula and the cached
+                    // value drop the illegal characters themselves — otherwise one dirty cell throws in XmlWriter
+                    // and the whole workbook fails to be written.
+                    writer.WriteString(OfficeXmlText.Strip(formula));
                     writer.WriteEndElement();
                 }
                 if (value != null)
                 {
                     writer.WriteStartElement("v", main);
-                    writer.WriteString(text);
+                    writer.WriteString(OfficeXmlText.Strip(text));
                     writer.WriteEndElement();
                 }
                 writer.WriteEndElement();
@@ -1373,10 +1411,14 @@ namespace Wisdom.Excel
                 /// <summary>下一个可用的自定义格式编号（从 164 起）。 Next available custom format id (starting at 164).</summary>
                 private int _nextFormatId = 164;
 
+                /// <summary>登记为 xf 0 的工作簿默认样式，供空样式的单元格派生使用。The workbook default style registered as xf 0, the base for cells that carry no style.</summary>
+                public readonly CellStyle DefaultStyle;
+
                 /// <summary>初始化必需占位项：fills 前两位（none、gray125）、空边框，并登记默认样式作为 xf 0。 Seeds the mandatory placeholders: the first two fills (none, gray125), an empty border, and registers the default style as xf 0.</summary>
                 /// <param name="defaultStyle">工作簿默认样式。 Workbook default style.</param>
                 public StyleRegistry(CellStyle defaultStyle)
                 {
+                    DefaultStyle = defaultStyle;
                     _fills.Add(new FillEntry(null));
                     _fills.Add(new FillEntry(null));
                     _fillIds["none"] = 0;

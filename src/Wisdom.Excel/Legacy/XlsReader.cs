@@ -16,6 +16,10 @@ namespace Wisdom.Excel
     /// </summary>
     public static class XlsReader
     {
+        /// <summary>旧格式的行上限（BIFF8 为 65536 行）。The legacy row limit (BIFF8 has 65536 rows).</summary>
+        private const int LegacyMaxRows = 65536;
+        /// <summary>旧格式的列上限（BIFF8 为 256 列）。The legacy column limit (BIFF8 has 256 columns).</summary>
+        private const int LegacyMaxColumns = 256;
         /// <summary>从文件路径加载 .xls 工作簿（包含全部隐藏内容）。</summary>
         /// <param name="path">.xls 文件路径。</param>
         /// <returns>解析后的工作簿模型。</returns>
@@ -849,6 +853,12 @@ namespace Wisdom.Excel
             /// <returns>写入的单元格。</returns>
             private Cell SetCell(Worksheet sheet, int row, int column, int xf, object value)
             {
+                // 行列号全部来自记录字节，MULRK 一类还能靠尾部填充列一路加下去；
+                // 越出 BIFF8 网格的条目直接丢弃，免得模型带着打不开的行列继续往下走。
+                // Row and column come straight from the record bytes, and MULRK-style records keep counting
+                // through their tail entries. Anything past the BIFF8 grid is dropped so the model never
+                // carries a row or column no writer can emit.
+                if (row < 0 || row >= LegacyMaxRows || column < 0 || column >= LegacyMaxColumns) return null;
                 Cell cell = sheet.GetCell(row + 1, column + 1);
                 cell.Value = value;
                 cell.Style = GetStyle(xf);
@@ -1008,9 +1018,14 @@ namespace Wisdom.Excel
                 : DecodeLatin1(data, position, bytes);
             position += bytes;
 
-            int skip = runs * 4 + extendedLength;
+            // 先算 long 再夹取：extendedLength 可达 int 上界，int 相加翻负之后
+            // position 会倒退，同一段字节被反复当字符串读。
+            // Add in long before clamping: extendedLength reaches the int ceiling, and once the int sum
+            // wraps negative the cursor moves backwards and the same bytes are re-read as strings.
+            long skip = (long)runs * 4 + extendedLength;
             if (skip > data.Length - position) skip = data.Length - position;
-            position += skip;
+            if (skip < 0) skip = 0;
+            position += (int)skip;
             return value;
         }
 
@@ -1132,7 +1147,8 @@ namespace Wisdom.Excel
                     consumed += take;
                 }
 
-                SkipRaw(runs * 4 + extendedLength);
+                long skipBytes = (long)runs * 4 + extendedLength;
+                SkipRaw(skipBytes > int.MaxValue ? int.MaxValue : (int)skipBytes);
                 return builder.ToString();
             }
 

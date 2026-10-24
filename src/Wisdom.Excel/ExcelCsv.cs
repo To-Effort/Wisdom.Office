@@ -18,8 +18,22 @@ namespace Wisdom.Excel
         public Encoding Encoding { get; set; }
         /// <summary>读取时的工作表名称，默认 "Sheet1"。The worksheet name used when reading, "Sheet1" by default.</summary>
         public string SheetName { get; set; }
+        /// <summary>
+        /// 写出时是否中和「看起来像公式」的文本字段，默认关闭。Whether text fields that look like formulas are neutralized, disabled by default.
+        /// </summary>
+        /// <remarks>
+        /// 打开后，以 = + - @ 或制表符开头的文本字段会在前面加一个单引号，Excel 与 WPS 打开 CSV 时便不再把它们当公式执行
+        /// （CSV 公式注入防护）。只对文本单元格生效，数值与日期不受影响；代价是导出值与原始文本不再逐字相等，
+        /// 因此默认关闭以保持写出再读回的往返一致，供不可信内容落地成报表的场景显式打开。
+        /// When enabled, a text field starting with = + - @ or a tab gains a leading apostrophe, so Excel and WPS no
+        /// longer evaluate it as a formula when the CSV is opened (CSV formula-injection protection). Only text cells
+        /// are touched, numbers and dates stay as they were; the cost is that the exported value no longer equals the
+        /// original text byte for byte, so the round trip stays exact by default and callers handling untrusted
+        /// content turn this on explicitly.
+        /// </remarks>
+        public bool EscapeFormulaLikeText { get; set; }
 
-        /// <summary>创建默认选项：逗号分隔、输出 BOM、UTF-8、"Sheet1"。Creates default options: comma-separated, BOM written, UTF-8 and "Sheet1".</summary>
+        /// <summary>创建默认选项：逗号分隔、输出 BOM、UTF-8、"Sheet1"、不转义公式样式文本。Creates default options: comma-separated, BOM written, UTF-8, "Sheet1" and no formula-like escaping.</summary>
         public ExcelCsvOptions()
         {
             Separator = ',';
@@ -81,6 +95,7 @@ namespace Wisdom.Excel
             if (sheet == null) throw new ArgumentNullException("sheet");
             if (writer == null) throw new ArgumentNullException("writer");
             char separator = ValidateSeparator(options == null ? ',' : options.Separator);
+            bool escape = options != null && options.EscapeFormulaLikeText;
             int lastRow = sheet.LastRow;
             IEnumerator<Cell> cells = sheet.Cells.GetEnumerator();
             bool hasCell = cells.MoveNext();
@@ -96,10 +111,10 @@ namespace Wisdom.Excel
                     {
                         while (nextColumn < cell.Column)
                         {
-                            WriteField(line, separator, string.Empty, ref first);
+                            WriteField(line, separator, string.Empty, ref first, false);
                             nextColumn++;
                         }
-                        WriteField(line, separator, FormatValue(cell.Value), ref first);
+                        WriteField(line, separator, FormatValue(cell.Value), ref first, escape && cell.Value is string);
                         nextColumn = cell.Column + 1;
                     }
                     hasCell = cells.MoveNext();
@@ -166,6 +181,7 @@ namespace Wisdom.Excel
             while ((value = reader.Read()) >= 0)
             {
                 char c = (char)value;
+                if (field.Length > MaxFieldChars) throw new InvalidDataException("A CSV field exceeds the maximum length.");
                 if (inQuotes)
                 {
                     if (c == '"')
@@ -201,7 +217,7 @@ namespace Wisdom.Excel
                 }
                 if (c == separator)
                 {
-                    fields.Add(new CsvField(field.ToString(), quoted));
+                    AddField(fields, field, quoted);
                     field.Length = 0;
                     quoted = false;
                     continue;
@@ -209,7 +225,7 @@ namespace Wisdom.Excel
                 if (c == '\r' || c == '\n')
                 {
                     if (c == '\r' && reader.Peek() == '\n') reader.Read();
-                    fields.Add(new CsvField(field.ToString(), quoted));
+                    AddField(fields, field, quoted);
                     yield return fields;
                     fields = new List<CsvField>();
                     field.Length = 0;
@@ -220,9 +236,24 @@ namespace Wisdom.Excel
             }
             if (field.Length > 0 || quoted || fields.Count > 0)
             {
-                fields.Add(new CsvField(field.ToString(), quoted));
+                AddField(fields, field, quoted);
                 yield return fields;
             }
+        }
+
+        /// <summary>
+        /// 收下当前字段：列数在攒的过程中就封顶，不等整条记录拼完才报错。
+        /// Accepts the current field, capping the column count while the record is still being built instead of
+        /// after it is fully materialised.
+        /// </summary>
+        /// <param name="fields">已收下的字段。The fields collected so far.</param>
+        /// <param name="field">当前字段缓冲。The buffer of the current field.</param>
+        /// <param name="quoted">当前字段是否带引号。Whether the current field was quoted.</param>
+        private static void AddField(List<CsvField> fields, StringBuilder field, bool quoted)
+        {
+            if (fields.Count >= MaxColumns) throw new InvalidDataException("The CSV file exceeds the Excel column limit.");
+            if (field.Length > MaxFieldChars) throw new InvalidDataException("A CSV field exceeds the maximum length.");
+            fields.Add(new CsvField(field.ToString(), quoted));
         }
 
         /// <summary>校验分隔符不能是引号或换行符。Validates that the separator is neither a quote nor a line break.</summary>
@@ -243,11 +274,18 @@ namespace Wisdom.Excel
         /// <param name="separator">字段分隔符。The field separator.</param>
         /// <param name="value">字段文本。The field text.</param>
         /// <param name="first">是否为本行第一个字段（负责补分隔符）。Whether this is the first field of the row (it writes the leading separator otherwise).</param>
-        private static void WriteField(StringBuilder line, char separator, string value, ref bool first)
+        /// <param name="neutralize">是否给公式样式文本加前导单引号。Whether formula-looking text gains a leading apostrophe.</param>
+        private static void WriteField(StringBuilder line, char separator, string value, ref bool first, bool neutralize)
         {
             if (!first) line.Append(separator);
             first = false;
             if (value == null) return;
+            // 前导单引号是 Excel 与 WPS 公认的「这是文本」标记：等于、加减、@ 与制表符开头的文本
+            // 直接落地到 CSV 会在打开时被当公式执行，来源不可信时就是注入通道。
+            // The leading apostrophe is the marker Excel and WPS read as "this is text": text beginning with an
+            // equals sign, a sign, @ or a tab would otherwise be evaluated as a formula when the CSV is opened,
+            // which is an injection channel whenever the content did not come from the caller.
+            if (neutralize && value.Length > 0 && IsFormulaTrigger(value[0])) value = "'" + value;
             bool quote = false;
             for (int i = 0; i < value.Length; i++)
             {
@@ -275,6 +313,14 @@ namespace Wisdom.Excel
                 line.Append(c);
             }
             line.Append('"');
+        }
+
+        /// <summary>字段首字符是否会让电子表格把文本当公式或命令执行。Whether a field's first character makes a spreadsheet treat the text as a formula or command.</summary>
+        /// <param name="first">首字符。The first character.</param>
+        /// <returns>需要中和时返回 true。True when the field has to be neutralized.</returns>
+        private static bool IsFormulaTrigger(char first)
+        {
+            return first == '=' || first == '+' || first == '-' || first == '@' || first == '\t' || first == '\r';
         }
 
         /// <summary>把单元格值格式化为 CSV 文本：日期用 ISO 时间、布尔用 TRUE/FALSE、数值用不变区域格式。Formats a cell value as CSV text: dates use ISO timestamps, booleans use TRUE/FALSE and numbers use the invariant culture.</summary>

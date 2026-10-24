@@ -38,6 +38,12 @@ namespace Wisdom.Pdf
 
         /// <summary>交叉表：对象号到其存储位置的映射。Cross-reference map from object number to its storage location.</summary>
         private readonly Dictionary<int, XrefEntry> _xref = new Dictionary<int, XrefEntry>();
+        /// <summary>已释放（type 0 或 f）的对象号，阻止更早的 /Prev 段把它们复活。
+        /// Released object numbers (type 0 or f) so an older /Prev section cannot resurrect them.</summary>
+        private readonly HashSet<int> _freeNumbers = new HashSet<int>();
+        /// <summary>本节读到但尚未生效的空闲号，等 /XRefStm 读完再登记。
+        /// Free numbers seen in the current section, held back until its /XRefStm companion is read.</summary>
+        private readonly List<int> _deferredFree = new List<int>();
         /// <summary>已加载对象的缓存，对象号到对象。Cache of loaded objects, keyed by object number.</summary>
         private readonly Dictionary<int, PdfObject> _objects = new Dictionary<int, PdfObject>();
         /// <summary>正在加载中的对象号，用于阻断循环引用导致的无限递归。Object numbers currently being loaded; breaks reference cycles.</summary>
@@ -253,6 +259,7 @@ namespace Wisdom.Pdf
                 {
                     ReadXrefStreamAt(section.XRefStreamOffset);
                 }
+                FlushFreeNumbers();
                 current = section.Previous;
             }
             return any;
@@ -325,9 +332,21 @@ namespace Wisdom.Pdf
                     long entryOffset = parser.ReadOffset();
                     int generation = parser.ReadInteger();
                     string type = parser.ReadKeyword();
+                    // 起始号是无上限 long，截断会回绕成小对象号；f 条目也要记下，
+                    // 否则最后一次增量更新删除的对象会从更早的 /Prev 段复活。
+                    // The start is an unbounded long, so truncation wraps into a small object number; the f
+                    // entries have to be remembered too, otherwise an object deleted by the last incremental
+                    // update is resurrected from an older /Prev section.
+                    long numberLong = start + i;
+                    if (numberLong > PdfReadLimits.MaxObjectNumber) break;
+                    int number = (int)numberLong;
                     if (type == "n")
                     {
-                        AddEntry((int)(start + i), new XrefEntry { Type = 1, Offset = entryOffset, Generation = generation });
+                        AddEntry(number, new XrefEntry { Type = 1, Offset = entryOffset, Generation = generation });
+                    }
+                    else if (type == "f")
+                    {
+                        _deferredFree.Add(number);
                     }
                 }
             }
@@ -418,7 +437,7 @@ namespace Wisdom.Pdf
                     // Subtract before comparing to avoid overflow; stop once the entry number leaves int range.
                     if (position > data.Length - rowLength) return;
                     long numberLong = start + i;
-                    if (numberLong > int.MaxValue) return;
+                    if (numberLong > PdfReadLimits.MaxObjectNumber) return;
                     long[] fields = new long[widthValues.Length];
                     for (int f = 0; f < widthValues.Length; f++)
                     {
@@ -449,8 +468,37 @@ namespace Wisdom.Pdf
                             ObjectIndex = (int)fields[2]
                         });
                     }
+                    else if (type == 0)
+                    {
+                        // 已释放条目只攒下号码，本节读完（含 /XRefStm）后才由 AddEntry 拦住更早段的同号条目。
+                        // A released entry only collects the number; once the section, /XRefStm included, has
+                        // been read, AddEntry blocks the same number coming from an older section.
+                        _deferredFree.Add(objectNumber);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// 把本节攒下的空闲号正式登记为屏蔽。混合交叉表的经典段里那些 f 条目只是占位，
+        /// 同一对象真正活着的那份在 /XRefStm 流中，所以必须等伴生流读完再屏蔽，
+        /// 且已经登记成功的号码不再回头屏蔽。
+        /// Publishes the free numbers collected for this section. In a hybrid file the f rows of the classic
+        /// table are only placeholders and the object really lives in the /XRefStm stream, so the numbers are
+        /// withheld until that companion is read, and a number already registered is never blocked again.
+        /// </summary>
+        private void FlushFreeNumbers()
+        {
+            for (int i = 0; i < _deferredFree.Count; i++)
+            {
+                int number = _deferredFree[i];
+                if (number > 0 && number <= PdfReadLimits.MaxObjectNumber
+                    && !_xref.ContainsKey(number))
+                {
+                    _freeNumbers.Add(number);
+                }
+            }
+            _deferredFree.Clear();
         }
 
         /// <summary>
@@ -462,7 +510,12 @@ namespace Wisdom.Pdf
         /// Existing entries win, since sections are visited newest first.</remarks>
         private void AddEntry(int number, XrefEntry entry)
         {
-            if (number <= 0 || _xref.ContainsKey(number)) return;
+            // 对象号封顶：畸形 /Index 不能把对象号抬到 int 上界；已释放的号不再登记。
+            // Object numbers are capped so a malformed /Index cannot lift them to the int ceiling, and a
+            // number already marked released is never registered again.
+            if (number <= 0 || number > PdfReadLimits.MaxObjectNumber) return;
+            if (_freeNumbers.Contains(number)) return;
+            if (_xref.ContainsKey(number)) return;
             // 上限兜底：畸形交叉表可声明海量条目，字典无节制增长会直接吃满内存。
             // Ceiling: a malformed cross-reference table can declare millions of entries and grow this
             // dictionary until the process runs out of memory.
@@ -482,6 +535,9 @@ namespace Wisdom.Pdf
             keys.Sort();
             for (int i = 0; i < keys.Count; i++)
             {
+                // 全文扫描到的对象头同样是声明值，守同一个封顶。
+                // Scanned object headers are declared values too and face the same cap.
+                if (keys[i] > PdfReadLimits.MaxObjectNumber) continue;
                 _xref[keys[i]] = found[keys[i]];
             }
 
@@ -683,8 +739,14 @@ namespace Wisdom.Pdf
                 }
             }
             if (offset < 0) return null;
+            // /First 与相对偏移都来自声明值，先减后比：相加回绕出的小正数会绕过范围检查，
+            // 于是从流中间随便找个位置解析，返回的是毫不相干的对象。
+            // Both /First and the relative offset come from declared values, so bounds are checked by
+            // subtraction: a wrapped sum that looks small slips past the range test and the parser then
+            // hands back an unrelated object decoded from the middle of the stream.
+            if (first < 0 || offset > data.Length - first) return null;
             int position = first + offset;
-            if (position < 0 || position >= data.Length) return null;
+            if (position >= data.Length) return null;
             PdfParser parser = new PdfParser(data, position, ResolveReference);
             return parser.ParseObject();
         }

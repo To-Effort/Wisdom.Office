@@ -39,6 +39,15 @@ namespace Wisdom.Word
         private readonly Dictionary<string, string> _bookmarkNamesById = new Dictionary<string, string>(StringComparer.Ordinal);
 
         /// <summary>
+        /// 本部件内按关系 id 缓存的图片。同一张图被引用几百次时，逐次解包会把整幅图的字节复制几百份塞进模型，
+        /// 而每一次解包都再扣一遍包的总量预算，合法的图文混排因此会被误判成超限。
+        /// Images of this part keyed by relationship id: reading the part once per reference copies the whole
+        /// picture into the model hundreds of times, and every read charges the package budget again, so an
+        /// ordinary document with a repeated logo ends up reported as over the limit.
+        /// </summary>
+        private readonly Dictionary<string, OfficeImage> _imageCache = new Dictionary<string, OfficeImage>(StringComparer.Ordinal);
+
+        /// <summary>
         /// 块级内容（表格嵌套、w:sdt 包装）的最大递归深度，超出后停止下探，防御畸形文档撑爆调用栈。
         /// The maximum recursion depth for block content (nested tables, w:sdt wrappers); deeper content is
         /// ignored so a malformed document cannot exhaust the call stack.
@@ -572,6 +581,23 @@ namespace Wisdom.Word
         }
 
         /// <summary>
+        /// 按关系 id 取图片，命中缓存就不再解包；失败的 id 同样记住，免得坏引用被反复重试。
+        /// Fetches an image by relationship id and skips the package read on a cache hit; failed ids are remembered
+        /// too so a broken reference is not retried on every occurrence.
+        /// </summary>
+        /// <param name="relationshipId">图片的关系 id。The image relationship id.</param>
+        /// <returns>图片实例或 null。The image instance or null.</returns>
+        private OfficeImage LoadImage(string relationshipId)
+        {
+            if (string.IsNullOrEmpty(relationshipId)) return null;
+            OfficeImage cached;
+            if (this._imageCache.TryGetValue(relationshipId, out cached)) return cached;
+            OfficeImage image = _package.LoadImage(_partPath, relationshipId);
+            this._imageCache[relationshipId] = image;
+            return image;
+        }
+
+        /// <summary>
         /// 解析 w:drawing  DrawingML 图形：通过 blip 的关系 ID 从包中加载图片，
         /// 并按 wp:extent 的 EMU 尺寸换算为磅值后加入段落。
         /// Parses a w:drawing DrawingML graphic: loads the image from the package using the blip relationship
@@ -591,7 +617,7 @@ namespace Wisdom.Word
             if (blip == null) return;
             string relationshipId = Wml.AttributeValue(blip, Wml.R + "embed");
             if (string.IsNullOrEmpty(relationshipId)) relationshipId = Wml.AttributeValue(blip, Wml.R + "link");
-            OfficeImage image = _package.LoadImage(_partPath, relationshipId);
+            OfficeImage image = LoadImage(relationshipId);
             if (image == null) return;
             double width = image.DefaultWidthPoints;
             double height = image.DefaultHeightPoints;
@@ -628,7 +654,7 @@ namespace Wisdom.Word
             }
             if (imageData == null) return;
             string relationshipId = Wml.AttributeValue(imageData, Wml.R + "id");
-            OfficeImage image = _package.LoadImage(_partPath, relationshipId);
+            OfficeImage image = LoadImage(relationshipId);
             if (image == null) return;
             double width = image.DefaultWidthPoints;
             double height = image.DefaultHeightPoints;

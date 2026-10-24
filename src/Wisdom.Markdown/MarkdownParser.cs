@@ -24,7 +24,44 @@ namespace Wisdom.Markdown
         /// <summary>行内元素最大嵌套深度，超出后按字面文本输出，防止栈溢出。The maximum inline nesting depth; deeper content becomes literal text, preventing a stack overflow.</summary>
         private const int MaxInlineDepth = 64;
 
+        /// <summary>
+        /// 单张表格的列数上限：列数取自表头行的竖线，其后每一行都要补齐到这个列数，
+        /// 所以一行几万个竖线就能把单元格数量按行数乘出来。
+        /// Ceiling for the columns of one table: the column count comes from the pipes of the header line and
+        /// every later row is padded to it, so a line with tens of thousands of pipes multiplies the cell count
+        /// by the row count.
+        /// </summary>
+        private const int MaxTableColumns = 4096;
+
+        /// <summary>
+        /// 单张表格的单元格总数上限，与 XlsxReader 的合并区域同一量级：列数合规而行数无限时，
+        /// 乘积照样把模型吃穿，而下游的 Word 与 PDF 写出早在几万个格子之前就撑不住了。
+        /// Ceiling for the cells of one table, at the same order as the merged-range cap in XlsxReader: legal
+        /// columns over an endless number of rows still eat the model, and the Word and PDF writers give up long
+        /// before tens of thousands of cells.
+        /// </summary>
+        private const int MaxTableCells = 65536;
+
+        /// <summary>
+        /// 单篇文档嵌入图片的字节总上限：单张封顶挡不住几十万个不同路径的引用，
+        /// 而每一份都会整份留在模型里，HTML 写出时还要再 base64 放大四分之三。
+        /// Ceiling for the image bytes of one document: the per-file cap cannot stop a hundred thousand
+        /// references to distinct paths, and every one of them stays in the model, then grows by three quarters
+        /// again when the HTML writer base64-encodes it.
+        /// </summary>
+        private const int MaxDocumentImageBytes = 256 * 1024 * 1024;
+
         private readonly MarkdownOptions options;
+
+        /// <summary>
+        /// 本次解析已读入的图片，按归一化后的绝对路径缓存：同一张图被引用几百次也只读一次、只存一份。
+        /// Images loaded by this parse, keyed by normalized absolute path: a picture referenced hundreds of times
+        /// is read once and stored once.
+        /// </summary>
+        private readonly Dictionary<string, OfficeImage> _imageCache = new Dictionary<string, OfficeImage>(StringComparer.Ordinal);
+
+        /// <summary>本次解析累计读入的图片字节数。The image bytes loaded so far by this parse.</summary>
+        private long _imageBytes;
 
         /// <summary>
         /// 以指定选项构造解析器。
@@ -113,6 +150,27 @@ namespace Wisdom.Markdown
                     continue;
                 }
 
+                // 独立水平分隔线（≥3 个 -/*/_，可含空格）。必须先于列表判定，
+                // 否则 "* * *" 与 "- - -" 会被当成三个空列表项。
+                // Standalone thematic break (three or more -/*/_ with optional spaces). Must precede the list
+                // test, otherwise "* * *" and "- - -" would read as a list of empty items.
+                if (IsThematicBreak(line))
+                {
+                    AddThematicBreak(section);
+                    index++;
+                    continue;
+                }
+
+                // 4 空格（或制表符）缩进代码块。同样先于列表：顶层没有打开的列表时，
+                // 缩进四格只可能是代码，CommonMark 不允许它作为列表开始。
+                // Indented code block (4 spaces or a tab), also ahead of the list test: with no list in flight an
+                // four-space indent can only be code, since CommonMark refuses it as a list start.
+                if (IsIndentedCode(line))
+                {
+                    index = ParseIndentedCode(lines, index, section);
+                    continue;
+                }
+
                 // 列表项（无序 -/*/+ 与有序 1. / 1)），支持缩进嵌套。
                 // List item (unordered -/*/+ and ordered 1. / 1)), with indentation nesting.
                 if (IsListItem(line))
@@ -121,28 +179,11 @@ namespace Wisdom.Markdown
                     continue;
                 }
 
-                // 4 空格（或制表符）缩进代码块。
-                // Indented code block (4 spaces or a tab).
-                if (IsIndentedCode(line))
-                {
-                    index = ParseIndentedCode(lines, index, section);
-                    continue;
-                }
-
                 // GFM 管道表格。
                 // GFM pipe table.
                 if (options.EnableTables && IsTableHeader(lines, index))
                 {
                     index = ParseTable(lines, index, section);
-                    continue;
-                }
-
-                // 独立水平分隔线（无紧邻段落时）。
-                // Standalone horizontal rule (when no paragraph directly precedes it).
-                if (IsThematicBreak(line))
-                {
-                    AddThematicBreak(section);
-                    index++;
                     continue;
                 }
 
@@ -312,6 +353,7 @@ namespace Wisdom.Markdown
             }
 
             int i2 = start + 1;
+            bool anyLine = false;
             while (i2 < lines.Length)
             {
                 string candidate = TrimLeftUpTo3(lines[i2]);
@@ -321,7 +363,16 @@ namespace Wisdom.Markdown
                     break;
                 }
                 AddCodeParagraph(section, lines[i2]);
+                anyLine = true;
                 i2++;
+            }
+            // 空围栏照样是一个代码块：模型没有 CodeBlock 类型，补一条空白的等宽段落，
+            // 否则相邻的 ``` 与 ``` 会让整块凭空消失。
+            // An empty fence is still a code block: the model has no CodeBlock type, so emit one blank monospaced
+            // paragraph, otherwise adjacent ``` and ``` lines would make the whole block vanish.
+            if (!anyLine)
+            {
+                AddCodeParagraph(section, string.Empty);
             }
             return i2;
         }
@@ -589,15 +640,24 @@ namespace Wisdom.Markdown
                 int setextLevel;
                 if (IsSetextUnderline(next, out setextLevel))
                 {
-                    // 用缓冲区最后一行作为 Setext 标题文本，其余作为段落。
-                    // Use the last buffered line as the Setext heading text and the rest as the paragraph.
-                    string headingText = buffer[buffer.Count - 1];
-                    buffer.RemoveAt(buffer.Count - 1);
-                    FlushParagraph(section, buffer);
-                    AddHeading(section, setextLevel, headingText);
+                    // CommonMark 把下划线之前的整段文字作为标题正文，而不只是紧邻下划线的那一行；
+                    // 行间软换行在这里折成空格，Word 与 HTML 都不需要保留换行符。
+                    // CommonMark makes the whole paragraph above the underline the heading content, not just the
+                    // adjacent line; the soft breaks between those lines fold into spaces here.
+                    StringBuilder headingText = new StringBuilder();
+                    for (int k = 0; k < buffer.Count; k++)
+                    {
+                        if (k > 0)
+                        {
+                            headingText.Append(' ');
+                        }
+                        headingText.Append(StripHardBreakMarker(buffer[k]).Trim());
+                    }
+                    string title = headingText.ToString();
+                    AddHeading(section, setextLevel, title);
                     if (setextLevel == 1 && string.IsNullOrEmpty(document.Metadata.Title))
                     {
-                        document.Metadata.Title = PlainFromInline(headingText);
+                        document.Metadata.Title = PlainFromInline(title);
                     }
                     return i + 1;
                 }
@@ -640,11 +700,13 @@ namespace Wisdom.Markdown
             {
                 return true;
             }
-            if (IsListItem(line))
+            // 分隔线要先于列表判定，否则 "* * *" 会被当作列表项而中断段落的方式不对。
+            // Test the thematic break before the list, otherwise "* * *" interrupts the paragraph as list items.
+            if (IsThematicBreak(line))
             {
                 return true;
             }
-            if (IsThematicBreak(line))
+            if (IsListItem(line))
             {
                 return true;
             }
@@ -652,10 +714,9 @@ namespace Wisdom.Markdown
             {
                 return true;
             }
-            if (IsIndentedCode(line))
-            {
-                return true;
-            }
+            // 缩进代码不能中断段落：CommonMark 把段落后的 4 空格行视为同一段的续行。
+            // Indented code cannot interrupt a paragraph: CommonMark keeps a 4-space line after a paragraph as a
+            // continuation line of that paragraph.
             return false;
         }
 
@@ -672,16 +733,11 @@ namespace Wisdom.Markdown
                 return;
             }
 
-            // 原始 HTML 行：默认按纯文本保留；EnableRawHtml 时原样透传（对模型仍是文本）。
-            // Raw HTML lines: kept as plain text by default; passed through verbatim when EnableRawHtml (still text in the model).
-            if (buffer.Count == 1 && IsRawHtmlLine(buffer[0]))
-            {
-                Paragraph raw = new Paragraph();
-                raw.Inlines.Add(new TextRun(options.TrimTrailingWhitespace ? buffer[0].Trim() : buffer[0], NewBodyFormat()));
-                section.Blocks.Add(raw);
-                return;
-            }
-
+            // 以 < 开头的行过去在这里绕过行内解析、原样留成文本，结果把同一段里的自动链接
+            // 与强调一起吞掉了。写器对文本一律转义（原始 HTML 永不透传），这里就按普通段落走。
+            // Lines starting with '<' used to bypass inline parsing here and were kept as bare text, which also
+            // swallowed the autolinks and emphasis in the same run. The writers escape all text unconditionally
+            // (raw HTML is never passed through), so treat these as ordinary paragraphs.
             Paragraph paragraph = new Paragraph();
             for (int k = 0; k < buffer.Count; k++)
             {
@@ -734,23 +790,6 @@ namespace Wisdom.Markdown
                 right = right.Substring(0, right.Length - 1);
             }
             return options.TrimTrailingWhitespace ? right.Trim() : right;
-        }
-
-        /// <summary>
-        /// 判断行是否为块级 HTML 起始（以 &lt; 开头且含标签名）。
-        /// Determines whether the line starts a block-level HTML tag (begins with '&lt;' and contains a tag name).
-        /// </summary>
-        /// <param name="line">待判定行。The line to test.</param>
-        /// <returns>是否为 HTML 行。Whether it is an HTML line.</returns>
-        private static bool IsRawHtmlLine(string line)
-        {
-            string trimmed = line.TrimStart(' ', '\t');
-            if (trimmed.Length < 2 || trimmed[0] != '<')
-            {
-                return false;
-            }
-            char second = trimmed[1];
-            return second == '/' || (second >= 'a' && second <= 'z') || (second >= 'A' && second <= 'Z') || second == '!';
         }
 
         /// <summary>
@@ -875,13 +914,15 @@ namespace Wisdom.Markdown
             }
             string rest = line.Substring(Math.Min(LeadingCharIndex(line), line.Length));
 
-            if (rest.Length >= 2)
+            if (rest.Length >= 1 && (rest[0] == '-' || rest[0] == '*' || rest[0] == '+'))
             {
-                char marker = rest[0];
-                if ((marker == '-' || marker == '*' || marker == '+') && (rest[1] == ' ' || rest[1] == '\t'))
+                // 单个 "-" 是合法的空列表项；带正文时必须有一个空格或制表符分隔。
+                // A lone "-" is a legal empty list item; with a body the marker needs a space or tab separator.
+                if (rest.Length == 1)
                 {
                     return true;
                 }
+                return rest[1] == ' ' || rest[1] == '\t';
             }
 
             int d = 0;
@@ -912,6 +953,8 @@ namespace Wisdom.Markdown
         {
             List<int> indentStack = new List<int>();
             int i = start;
+            Paragraph lastItem = null;
+            int lastItemIndent = -1;
 
             while (i < lines.Length)
             {
@@ -922,9 +965,24 @@ namespace Wisdom.Markdown
                     {
                         peek++;
                     }
-                    if (peek < lines.Length && IsListItem(lines[peek]))
+                    if (peek >= lines.Length)
+                    {
+                        break;
+                    }
+                    if (IsListItem(lines[peek]))
                     {
                         i = peek;
+                        continue;
+                    }
+                    // 空行之后仍比本项更深缩进且不是新块的行，是本项的第二段（松散列表项）；
+                    // 模型没有列表容器，故折回同一段落文本。
+                    // A deeper-indented non-block line after a blank line is this item's second paragraph (a loose
+                    // item); the model has no list container, so it folds back into the same paragraph text.
+                    if (lastItem != null && CountLeadingSpaces(lines[peek]) > lastItemIndent
+                        && !IsParagraphStop(lines[peek], lines, peek))
+                    {
+                        AddInlinesFromText(lastItem, " " + lines[peek].Trim(), NewBodyFormat());
+                        i = peek + 1;
                         continue;
                     }
                     break;
@@ -932,6 +990,15 @@ namespace Wisdom.Markdown
 
                 if (!IsListItem(lines[i]))
                 {
+                    // 缩进续行与懒延续（CommonMark 都把它留在本项内）；新块起点则结束列表。
+                    // An indented continuation line and a lazy continuation both stay inside the item (as in
+                    // CommonMark); any new block start ends the list.
+                    if (lastItem != null && !IsParagraphStop(lines[i], lines, i))
+                    {
+                        AddInlinesFromText(lastItem, " " + lines[i].Trim(), NewBodyFormat());
+                        i++;
+                        continue;
+                    }
                     break;
                 }
 
@@ -970,6 +1037,8 @@ namespace Wisdom.Markdown
                 TextFormat format = NewBodyFormat();
                 AddInlinesFromText(paragraph, content.Trim(), format);
                 section.Blocks.Add(paragraph);
+                lastItem = paragraph;
+                lastItemIndent = indent;
                 i++;
             }
             return i;
@@ -1148,9 +1217,11 @@ namespace Wisdom.Markdown
         /// <returns>块之后的行号。The index following the block.</returns>
         private int ParseTable(string[] lines, int start, Section section)
         {
+            RequireTableWidth(lines[start]);
             List<string> headerCells = SplitTableRow(lines[start]);
             List<ParagraphAlignment> aligns = ParseAlignments(lines[start + 1], headerCells.Count);
             int columnCount = headerCells.Count;
+            long cellCount = columnCount;
 
             Table table = new Table();
             table.Autofit = true;
@@ -1182,6 +1253,15 @@ namespace Wisdom.Markdown
                 {
                     break;
                 }
+                RequireTableWidth(rowLine);
+                // 比较用减法而不是先乘：列数与行数都来自文件，乘法本身可能溢出成负数而放行。
+                // Compare by subtraction instead of multiplying: both factors come from the file, and the
+                // product itself can overflow into a negative that the check would then accept.
+                if (cellCount > MaxTableCells - columnCount)
+                {
+                    throw new InvalidDataException("The Markdown table exceeds the " + MaxTableCells + "-cell limit.");
+                }
+                cellCount += columnCount;
                 List<string> cells = SplitTableRow(rowLine);
                 TableRow row = table.AddRow();
                 for (int c = 0; c < columnCount; c++)
@@ -1247,6 +1327,31 @@ namespace Wisdom.Markdown
                 }
             }
             return aligns;
+        }
+
+        /// <summary>
+        /// 在物化单元格之前先数一遍竖线：SplitTableRow 会把每一列都存成字符串，等它返回再检查就晚了。
+        /// Counts the pipes before the cells are materialised: SplitTableRow stores every column as a string, so a
+        /// check after it returns would be too late.
+        /// </summary>
+        /// <param name="line">表格行。The table row.</param>
+        private static void RequireTableWidth(string line)
+        {
+            int pipes = 0;
+            for (int i = 0; i < line.Length; i++)
+            {
+                if (line[i] == '|')
+                {
+                    pipes++;
+                }
+            }
+            // 列数最多是竖线数加一（首尾不带竖线的写法），据此给出宽限一列的边界。
+            // A row yields at most one more column than it has pipes (the form without outer pipes), so the
+            // boundary grants that one column.
+            if (pipes >= MaxTableColumns)
+            {
+                throw new InvalidDataException("The Markdown table exceeds the " + MaxTableColumns + "-column limit.");
+            }
         }
 
         /// <summary>
@@ -1371,19 +1476,67 @@ namespace Wisdom.Markdown
                     continue;
                 }
 
-                if (c == '`')
+                if (c == '&')
                 {
-                    int closer = map.Next('`', i + 1);
-                    if (closer < 0)
+                    // 字符实体引用：&#65; 与 &#x41; 与 &copy; 先解成字符，写出口再按需转义；
+                    // 匹配不上的形式按字面保留，与 CommonMark 一致。
+                    // Character references: &#65;, &#x41; and &copy; decode to characters first, then the writers
+                    // escape as usual; anything unrecognised stays literal, matching CommonMark.
+                    int refEnd;
+                    string decoded = TryDecodeCharRef(text, i, out refEnd);
+                    if (decoded != null)
                     {
-                        buffer.Append(c);
-                        i++;
+                        buffer.Append(decoded);
+                        i = refEnd;
                         continue;
                     }
-                    string code = text.Substring(i + 1, closer - i - 1);
+                }
+
+                if (c == '`')
+                {
+                    // 闭合串必须与起始串等长，否则这些反引号只是正文；两侧各恰一个空格时去掉一格。
+                    // The closer must be a backtick run of exactly the same length, otherwise those backticks are
+                    // content; one space on each side is stripped.
+                    int openLen = 1;
+                    while (i + openLen < length && text[i + openLen] == '`')
+                    {
+                        openLen++;
+                    }
+                    int closer = -1;
+                    int scan = i + openLen;
+                    while (scan < length)
+                    {
+                        int at = map.Next('`', scan);
+                        if (at < 0)
+                        {
+                            break;
+                        }
+                        int run = 1;
+                        while (at + run < length && text[at + run] == '`')
+                        {
+                            run++;
+                        }
+                        if (run == openLen)
+                        {
+                            closer = at;
+                            break;
+                        }
+                        scan = at + run;
+                    }
+                    if (closer < 0)
+                    {
+                        buffer.Append(text.Substring(i, openLen));
+                        i += openLen;
+                        continue;
+                    }
+                    string code = text.Substring(i + openLen, closer - i - openLen);
+                    if (code.Length >= 2 && code[0] == ' ' && code[code.Length - 1] == ' ' && HasNonSpace(code))
+                    {
+                        code = code.Substring(1, code.Length - 2);
+                    }
                     FlushBuffer(buffer, result, baseFormat);
                     result.Add(new TextRun(code, NewCodeFormat()));
-                    i = closer + 1;
+                    i = closer + openLen;
                     continue;
                 }
 
@@ -1438,10 +1591,20 @@ namespace Wisdom.Markdown
                 if (c == '~' && i + 1 < length && text[i + 1] == '~')
                 {
                     int closer = FindDelim(text, "~~", i + 2);
-                    if (closer < 0)
+                    // 空内容不成删除线，且与 * 和 _ 分支一致把整串波浪号按字面输出：
+                    // 只跳过两个波浪号会让 "~~~~" 的四个全部消失，文本凭空少掉。
+                    // An empty body is not a strikeout and, like the * and _ branches, the whole tilde run falls
+                    // back to literals: skipping only two tildes makes "~~~~" swallow all four and the text
+                    // silently disappears.
+                    if (closer < 0 || closer == i + 2)
                     {
-                        buffer.Append(c);
-                        i++;
+                        int run = 1;
+                        while (i + run < length && text[i + run] == '~')
+                        {
+                            run++;
+                        }
+                        buffer.Append(text.Substring(i, run));
+                        i += run;
                         continue;
                     }
                     string inner = text.Substring(i + 2, closer - i - 2);
@@ -1462,14 +1625,42 @@ namespace Wisdom.Markdown
                     }
                     int delimLen = run >= 3 ? 3 : run;
                     string delim = new string(c, delimLen);
-                    int closer = FindDelim(text, delim, i + delimLen);
-                    if (closer < 0 || closer == i + delimLen)
+                    // CommonMark 的两侧贴合规则：起始串后必须是内容（非空白），闭合串前同理；
+                    // 下划线还禁止词内强调（in_var_iable、foo_bar_baz 都保持字面）。
+                    // CommonMark's flanking rules: the opener must be followed by content and the closer preceded by
+                    // content; underscores additionally refuse intraword emphasis (in_var_iable, foo_bar_baz stay literal).
+                    int afterOpen = i + delimLen;
+                    bool leftFlank = afterOpen < length && !char.IsWhiteSpace(text[afterOpen])
+                        && (c != '_' || i == 0 || !char.IsLetterOrDigit(text[i - 1]));
+                    int closer = -1;
+                    if (leftFlank)
+                    {
+                        int search = afterOpen;
+                        while (search < length)
+                        {
+                            int at = FindDelim(text, delim, search);
+                            if (at < 0)
+                            {
+                                break;
+                            }
+                            int after = at + delimLen;
+                            bool rightFlank = !char.IsWhiteSpace(text[at - 1])
+                                && (c != '_' || after >= length || !char.IsLetterOrDigit(text[after]));
+                            if (rightFlank && at > afterOpen)
+                            {
+                                closer = at;
+                                break;
+                            }
+                            search = after;
+                        }
+                    }
+                    if (closer < 0)
                     {
                         buffer.Append(text.Substring(i, run));
                         i += run;
                         continue;
                     }
-                    string inner = text.Substring(i + delimLen, closer - i - delimLen);
+                    string inner = text.Substring(afterOpen, closer - afterOpen);
                     TextFormat em = baseFormat.Clone();
                     if (delimLen >= 3)
                     {
@@ -1718,6 +1909,11 @@ namespace Wisdom.Markdown
                 {
                     return null;
                 }
+                OfficeImage cached;
+                if (this._imageCache.TryGetValue(full, out cached))
+                {
+                    return cached;
+                }
                 FileInfo info = new FileInfo(full);
                 if (!info.Exists || info.Length == 0)
                 {
@@ -1728,12 +1924,22 @@ namespace Wisdom.Markdown
                 {
                     return null;
                 }
+                // 用减法比较总量上限：累计值与声明长度都是 int，直接相加可能回绕成负数而放行。
+                // Compare the total by subtraction: both the running sum and the declared length are ints, and a
+                // plain addition can wrap into a negative that the check would then accept.
+                if (this._imageBytes > MaxDocumentImageBytes - info.Length)
+                {
+                    return null;
+                }
                 byte[] bytes = File.ReadAllBytes(full);
                 if (bytes.Length == 0)
                 {
                     return null;
                 }
-                return new OfficeImage(bytes);
+                OfficeImage image = new OfficeImage(bytes);
+                this._imageCache[full] = image;
+                this._imageBytes += bytes.Length;
+                return image;
             }
             catch (Exception)
             {
@@ -1794,6 +2000,209 @@ namespace Wisdom.Markdown
                     return false;
             }
         }
+
+        /// <summary>
+        /// 判断串中是否含有非空白字符（行内代码去首尾空格的先决条件：全空白的内容不许裁切）。
+        /// Tests whether a string contains any non-whitespace character (the precondition for stripping one space
+        /// from each end of a code span; an all-whitespace body must not be trimmed).
+        /// </summary>
+        /// <param name="text">待判定串。The string to test.</param>
+        /// <returns>是否含非空白字符。Whether it contains a non-whitespace character.</returns>
+        private static bool HasNonSpace(string text)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!char.IsWhiteSpace(text[i]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 从 &lt;start&gt; 处的 '&amp;' 起解析字符实体引用：数字形式 &amp;#65; / &amp;#x41; 与命名字形式 &amp;copy;。
+        /// 命名字必须全为 ASCII 字母数字且以 ';' 结尾；码点为 0、落在代理区或超过 U+10FFFF 视为非法。
+        /// 非法时返回 null 并把 '&amp;' 按字面保留，与 CommonMark 一致。
+        /// Parses a character reference starting at the '&amp;' at &lt;start&gt;: numeric &amp;#65; / &amp;#x41; and named
+        /// &amp;copy;. A name must be ASCII letters/digits and end with ';'; code points of 0, in the surrogate range or
+        /// above U+10FFFF are rejected. Returns null on any rejection so the '&amp;' stays literal, matching CommonMark.
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="start">'&amp;' 的位置。The index of '&amp;'.</param>
+        /// <param name="end">成功时置为实体结束后的位置。On success set to the index just after the entity.</param>
+        /// <returns>解码得到的文本，非法或未知时为 null。The decoded text, or null when invalid or unknown.</returns>
+        private static string TryDecodeCharRef(string text, int start, out int end)
+        {
+            end = start;
+            int length = text.Length;
+            int i = start + 1;
+            if (i >= length)
+            {
+                return null;
+            }
+
+            if (text[i] == '#')
+            {
+                i++;
+                bool hex = i < length && (text[i] == 'x' || text[i] == 'X');
+                if (hex)
+                {
+                    i++;
+                }
+                int digitsStart = i;
+                int value = 0;
+                bool overflow = false;
+                while (i < length)
+                {
+                    int digit;
+                    char c = text[i];
+                    if (c >= '0' && c <= '9')
+                    {
+                        digit = c - '0';
+                    }
+                    else if (hex && c >= 'a' && c <= 'f')
+                    {
+                        digit = c - 'a' + 10;
+                    }
+                    else if (hex && c >= 'A' && c <= 'F')
+                    {
+                        digit = c - 'A' + 10;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                    int radix = hex ? 16 : 10;
+                    if (value > (0x10FFFF - digit) / radix)
+                    {
+                        overflow = true;
+                    }
+                    else
+                    {
+                        value = value * radix + digit;
+                    }
+                    i++;
+                }
+                // 无数字、缺分号、溢出或落在保留码点区间都算非法引用。
+                // No digits, a missing ';', overflow or a reserved code point all make the reference invalid.
+                if (i == digitsStart || overflow || i >= length || text[i] != ';')
+                {
+                    return null;
+                }
+                if (value == 0 || (value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF)
+                {
+                    return null;
+                }
+                end = i + 1;
+                return char.ConvertFromUtf32(value);
+            }
+
+            int nameStart = i;
+            while (i < length)
+            {
+                char c = text[i];
+                bool asciiName = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+                if (!asciiName)
+                {
+                    break;
+                }
+                i++;
+            }
+            if (i == nameStart || i >= length || text[i] != ';')
+            {
+                return null;
+            }
+            string named;
+            if (!CharEntityTable.TryGetValue(text.Substring(nameStart, i - nameStart), out named))
+            {
+                return null;
+            }
+            end = i + 1;
+            return named;
+        }
+
+        /// <summary>
+        /// 常用命名字符实体表：ASCII 标点、排版标点、货币与常用符号/数学记号。键不含 '&amp;' 与 ';'。
+        /// Curated table of common named character references: ASCII punctuation, typographic punctuation, currency
+        /// and frequent symbols/math marks. Keys exclude the leading '&amp;' and trailing ';'.
+        /// </summary>
+        private static readonly Dictionary<string, string> CharEntityTable = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "amp", "&" },
+            { "lt", "<" },
+            { "gt", ">" },
+            { "quot", "\"" },
+            { "apos", "'" },
+            { "nbsp", "\u00A0" },
+            { "shy", "\u00AD" },
+            { "copy", "\u00A9" },
+            { "reg", "\u00AE" },
+            { "trade", "\u2122" },
+            { "pound", "\u00A3" },
+            { "cent", "\u00A2" },
+            { "yen", "\u00A5" },
+            { "currency", "\u00A4" },
+            { "euro", "\u20AC" },
+            { "deg", "\u00B0" },
+            { "micro", "\u00B5" },
+            { "para", "\u00B6" },
+            { "sect", "\u00A7" },
+            { "middot", "\u00B7" },
+            { "bull", "\u2022" },
+            { "hellip", "\u2026" },
+            { "mdash", "\u2014" },
+            { "ndash", "\u2013" },
+            { "lsquo", "\u2018" },
+            { "rsquo", "\u2019" },
+            { "ldquo", "\u201C" },
+            { "rdquo", "\u201D" },
+            { "laquo", "\u00AB" },
+            { "raquo", "\u00BB" },
+            { "lsaquo", "\u2039" },
+            { "rsaquo", "\u203A" },
+            { "times", "\u00D7" },
+            { "divide", "\u00F7" },
+            { "plusmn", "\u00B1" },
+            { "mp", "\u2213" },
+            { "frac12", "\u00BD" },
+            { "frac14", "\u00BC" },
+            { "frac34", "\u00BE" },
+            { "sup1", "\u00B9" },
+            { "sup2", "\u00B2" },
+            { "sup3", "\u00B3" },
+            { "dagger", "\u2020" },
+            { "Dagger", "\u2021" },
+            { "prime", "\u2032" },
+            { "Prime", "\u2033" },
+            { "larr", "\u2190" },
+            { "uarr", "\u2191" },
+            { "rarr", "\u2192" },
+            { "darr", "\u2193" },
+            { "harr", "\u2194" },
+            { "ne", "\u2260" },
+            { "le", "\u2264" },
+            { "ge", "\u2265" },
+            { "minus", "\u2212" },
+            { "infin", "\u221E" },
+            { "sum", "\u2211" },
+            { "prod", "\u220F" },
+            { "alpha", "\u03B1" },
+            { "beta", "\u03B2" },
+            { "gamma", "\u03B3" },
+            { "delta", "\u03B4" },
+            { "epsilon", "\u03B5" },
+            { "pi", "\u03C0" },
+            { "sigma", "\u03C3" },
+            { "tau", "\u03C4" },
+            { "phi", "\u03C6" },
+            { "omega", "\u03C9" },
+            { "ensp", "\u2002" },
+            { "emsp", "\u2003" },
+            { "thinsp", "\u2009" },
+            { "zwnj", "\u200C" },
+            { "zwj", "\u200D" },
+        };
 
         /// <summary>
         /// 从 from 起查找目标分隔串（跳过转义）的首个位置，找不到返回 -1。

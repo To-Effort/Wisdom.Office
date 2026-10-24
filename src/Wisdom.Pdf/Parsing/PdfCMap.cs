@@ -102,6 +102,7 @@ namespace Wisdom.Pdf
                 if (source == null || destination == null) continue;
                 int code = ToCode(source.Bytes);
                 string text = DecodeUtf16BigEndian(destination.Bytes);
+                if (cmap._map.Count >= PdfReadLimits.MaxGlyphMapEntries) break;
                 cmap._map[code] = text;
             }
         }
@@ -113,9 +114,11 @@ namespace Wisdom.Pdf
         /// </summary>
         /// <param name="cmap">待填充的映射表。The map to populate.</param>
         /// <param name="pending">本段内收集到的对象，按「下界、上界、目标」三元排列。Objects collected within the section, arranged as low/high/destination triples.</param>
-        /// <remarks>区间跨度超过 65536 时视为异常数据直接丢弃，防止超大 CMap 耗尽内存。
-        /// Ranges wider than 65536 codes are treated as corrupt data and dropped, preventing an oversized
-        /// CMap from exhausting memory.</remarks>
+        /// <remarks>区间跨度超过 65536 时视为异常数据直接丢弃，跨度的比较用 long 以免 int 回绕；
+        /// 整表条目数再按 MaxGlyphMapEntries 兜底，防止大量「各自合法」的区间合力把映射表堆爆。
+        /// Ranges wider than 65536 codes are treated as corrupt data and dropped, comparing the span in long
+        /// so the int subtraction cannot wrap; the whole map is additionally capped by MaxGlyphMapEntries,
+        /// because many individually legal ranges can still exhaust memory together.</remarks>
         private static void ProcessRanges(PdfCMap cmap, List<PdfObject> pending)
         {
             for (int i = 0; i + 2 < pending.Count; i += 3)
@@ -125,14 +128,22 @@ namespace Wisdom.Pdf
                 if (lowString == null || highString == null) continue;
                 int low = ToCode(lowString.Bytes);
                 int high = ToCode(highString.Bytes);
-                if (high < low || high - low > 65536) continue;
+                // 跨度必须按 long 计算：ToCode 用四字节拼键，最高位置 1 时键为负值，
+                // 而 int 相减同样回绕，「high >= low 且差值不大」的假象会让区间达到二十亿个码位。
+                // The span must be computed in long: ToCode packs four bytes, so a set high bit yields a negative
+                // key, and the int subtraction wraps too — the range then looks legal while spanning two billion codes.
+                long span = (long)high - (long)low;
+                if (span < 0 || span > 65536) continue;
+                int room = PdfReadLimits.MaxGlyphMapEntries - cmap._map.Count;
+                if (room <= 0) continue;
 
                 PdfString destination = pending[i + 2] as PdfString;
                 PdfArray destinations = pending[i + 2] as PdfArray;
+                long stop = Math.Min((long)high, (long)low + room - 1);
                 if (destination != null)
                 {
                     char[] baseChars = DecodeUtf16BigEndian(destination.Bytes).ToCharArray();
-                    for (int code = low; code <= high; code++)
+                    for (int code = low; code <= stop; code++)
                     {
                         int offset = code - low;
                         char[] chars = (char[])baseChars.Clone();
@@ -147,11 +158,11 @@ namespace Wisdom.Pdf
                 }
                 if (destinations != null)
                 {
-                    for (int j = 0; j < destinations.Count && low + j <= high; j++)
+                    for (long j = 0; j < destinations.Count && (long)low + j <= stop; j++)
                     {
-                        PdfString item = destinations[j] as PdfString;
+                        PdfString item = destinations[(int)j] as PdfString;
                         if (item == null) continue;
-                        cmap._map[low + j] = DecodeUtf16BigEndian(item.Bytes);
+                        cmap._map[(int)((long)low + j)] = DecodeUtf16BigEndian(item.Bytes);
                     }
                 }
             }

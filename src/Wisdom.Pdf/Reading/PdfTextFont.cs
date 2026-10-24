@@ -188,7 +188,11 @@ namespace Wisdom.Pdf
                 index++;
                 if (value == null) continue;
                 int endCode = (int)last.Value;
-                if (endCode < startCode || endCode - startCode > 65536) continue;
+                // 同 CMap：码位来自声明值，int 相减会回绕，跨度比较必须用 long。
+                // As in the CMap: codes come from declared values and the int subtraction wraps, so the span
+                // is compared in long.
+                if (endCode < startCode || (long)endCode - (long)startCode > 65536) continue;
+                if (_widths.Count >= PdfReadLimits.MaxGlyphMapEntries) break;
                 for (int code = startCode; code <= endCode; code++) _widths[code] = (int)value.Value;
             }
         }

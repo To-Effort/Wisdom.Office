@@ -28,7 +28,17 @@ namespace Wisdom.Office.Core.Formulas
             r["PROPER"] = (e, s, a) => FxValue.Txt(Proper(TextAt(a, 0)));
             r["TRIM"] = (e, s, a) => FxValue.Txt(Trim(TextAt(a, 0)));
             r["CLEAN"] = (e, s, a) => { StringBuilder sb = new StringBuilder(); foreach (char ch in TextAt(a, 0)) if (!char.IsControl(ch)) sb.Append(ch); return FxValue.Txt(sb.ToString()); };
-            r["REPT"] = (e, s, a) => { string t = TextAt(a, 0); double n = NumOr(a, 1, 0); if (n < 0 || (long)n > 32767) return Err(FxError.Value); StringBuilder sb = new StringBuilder(); for (long i = 0; i < (long)n; i++) sb.Append(t); return FxValue.Txt(sb.ToString()); };
+            // 上限要落在产出长度而不是重复次数上：Excel 的单元格文本上限就是 32767，
+            // 只按次数封顶会让「32767 次乘以任意长文本」仍然把内存要光。
+            // The cap belongs on the produced length, not the repeat count: 32767 is Excel's cell-text
+            // limit, and capping only the count still lets "32767 times an arbitrarily long string" ask for
+            // all the memory in the machine.
+            // 空文本另算：乘积是 0，按上面的判据过得去，却依旧要空转 n 次；
+            // 没有内容可重复就立刻交出空串。次数随后夹在 32767 内，(long) 转换也不会回绕。
+            // An empty text is a separate case: the product is 0, so the length test passes and the loop
+            // still spins n times. With nothing to repeat the result is returned at once, and the count is
+            // then bounded by 32767 so the (long) conversion cannot wrap either.
+            r["REPT"] = (e, s, a) => { string t = TextAt(a, 0); double n = NumOr(a, 1, 0); if (n < 0) return Err(FxError.Value); if (n < 1 || t.Length == 0) return FxValue.Txt(string.Empty); if (n > 32767) return Err(FxError.Value); long times = (long)n; long total = times * (long)t.Length; if (total > 32767) return Err(FxError.Value); StringBuilder sb = new StringBuilder((int)total); for (long i = 0; i < times; i++) sb.Append(t); return FxValue.Txt(sb.ToString()); };
             r["REPLACE"] = ReplaceFn;
             r["SUBSTITUTE"] = SubstituteFn;
             r["FIND"] = (e, s, a) => FindFn(a, true);
@@ -584,7 +594,13 @@ namespace Wisdom.Office.Core.Formulas
             int c1 = baseCol + (int)colsD;
             int r2 = r1 + height - 1;
             int c2 = c1 + width - 1;
+            // 只校验边界等于放任尺寸：OFFSET(A1,0,0,1000000,1000) 的行列都还在网格内，
+            // 却要求十亿次取值与逐行分配，必须按普通区域的 MaxRangeCells 一并封顶。
+            // Checking only the edges lets the size run wild: OFFSET(A1,0,0,1000000,1000) stays inside the
+            // grid yet asks for a billion cell reads, so the ordinary range ceiling applies here too.
+            if (height < 1 || width < 1) return Err(FxError.Value);
             if (r1 < 1 || c1 < 1 || r2 > CellAddress.MaxRowLiteral || c2 > CellAddress.MaxColumnLiteral) return Err(FxError.Ref);
+            if ((long)height * (long)width > Evaluator.MaxRangeCells) return Err(FxError.Ref);
             FxValue result = new FxValue();
             result.Kind = FxKind.Range;
             result.Sheet = reference.Sheet;

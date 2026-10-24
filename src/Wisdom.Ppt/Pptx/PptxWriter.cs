@@ -317,6 +317,9 @@ namespace Wisdom.Ppt
                 settings.Encoding = new UTF8Encoding(false);
                 settings.Indent = false;
                 settings.OmitXmlDeclaration = document.Declaration == null;
+                // 与 SerializeXml 同一道防护：控制字符会让 XmlWriter 抛异常，整个包写坏。
+                // The same guard as SerializeXml: a control character makes XmlWriter throw and wrecks the package.
+                OfficeXmlText.Sanitize(document);
                 if (_scratch == null) _scratch = new MemoryStream(65536);
                 _scratch.SetLength(0);
                 using (XmlWriter writer = XmlWriter.Create(_scratch, settings))

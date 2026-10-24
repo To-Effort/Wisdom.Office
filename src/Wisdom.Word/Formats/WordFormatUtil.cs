@@ -154,14 +154,18 @@ namespace Wisdom.Word
         }
 
         /// <summary>
-        /// 校验外部超链接：拒绝超长目标、控制字符以及 javascript/data/vbscript 等脚本协议；
-        /// 无协议的相对路径与常见安全协议（http/https/mailto/ftp/file/tel 等）放行。
-        /// Validates an external hyperlink: overlong targets, control characters and script schemes such as
-        /// javascript, data and vbscript are rejected; relative paths without a scheme and common safe
-        /// schemes (http/https/mailto/ftp/file/tel and the like) are accepted.
+        /// 校验外部超链接：拒绝超长目标、控制字符、javascript/data/vbscript 等脚本协议，以及指向本机磁盘或
+        /// 网络共享的 file:/smb:/gopher:/ldap: 等协议；无协议的相对路径与常见安全协议（http/https/mailto/ftp/ftps/tel/sms）放行。
+        /// Validates an external hyperlink: overlong targets, control characters, script schemes such as
+        /// javascript, data and vbscript, and schemes that reach a local disk or a network share such as file:,
+        /// smb:, gopher: or ldap: are rejected; relative paths without a scheme and common safe schemes
+        /// (http/https/mailto/ftp/ftps/tel/sms) are accepted.
         /// </summary>
         /// <param name="target">外部链接目标。The external target.</param>
         /// <returns>可写出时返回 true。True when it can be written.</returns>
+        /// <remarks>清单与 <c>XlsxHyperlinkParts.IsSafeTarget</c> 逐字一致，两个模块对同一份文档给出同样的链接取舍。
+        /// The list is character-for-character the one in <c>XlsxHyperlinkParts.IsSafeTarget</c>, so both modules make
+        /// the same call about the same document.</remarks>
         public static bool IsSafeHyperlinkTarget(string target)
         {
             if (string.IsNullOrEmpty(target) || target.Length > 2079) return false;
@@ -175,8 +179,7 @@ namespace Wisdom.Word
             if (colon == 0) return false;
             string scheme = target.Substring(0, colon).ToLowerInvariant();
             return scheme == "http" || scheme == "https" || scheme == "mailto" || scheme == "ftp"
-                || scheme == "ftps" || scheme == "file" || scheme == "tel" || scheme == "sms"
-                || scheme == "smb";
+                || scheme == "ftps" || scheme == "tel" || scheme == "sms";
         }
 
         /// <summary>把普通文本拆分为行，兼容 \r\n、\r 与 \n。Splits plain text into lines, accepting \r\n, \r and \n.</summary>

@@ -18,6 +18,8 @@ namespace Wisdom.Pdf
         private readonly byte[] _data;
         /// <summary>间接对象解析委托，供 /Length 为引用时取真实长度。Resolver delegate for indirect objects, used to fetch the real length when /Length is a reference.</summary>
         private readonly Func<PdfReference, PdfObject> _resolve;
+        /// <summary>当前语法对象嵌套层数，供 MaxObjectDepth 判定。Current nesting depth of syntactic objects, checked against MaxObjectDepth.</summary>
+        private int _depth;
 
         /// <summary>
         /// 在指定字节缓冲上创建解析器。
@@ -196,6 +198,33 @@ namespace Wisdom.Pdf
         /// <remarks>以数字开头的词元会先尝试匹配「对象号 代号 R」的引用形式，失败则回退为普通数值并还原游标。
         /// Tokens starting with a digit are first matched against the "object-number generation R" reference form; on failure they fall back to a plain number and the cursor is restored.</remarks>
         public PdfObject ParseObject()
+        {
+            // 数组与字典靠 ParseObject 自递归下降，几十 KB 的 "[" 或 "<<" 就能把栈打满，
+            // 而 StackOverflowException 不可捕获，宿主进程直接退出；这里按层数设上限改为报错。
+            // Arrays and dictionaries recurse through ParseObject, so a few tens of kilobytes of "[" or
+            // "<<" exhaust the stack — and StackOverflowException cannot be caught, it kills the host
+            // process — so the depth is capped and exceeded input raises instead.
+            if (_depth >= PdfReadLimits.MaxObjectDepth)
+            {
+                throw new InvalidDataException("PDF object nesting exceeds "
+                    + PdfReadLimits.MaxObjectDepth.ToString(CultureInfo.InvariantCulture) + " levels.");
+            }
+            _depth++;
+            try
+            {
+                return ParseDirectObject();
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        /// <summary>按当前词元下降一层解析直接对象；仅 ParseObject 调用，深度由它统一把关。
+        /// Parses one direct object, descending a single level; called only by ParseObject, which owns the
+        /// depth budget.</summary>
+        /// <returns>解析得到的 PDF 对象。The parsed PDF object.</returns>
+        private PdfObject ParseDirectObject()
         {
             SkipWhitespaceAndComments();
             if (Position >= _data.Length)
