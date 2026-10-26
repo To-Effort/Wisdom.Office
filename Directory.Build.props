@@ -9,7 +9,7 @@
     <Authors>Wisdom</Authors>
     <Company>Wisdom</Company>
     <Product>Wisdom.Office</Product>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <!-- NuGet 打包公共元数据 -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/To-Effort/Wisdom.Office</PackageProjectUrl>

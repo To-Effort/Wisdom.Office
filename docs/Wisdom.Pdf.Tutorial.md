@@ -440,8 +440,11 @@ Console.WriteLine(PdfDocument.Load("out/form-flat.pdf").Pages[0].ExtractText().C
 ```csharp
 PdfReadLimits.MaxDecodedStreamBytes = 64L * 1024 * 1024;   // 默认 256 MB
 PdfReadLimits.MaxXrefEntries = 200000;                     // 默认 2000000
-PdfReadLimits.MaxObjectStreamObjects = 100000;
-PdfReadLimits.MaxPageTreeDepth = 32;
+PdfReadLimits.MaxObjectStreamObjects = 100000;             // 默认 1000000
+PdfReadLimits.MaxPageTreeDepth = 32;                       // 默认 64
+PdfReadLimits.MaxObjectNumber = 5000000;                   // 默认 100000000
+PdfReadLimits.MaxObjectDepth = 16;                         // 默认 64，数组/字典嵌套层数
+PdfReadLimits.MaxGlyphMapEntries = 50000;                  // 默认 300000，单个字体的 CMap 与 /W 宽度表条目
 
 try
 {
@@ -457,6 +460,36 @@ catch (InvalidDataException ex)
     Console.WriteLine("结构非法: " + ex.Message);
 }
 ```
+
+`MaxObjectNumber` 同时约束对象号计数器与交叉表的 `/Size`——谎报 `2147483647` 的文件不再能把编辑后的输出搅坏；`MaxObjectDepth` 挡住畸形词元用超深嵌套打满调用栈；`MaxGlyphMapEntries` 应对的是"每条跨度都合法、加起来把映射表堆到内存耗尽"的 CMap 流，超出部分直接丢弃。流内容按 `OfficePackageLimits.CopyBounded` 分块复制，**不按对象声明的 `/Length` 预分配缓冲区**，所以声明长度造假换不来内存占用。把上限压到不合理的值，同一份正常文件也会被拦：
+
+```csharp
+// 上一节生成的 probe.pdf（20 583 字节，1 页）
+Console.WriteLine("正常解析页数=" + PdfDocument.Load("out/probe.pdf").Pages.Count);
+
+int saved = PdfReadLimits.MaxObjectNumber;
+PdfReadLimits.MaxObjectNumber = 3;
+try
+{
+    PdfDocument.Load("out/probe.pdf");
+    Console.WriteLine("未拦截");
+}
+catch (Exception ex)
+{
+    Console.WriteLine(ex.GetType().Name + ": " + ex.Message);
+}
+finally
+{
+    PdfReadLimits.MaxObjectNumber = saved;
+}
+```
+
+```text
+正常解析页数=1
+InvalidDataException: The PDF document catalog is invalid.
+```
+
+这些字段是**进程级静态值**，多线程共享，改完务必复原；库内部用它做只读判断，不会自动按文件规模调整。
 
 ## 11. 验证产物
 

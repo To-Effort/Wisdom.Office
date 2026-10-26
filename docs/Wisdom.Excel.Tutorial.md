@@ -13,6 +13,9 @@ out/
   order-template.xlsx   第 4 步生成的模板
   order.xlsx            模板填充结果
   types.xlsx            第 7 步的值类型实测表
+  csv-default.csv       第 8 步的默认导出（逐字）
+  csv-guarded.csv       第 8 步的公式注入防护导出
+  dirty.xlsx            第 8 步的脏字符导出实测
 ```
 
 ## 1. 写一张台账
@@ -536,6 +539,68 @@ catch (Exception ex) { Console.WriteLine("not-zip=" + ex.GetType().Name); }
 truncated=InvalidDataException
 not-zip=InvalidDataException
 ```
+
+## 8. CSV 落地不受信任内容与脏字符
+
+导出的内容来自外部（用户填写、上游接口、日志抓取）时，CSV 有一个经典陷阱：以 `=`、`+`、`-`、`@` 开头的文本，被 Excel / WPS 打开时会当公式执行。`ExcelCsvOptions.EscapeFormulaLikeText` 给这类**文本**字段前置一个单引号来中和它。
+
+```csharp
+OfficeWorkbook wb = new OfficeWorkbook();
+Worksheet s = wb.AddWorksheet("Csv");
+s.GetCell(1, 1).Value = "=1+1";
+s.GetCell(1, 2).Value = "+8613800000000";
+s.GetCell(1, 3).Value = "-45";
+s.GetCell(1, 4).Value = "@SUM(A1)";
+s.GetCell(1, 5).Value = 45d;
+s.GetCell(1, 6).Value = "普通文本";
+
+ExcelCsv.Write(wb, "out/csv-default.csv");
+ExcelCsv.Write(wb, "out/csv-guarded.csv", new ExcelCsvOptions { EscapeFormulaLikeText = true });
+Console.WriteLine("默认   " + File.ReadLines("out/csv-default.csv").First());
+Console.WriteLine("防护后 " + File.ReadLines("out/csv-guarded.csv").First());
+
+OfficeWorkbook back = ExcelCsv.Read("out/csv-guarded.csv");
+Worksheet bs = back.FirstWorksheet;
+for (int c = 1; c <= 6; c++)
+{
+    object v = bs.GetCell(1, c).Value;
+    Console.WriteLine("  col" + c + " 值类型=" + (v == null ? "null" : v.GetType().Name) + " 值=[" + v + "]");
+}
+```
+
+```text
+默认   =1+1,+8613800000000,-45,@SUM(A1),45,普通文本
+防护后 '=1+1,'+8613800000000,'-45,'@SUM(A1),45,普通文本
+  col1 值类型=String 值=['=1+1]
+  col2 值类型=String 值=['+8613800000000]
+  col3 值类型=String 值=['-45]
+  col4 值类型=String 值=['@SUM(A1)]
+  col5 值类型=Int32 值=[45]
+  col6 值类型=String 值=[普通文本]
+```
+
+要点：默认关闭，写出与读回逐字一致（`45d` 读回是数值，`=1+1` 读回还是那串文本）；打开后只有文本字段被加前导单引号，第 5 列的数值 `45` 一个字节没变，第 6 列的正常文本也不受影响——代价是读回来的字符串带着那个单引号（`'=1+1`），所以只在"内容不可信、要落地成报表给人打开"的场景显式打开。CSV 的行数与列数按 Excel 的 1 048 576 / 16 384 拦，列数在攒字段的过程中就封顶，超限抛 `InvalidDataException`，不会先拼出一条三万列的记录再报错。
+
+文本里混进 XML 1.0 不接受的字符（控制字符、未配对的代理项）时，写出前会被剔除，而不是让整个工作簿保存失败：
+
+```csharp
+OfficeWorkbook wb2 = new OfficeWorkbook();
+Worksheet s2 = wb2.AddWorksheet("脏数据");
+string dirty = "订单" + '\u0007' + "A" + '\uD800' + "B" + '\u000B' + "尾";
+s2.GetCell(1, 1).Value = dirty;
+XlsxWriter.Write(wb2, "out/dirty.xlsx");
+OfficeWorkbook back2 = XlsxReader.Load("out/dirty.xlsx");
+string v2 = (string)back2.FirstWorksheet.GetCell(1, 1).Value;
+Console.WriteLine("写入长度=" + dirty.Length + " 读回长度=" + v2.Length + " 读回=[" + v2 + "]");
+Console.WriteLine("读回码点=" + string.Join(" ", v2.Select(c => ((int)c).ToString("X4"))));
+```
+
+```text
+写入长度=8 读回长度=5 读回=[订单AB尾]
+读回码点=8BA2 5355 0041 0042 5C3E
+```
+
+`0x07`、未配对高代理 `D800`、`0x0B` 三个非法字符被丢掉，正文与 `A`、`B` 原样保留。同样的清洗发生在 `Wisdom.Word` 与 `Wisdom.Ppt` 的写出路径上，入口都是 `Wisdom.Office.Core` 的 `OfficeXmlText`。
 
 ## 常见问题
 

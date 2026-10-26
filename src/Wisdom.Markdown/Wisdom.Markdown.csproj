@@ -5,9 +5,6 @@
     <AssemblyName>Wisdom.Markdown</AssemblyName>
     <Description>自研 Markdown 解析与渲染，接入统一文档模型。Self-contained Markdown parser and renderer bridged into the unified document model.</Description>
     <IsPackable>true</IsPackable>
-    <!-- 本模块自 1.0.0 起源码未变，版本保持不动，避免发布内容相同的重复包。
-         This module is unchanged since 1.0.0, so its version stays put instead of shipping a duplicate package. -->
-    <Version>1.0.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Wisdom.Office.Core\Wisdom.Office.Core.csproj" />

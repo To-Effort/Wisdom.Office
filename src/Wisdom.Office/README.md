@@ -3,7 +3,7 @@
 `Wisdom.Office` 是整套库的**统一门面包**：自动检测格式、读取任意受支持的 Office 文件、在 PDF / Word / Excel / PPTX / Markdown 之间互转，并提供开箱即用的报表导出 `Report`。引用这一个包即可拿到 Core、Pdf、Word、Excel、Ppt、Markdown 六个包的全部能力。
 
 - 包名：`Wisdom.Office`
-- 版本：`1.0.1`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Markdown`（同版本）
 - 第三方依赖：无
 - 命名空间：`Wisdom.Office`
@@ -32,13 +32,13 @@
 dotnet add package Wisdom.Office
 
 # 指定版本
-dotnet add package Wisdom.Office --version 1.0.1
+dotnet add package Wisdom.Office --version 1.0.2
 ```
 
 `.NET Framework` 旧式 `packages.config` 项目：
 
 ```powershell
-Install-Package Wisdom.Office -Version 1.0.1
+Install-Package Wisdom.Office -Version 1.0.2
 ```
 
 ## 快速开始

@@ -195,6 +195,47 @@ Console.WriteLine(filled.Contains("2026-10-21"));    // True —— 按 :yyyy-MM
 
 段落级 `{{#each}}` 会把标记所在的段落整体换成 N 份内容；列表为空时循环块整块消失。表格行循环的写法相同，把 `{{#each}}` / `{{/each}}` 放在循环行的首列与末列。循环体内还能用 `@index`、`@number`、`@first`、`@last` 和 `.`（当前项本身）；取列表项属性用 `{{name}}`，对象嵌套用点路径 `{{order.id}}`，不支持 `[i]` 下标。
 
+### 3.1 模板夹带的可执行部件会被剥掉
+
+填充是整包搬运：模板里除了正文，宏工程、嵌入的 OLE / ActiveX 对象都会跟着进成品。收到别人发来的 `.docx` 当模板用时，`DocxTemplate` 会无条件剥掉这些部件，连带删除它们的关系项、`[Content_Types].xml` 里的 `Override`，以及正文里指向它们的 `r:id`（连同 `<w:object>` 这类承载元素），留下一个自洽的纯内容包。下面手工拼一个"带宏"的模板，六个部件填充后剩四个：
+
+```csharp
+// 六项：[Content_Types].xml、_rels/.rels、word/document.xml、word/_rels/document.xml.rels、
+//       word/vbaProject.bin、word/embeddings/ole1.xlsx
+// document.xml 里同时引用 rIdSafe（https 外链）、rIdFile（file: 外链）与 rIdEmbed（嵌入对象）
+byte[] template = ZipBytes(entries);
+Console.WriteLine("模板字节=" + template.Length + " 模板部件数=6");
+
+TemplateContext ctx = new TemplateContext();
+ctx.Set("customerName", "示例客户");
+byte[] filledBytes = DocxTemplate.Fill(template, ctx);
+
+Dictionary<string, byte[]> parts = ReadParts(filledBytes);
+Console.WriteLine("填充后部件数=" + parts.Count);
+Console.WriteLine("填充后部件=" + string.Join(" ", parts.Keys.OrderBy(k => k)));
+string document = Text(parts["word/document.xml"]);
+string rels = Text(parts["word/_rels/document.xml.rels"]);
+Console.WriteLine("正文保留 rIdSafe=" + document.Contains("rIdSafe")
+                  + " 保留 rIdFile=" + document.Contains("rIdFile")
+                  + " 保留 rIdEmbed=" + document.Contains("rIdEmbed")
+                  + " 保留 w:object=" + document.Contains("<w:object"));
+Console.WriteLine("关系保留 https=" + rels.Contains("https://example.com/report")
+                  + " 保留 file:=" + rels.Contains("file:")
+                  + " 保留 vbaProject=" + rels.Contains("vbaProject"));
+Console.WriteLine("正文=" + DocxReader.Load(filledBytes).GetPlainText().Trim());
+```
+
+```text
+模板字节=1718 模板部件数=6
+填充后部件数=4
+填充后部件=_rels/.rels [Content_Types].xml word/_rels/document.xml.rels word/document.xml
+正文保留 rIdSafe=True 保留 rIdFile=False 保留 rIdEmbed=False 保留 w:object=False
+关系保留 https=True 保留 file:=False 保留 vbaProject=False
+正文=客户：示例客户 官网本机
+```
+
+要点：宏部件与被嵌入的 OLE 都不再随成品带走，指向它们的引用一并清理，所以不会出现"点开是空白/损坏对象"的悬空 `r:id`；模板里 `file:` / `smb:` 这类指向本机或共享盘的超链接按同一份协议白名单被剥掉，`https:` 外链与正文文字都不受影响（`官网本机` 就是两个链接的文字部分）。相对目标如 `../embeddings/oleObject1.bin` 会先规范化再判定，不会因为字符串拼接漏剥。要保留宏请在填充之后自行按 `.docm` 组装。整包解压字节数（含原样搬运的条目）统一计入 `OfficePackageLimits` 的累计上限。
+
 ## 4. 批量整理
 
 `WordNormalizeOptions` 的默认构造就是"中文公文常用值"，绝大多数开关**默认已打开**。所以下面这段是在改目标值、并关掉两处演示中不需要的行为：

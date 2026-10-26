@@ -3,7 +3,7 @@
 `Wisdom.Pdf` 是**自研的 PDF 引擎**：按统一文档模型排版生成 PDF 1.7（含 TrueType 子集字体嵌入与图片），解析既有 PDF 并提取文本与表格，还能在对象级编辑文档——合并拆分页面、页面旋转、文字与图像水印、口令加密读写、AcroForm 填表与扁平化。不依赖任何第三方 PDF 库，也不调用打印驱动。
 
 - 包名：`Wisdom.Pdf`
-- 版本：`1.0.1`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无
 - 命名空间：`Wisdom.Pdf`
@@ -26,7 +26,7 @@ ZIP、XML、压缩流全部自行实现；.NET Framework 与 .NET 上的 inflate
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Pdf --version 1.0.1
+dotnet add package Wisdom.Pdf --version 1.0.2
 ```
 
 只需要「任意文档 → PDF」的转换或报表导出时，请引用 `Wisdom.Office` 门面包；本包接收的是 `Wisdom.Office.Core` 的 `OfficeDocument` 模型。
@@ -290,11 +290,18 @@ file.Save("form-flat.pdf");           // 之后 HasForm 为 false，文档不再
 解析不受信任的 PDF 时可下调上限，超限会中止而不是无界占用内存（解压超限抛出 `DecompressionLimitException`，结构非法抛出 `InvalidDataException`）：
 
 ```csharp
-PdfReadLimits.MaxDecodedStreamBytes = 64L * 1024 * 1024;  // 解压后字节上限，默认 256 MB
-PdfReadLimits.MaxXrefEntries = 200000;                    // 交叉引用表条目上限
-PdfReadLimits.MaxObjectStreamObjects = 100000;            // 对象流内对象上限
-PdfReadLimits.MaxPageTreeDepth = 32;                      // 页面树递归深度上限
+PdfReadLimits.MaxDecodedStreamBytes = 64L * 1024 * 1024;  // 单流解压后字节上限，默认 256 MB
+PdfReadLimits.MaxObjectNumber = 5000000;                  // 对象号上限，默认 100 000 000
+PdfReadLimits.MaxXrefEntries = 200000;                    // 交叉引用表条目上限，默认 2 000 000
+PdfReadLimits.MaxObjectStreamObjects = 100000;            // 对象流内对象上限，默认 1 000 000
+PdfReadLimits.MaxPageTreeDepth = 32;                      // 页面树遍历深度上限，默认 64
+PdfReadLimits.MaxObjectDepth = 16;                        // 数组/字典嵌套深度上限，默认 64
+PdfReadLimits.MaxGlyphMapEntries = 50000;                 // 单个字体 CMap 与 /W 宽度表条目上限，默认 300 000
 ```
+
+这些上限不只是"报错前少分配点内存"：流内容按 `OfficePackageLimits.CopyBounded` 分块复制，**不会按对象声明的 `/Length` 预分配缓冲区**，声明长度伪造到 `int.MaxValue` 也拿不到那么多内存；嵌套深度上限挡住畸形词元把调用栈打满；`MaxObjectNumber` 同时约束对象号计数器与 `/Size`，谎报 `2147483647` 的文件不再能把编辑后的输出搅坏；畸形 CMap 用大量各自合法的跨度堆映射表时，超出 `MaxGlyphMapEntries` 的区间直接丢弃。
+
+口令加密的取舍：`/CFM` 解析不出加密算法时（`/StmF`、`/StrF` 指向不存在的密码筛选器）在派生密钥**之前**就报错，而不是让算法混淆伪装成"口令错误"；RC4 / AES 解密后的 PKCS#7 填充按内容校验，填充不合法时保留原文而不是截掉一段乱字节。
 
 库内自行实现 inflate（`Zlib` / `Adler32`）与对象/词法解析，遇到结构损坏时抛 `InvalidDataException`，不会越界读取。
 

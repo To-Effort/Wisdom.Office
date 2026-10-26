@@ -81,13 +81,13 @@ dotnet build tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj -c Release -f 
 
 ## 安装（NuGet）
 
-> 七个包的版本号不再强制齐步：`Wisdom.Office`、`Wisdom.Office.Core`、`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel` 当前为 `1.0.1`；`Wisdom.Ppt` 与 `Wisdom.Markdown` 自 `1.0.0` 起源码未变，仍按 `1.0.0` 发布，不产出内容重复的包。门面包会把这六个版本原样递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
+> 七个包当前同为 `1.0.2`，版本号齐步前进；门面包 `Wisdom.Office` 会把六个依赖按同一版本递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
 
 ```bash
 dotnet add package Wisdom.Office
 
 # 或指定版本
-dotnet add package Wisdom.Office --version 1.0.1
+dotnet add package Wisdom.Office --version 1.0.2
 ```
 
 ## 支持的运行环境
@@ -477,12 +477,13 @@ OfficeConverter.ToWord(document, "document.docx");
 - **纯托管实现**：`ZipArchive` 处理 OOXML 包，LINQ to XML 处理部件，`CompoundFile` 读取 OLE2；PDF 生成器自行输出对象、字体与内容流；PresentationML 与 Markdown 解析器同样手写，不依赖 Markdig。
 - **字体**：PDF 生成会从系统字体目录嵌入 TrueType/TTC 字体，无需安装 Office；Linux/macOS 下可回退到 Noto、Liberation、文泉驿等已注册字体，也可通过 `FontResolver` 注册自定义字体。
 - **报表层**：`Report` 是构建在统一模型之上的轻量 DSL，不是独立排版引擎。
+- **不可信输入优先**：读取端一律按上限分块复制（`OfficePackageLimits.CopyBounded`），不凭部件声明的长度预分配内存；PDF、OOXML、OLE2、字体、Markdown 各有结构类上限，超限中止而不是无界增长，坏输入统一收敛为 `InvalidDataException`。写出端把 XML 1.0 不接受的字符剔除（`OfficeXmlText`），超链接只放行 `http/https/mailto/ftp/ftps/tel/sms` 与相对路径，DOCX 模板填充剥离宏与嵌入对象并清理随之失效的 `r:id`。
 
 ## 已知限制
 
 - 旧版 `.doc`、`.xls` 仅支持读取，不支持写回；`.doc` 的复杂域、批注、修订不保证还原。
 - `.xls` 仅支持 BIFF8（Excel 97-2003），不支持 BIFF5/7、加密工作簿；公式只保留缓存值，不还原公式文本。
-- PDF 不支持加密文档；PDF 保存是依据统一模型重新排版，不保留原始 PDF 的字节和完整视觉结构。
+- PDF 加密走标准安全处理器（RC4-40、RC4-128、AES-128、AES-256 读写双向支持），不支持公钥加密与 Adobe 自定义安全处理器；`OfficeDocument` → PDF 的保存依据统一模型重新排版，不保留原始 PDF 的字节和完整视觉结构。
 - PDF 文本提取依赖文本操作符，扫描件需要额外 OCR；表格识别为启发式，复杂版式可能需人工校正。
 - PDF 字体嵌入支持 TrueType `glyf` 轮廓，不支持 CFF/OpenType（`OTTO`）字体嵌入；PNG 不支持隔行扫描。
 - Word/PDF/PPTX/Markdown 不能直接输出为 Excel；`WorkbookLayoutOptions` 不支持的复杂对象（如图表、形状）不会转入 PDF/Word。

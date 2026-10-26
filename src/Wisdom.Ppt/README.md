@@ -3,7 +3,7 @@
 `Wisdom.Ppt` 负责 **PowerPoint 侧的全部读写**：用统一演示文稿模型 `OfficePresentation` 构建幻灯片并写出 PPTX，或把 `.pptx` 读回同一模型。全部由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理 PresentationML，不依赖 Office、WPS 或任何第三方库。
 
 - 包名：`Wisdom.Ppt`
-- 版本：`1.0.0`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Ppt`（读写器）、`Wisdom.Office.Core`（`OfficePresentation`、`Slide`、各形状类型）
@@ -26,7 +26,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Ppt --version 1.0.0
+dotnet add package Wisdom.Ppt --version 1.0.2
 ```
 
 需要把演示文稿转成 PDF / Word 时请改引 `Wisdom.Office` 门面包（本包不依赖 `Wisdom.Pdf` 与 `Wisdom.Word`）。
@@ -252,3 +252,4 @@ OfficeConverter.DocumentToPptx(document, "from-word.pptx");    // byte[] 重载�
 - 版式与主题底稿由本库生成一套固定的 `slideMaster` / `slideLayout` / `theme`，深改经 `PresentationTheme` 显式覆盖六个色板阶段与主/次字体；`.potx` 模板可读写，但不继承第三方母版的精确占位符坐标（占位符位置仍按幻灯片尺寸等比推算）。
 - 文本换行、自动字号、形状阴影与 3D 效果由 PowerPoint / WPS 运行时决定，本包只输出对应属性，不做排版模拟。
 - 图片仅支持 PNG / JPEG。
+- 文本里 XML 1.0 不接受的字符（控制字符、未配对代理项）在写出前由 `OfficeXmlText` 剔除，避免一个脏字符让整个演示文稿保存失败；因此这类字符不会往返保留。

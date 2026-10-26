@@ -3,7 +3,7 @@
 `Wisdom.Excel` 负责 **Excel 侧的全部读写**：XLSX 读取与生成（样式、数字格式、公式、合并、冻结窗格、打印设置、原生图表、条件格式、单元格图片、自动筛选、数据验证、超链接与标签色）、集合 / `DataTable` 映射、CSV 导入导出、低内存流式查询、区域与行列编辑、工作表管理、XLSX 模板填充，以及旧版 `.xls`（BIFF8，Excel 97-2003）读取。
 
 - 包名：`Wisdom.Excel`
-- 版本：`1.0.1`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Excel`（数据模型位于 `Wisdom.Office.Core`）
@@ -28,7 +28,7 @@ XLSX 包由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理；`.xl
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Excel --version 1.0.1
+dotnet add package Wisdom.Excel --version 1.0.2
 ```
 
 需要把 Excel 转成 PDF / DOCX 时请改引 `Wisdom.Office` 门面包。
@@ -111,6 +111,8 @@ XlsxWriter.Write(workbook, "sales.xlsx");       // 亦支持 Stream，或 byte[]
 
 `Cell.Value` 支持 `string`、`double`、`bool`、`DateTime`（`decimal` 也能写，落盘时转为 `double`）。数字格式遵循 Excel 的分节语法 `正数;负数;零;文本`，`DisplayText()` 与导出的 PDF/Word 使用同一套格式化实现；列宽放不下数值或日期时输出 `####` 是**转换层**的行为，由 `Wisdom.Office` 的 `WorkbookLayoutOptions.EmulateNumberOverflow`（默认 `true`）控制，`DisplayText()` 本身始终给出完整文本。
 
+文本里混入 XML 1.0 不接受的字符（`0x00`–`0x08`、未配对的代理项等，常见于从数据库或日志抓来的脏数据）时，写出前会由 `OfficeXmlText` 剔除这些字符，代价最多是掉几个字符，而不是 `System.Xml` 抛异常让整份工作簿保存失败。
+
 ## 集合映射与 DataTable
 
 `ExcelCollection` 提供 MiniExcel / EPPlus 风格的集合映射：对象集合直接写成表，读回时按表头名称还原对象。
@@ -164,12 +166,18 @@ foreach (Dictionary<string, object> row in ExcelQuery.ReadDictionaries("big.xlsx
 
 `Query<T>` / `ReadDictionaries` 同样接受 `Stream`、`byte[]` 与 `ExcelCollectionOptions`；不可定位的流会被复制到内存。共享字符串表仍会整体加载（与 MiniExcel 语义一致），样式与日期系统按工作簿设置解释。
 
-CSV 读写覆盖 RFC 4180 的引号、逗号与字段内换行，并带行列数与单字段长度上限：
+CSV 读写覆盖 RFC 4180 的引号、逗号与字段内换行，并带行列数与单字段长度上限——列数在攒字段的过程中就封顶，不等整条记录拼完才报错；行数与列数分别按 Excel 的 1,048,576 / 16,384 拦，超限抛 `InvalidDataException` 而不是把模型撑成一个写不出也导不完的网格：
 
 ```csharp
 ExcelCsv.Write(workbook, "export.csv");                       // 默认 UTF-8 BOM、逗号
 OfficeWorkbook csv = ExcelCsv.Read("import.csv");             // 数值/布尔自动转换
 ExcelCsv.Write(sheet, "export-tab.csv", new ExcelCsvOptions { Separator = '\t', WriteBom = false });
+```
+
+导出内容里可能含不受信任文本时，再打开 `EscapeFormulaLikeText`：以 `=`、`+`、`-`、`@` 或制表符开头的**文本**字段前会加一个单引号，Excel 与 WPS 打开 CSV 时就不再把它当公式执行（CSV 公式注入防护）。数值与日期不受影响；代价是导出值与原始文本不再逐字相等，所以默认关闭以保持写出再读回的往返一致。
+
+```csharp
+ExcelCsv.Write(sheet, "report.csv", new ExcelCsvOptions { EscapeFormulaLikeText = true });
 ```
 
 ## 区域 API 与行列编辑
@@ -223,7 +231,7 @@ sheet.DataValidations.Add(new ExcelDataValidation
 workbook.DefinedNames.Add(new ExcelDefinedName("Amounts", "明细!$C$2:$C$100"));
 ```
 
-超链接只接受 `http/https/mailto/ftp/ftps/file/tel/smb` 与相对路径，`javascript:`、`data:` 等方案在写出时直接丢弃；筛选、数据验证、标签色、超链接与定义名均可被 `XlsxReader` 回读。
+超链接只放行 `http/https/mailto/ftp/ftps/tel/sms` 与相对路径；`javascript:`、`data:` 这类脚本方案，以及 `file:`、`smb:` 这类指向本机路径或 UNC 共享的目标（收件人点开时并无意识，Windows 打开 UNC 还会顺带发出凭据协商）在写出时直接丢弃；筛选、数据验证、标签色、超链接与定义名均可被 `XlsxReader` 回读。
 
 ## 图表、条件格式与图片
 

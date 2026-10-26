@@ -36,7 +36,7 @@ Wisdom.Office        门面：格式检测、格式互转、Excel/PowerPoint→W
 - **只把 Markdown 转成 HTML / 反解析成文档模型**：单装 `Wisdom.Markdown`。
 - **想自己控制排版**（比如做一套企业内部的版式规范）：直接用 `Wisdom.Office.Core` 的模型，把渲染交给 `Wisdom.Office` 的 `OfficeConverter.ToPdf/ToWord`。
 
-安装始终是一条命令（门面包当前 `1.0.1`，其余六个版本由它递推带来；单装 `Wisdom.Ppt` / `Wisdom.Markdown` 时它们仍是 `1.0.0`）：
+安装始终是一条命令（门面包当前 `1.0.2`，其余六个包版本相同，由它递推带来）：
 
 ```bash
 dotnet add package Wisdom.Office

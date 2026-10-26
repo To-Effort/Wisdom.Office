@@ -3,7 +3,7 @@
 `Wisdom.Markdown` 负责 **Markdown 侧的全部读写**：把 Markdown 文本解析为统一文档模型 `OfficeDocument`，把文档模型回写为 Markdown，并在两者之间提供 HTML 渲染。解析结果可以直接交给 `Wisdom.Word` / `Wisdom.Pdf` 生成 DOCX 或 PDF。
 
 - 包名：`Wisdom.Markdown`
-- 版本：`1.0.0`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不依赖 Markdig、CommonMark.NET 等外部解析器
 - 命名空间：`Wisdom.Markdown`
@@ -26,7 +26,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Markdown --version 1.0.0
+dotnet add package Wisdom.Markdown --version 1.0.2
 ```
 
 需要把 Markdown 转成 PDF / Word 时请改引 `Wisdom.Office` 门面包。
@@ -44,7 +44,10 @@ dotnet add package Wisdom.Markdown --version 1.0.0
 | 引用 | `>` 单层与 `>>` 多层 | 斜体段落 + 递进左缩进（单层 36 磅、每加一层 18 磅）；模型没有引用块类型，回写 Markdown 与渲染 HTML 时只剩斜体 |
 | 表格 | GFM 管道表格，含 `:---`、`---:`、`:---:` 三种对齐 | `Table` + `TableRow.IsHeader` + 灰底加粗表头；三种对齐落在每个单元格段落的 `Alignment` 上，`Table.Columns` 只按列数补 `Width = 0` 的占位 |
 | 其他 | 分割线 `---` / `***`、反斜杠转义、`\|` 单元格内转义 | 分割线落成居中、写着 `＊ ＊ ＊` 的段落（段落模型无下边框属性）；HTML 与 Markdown 出口按同一常量识别回 `<hr />` 与 `---`，Word / PDF 仍排这几个字符 |
+| 字符实体 | 数字形式 `&#65;` / `&#x41;` 与 73 个常用命名字（`&amp;`、`&nbsp;`、`&copy;`、`&mdash;`、`&hellip;` 等） | 解析阶段先解成字符，各写出口再按需转义；匹配不上的形式按字面保留，码点为 0、落在代理区或超过 U+10FFFF 视为非法，同样留字面（与 CommonMark 一致） |
 | Front-matter | 文件开头 `---` 包裹的 YAML 块 | 仅识别 `title` / `author` / `date`，写入 `document.Metadata` |
+
+解析不受信任的 Markdown 时有资源上限，超限抛出 `InvalidDataException`（不是无界吃内存）：单张表格 4 096 列、累计 65 536 个单元格，单篇文档嵌入图片合计 256 MB。同一张本地图片被引用几百次时按归一化绝对路径只读一次、只存一份，字节数也只计一次。
 
 ## Markdown → 文档模型
 

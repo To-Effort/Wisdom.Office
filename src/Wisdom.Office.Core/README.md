@@ -3,7 +3,7 @@
 `Wisdom.Office.Core` 是整套库的**共享内核**：统一文档模型、工作簿模型、演示文稿模型、模板引擎、OLE2 复合文档读取、ZIP 安全读取和二进制/压缩基础工具。`Wisdom.Pdf`、`Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Markdown`、`Wisdom.Office` 全部依赖它；只想要模型对象或模板引擎的场合也可以单独引用。
 
 - 包名：`Wisdom.Office.Core`
-- 版本：`1.0.1`
+- 版本：`1.0.2`
 - 依赖：无（其余六个包的共同底座）
 - 命名空间：`Wisdom.Office.Core`
 
@@ -25,7 +25,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Office.Core --version 1.0.1
+dotnet add package Wisdom.Office.Core --version 1.0.2
 ```
 
 ## 文档模型（Word / PDF 共用）
@@ -215,7 +215,8 @@ string text = TemplateEngine.Replace("{{customerName}} 的订单 {{order.id}} �
 | --- | --- |
 | `CompoundFile` | OLE2 复合文档（`.doc`/`.xls` 容器）读取：`HasStream`、流枚举 |
 | `PackageArchive` | ZIP 包安全打开：立即物化中央目录，把 .NET Framework 上延迟抛出的 `ArgumentException` 统一转为 `InvalidDataException` |
-| `OfficePackageLimits` | 包解压上限：`MaxEntryBytes`（默认 256 MB）、`MaxTotalBytes`（默认 1 GB）、`ReadEntryBytes` |
+| `OfficePackageLimits` | 包解压上限：`MaxEntryBytes`（默认 256 MB）、`MaxTotalBytes`（默认 1 GB）、`ReadEntryBytes`、`ReadAllBytes` / `CopyBounded`（按上限分块复制，不凭部件声明的长度预分配内存） |
+| `OfficeXmlText` | 写出前的 XML 文本防护：`Strip(string)` 丢掉 XML 1.0 不接受的字符（`0x00`–`0x08`、未配对代理项等），`Sanitize(XDocument)` 就地清理整棵树；文本干净时返回原实例，不额外分配 |
 | `Zlib` / `Adler32` | 自研 DEFLATE 解压，供 PDF 与 XLSX 使用，不依赖第三方压缩库 |
 | `LittleEndianReader` / `BigEndianReader` / `ByteUtils` | 二进制读取工具 |
 | `UnitConverter` | 磅 / 像素 / EMU / OOXML 列宽行高之间的换算 |

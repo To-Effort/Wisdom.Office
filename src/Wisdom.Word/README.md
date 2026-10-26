@@ -3,7 +3,7 @@
 `Wisdom.Word` 负责 **Word 侧的全部读写**：DOCX/DOTX/RTF/HTML/ODT/纯文本的读取与生成、DOCX 生成与模板填充、旧版 `.doc` 读取、流式文档构建、邮件合并、查找替换、文档克隆与合并、自定义文档属性、标签纸与信封生成，以及建立在统一文档模型之上的修订跟踪、SmartArt/数字签名检查、文档整理、一致性校验、差异比对与字数统计引擎。
 
 - 包名：`Wisdom.Word`
-- 版本：`1.0.1`
+- 版本：`1.0.2`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Word`
@@ -26,7 +26,7 @@ DOCX 由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理，六份�
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Word --version 1.0.1
+dotnet add package Wisdom.Word --version 1.0.2
 ```
 
 需要把 Word 转成 PDF 时请改引 `Wisdom.Office` 门面包（本包不依赖 `Wisdom.Pdf`）。
@@ -167,7 +167,7 @@ builder.InsertField("PAGE", "1");      // 页码域
 DocxWriter.Write(builder.Document, "report.docx");
 ```
 
-可设置 `Alignment`、`SpaceBefore/SpaceAfter`、`LineSpacing`、各向缩进、`HeadingLevel`、`KeepWithNext`、`PageBreakBefore`；`Write` 追加文字，`InsertXxx` 系列插入段落、图片、书签、超链接、域、目录与表格。外部超链接会生成 `TargetMode="External"` 关系，锚点写成 `w:anchor`，书签写成 `w:bookmarkStart/End`。
+可设置 `Alignment`、`SpaceBefore/SpaceAfter`、`LineSpacing`、各向缩进、`HeadingLevel`、`KeepWithNext`、`PageBreakBefore`；`Write` 追加文字，`InsertXxx` 系列插入段落、图片、书签、超链接、域、目录与表格。外部超链接会生成 `TargetMode="External"` 关系，锚点写成 `w:anchor`，书签写成 `w:bookmarkStart/End`。外链目标只放行 `http/https/mailto/ftp/ftps/tel/sms` 与相对路径，`javascript:`、`data:` 以及指向本机或共享盘的 `file:`、`smb:` 在写出时丢弃，与 `Wisdom.Excel`、`Wisdom.Markdown` 的取舍逐字一致。
 
 ## 书签
 
@@ -771,6 +771,8 @@ DocxTemplate.Fill(input, output, context, new TemplateOptions
 
 `{{#each}}` 在 Word 中按段落或表格行整体循环；空列表时整个循环块被移除。
 
+填充是整包搬运，模板里夹带的东西会跟着进成品，所以 `DocxTemplate` 会无条件剥掉可执行部件——`vbaProject.bin` / `vbaData.xml`、`/embeddings/` 与 `/activex/` 下的 OLE 与 ActiveX 对象、`printers.bin`——连带它们的关系项与 `[Content_Types].xml` 里的 `Override` 一起删除，并把正文、页眉页脚、脚注、词汇表等部件里因此失效的 `r:id` 清理干净，不留指向已删部件的悬空引用；`<w:object>` 这类承载元素同样移除，正文文字保留。模板里指向本机或共享盘的 `file:` / `smb:` 超链接也按同一份协议白名单一并剥掉，`https:` 等安全链接不受影响。剥掉宏之后产出的是纯内容文档；要保留宏请在填充后自行按 `.docm` 组装。占位符展开与引用清理各自独立：上下文为 `null` 时不展开文本，悬空 `r:id` 照样清理。相对目标（`../embeddings/oleObject1.bin`）先按规范化路径消解 `.` 与 `..` 再判定，落在包根的 `embeddings/` 也照样识别，不会因为字符串拼接而漏剥。整包解压字节数（包括原样搬运的条目）统一计入 `OfficePackageLimits` 的上限，模板包的体量上限因此与"是否会被改写"无关。
+
 ## 文档整理引擎
 
 `WordNormalizer` 在统一模型上做批量规范化——适合把多人协作、格式混乱的文档拉回统一标准。
@@ -873,7 +875,8 @@ foreach (KeyValuePair<string, int> f in metrics.FontUsage) Console.WriteLine(f.K
 - DOCX/DOTX 保留行内插入/删除与段落标记修订；不支持移动修订（`w:moveFrom`/`w:moveTo` 读取为删除/插入）、表格行/单元格/section 修订与修订批注气泡。接受/拒绝修订不重建原始字符位置，也不拆分或合并相邻段落。
 - SmartArt 仅提供内容提取（节点文本），重新生成的包不会保留 SmartArt 图形结构。
 - 数字签名仅做结构与算法信息检查，不验证密码学有效性；写出器不复制签名部件，任何重新生成包的操作都会使原签名失效。
-- 不处理批注、嵌入对象与 VBA；读取时忽略。
+- 不处理批注、嵌入对象与 VBA；读取时忽略，模板填充时连关系一起剥离（见「模板填充」）。
+- 文本里 XML 1.0 不接受的字符（控制字符、未配对代理项）在写出前剔除，避免一个脏字符让整个文档保存失败；因此这类字符不会往返保留。
 - 分页、页码等运行时排版由 Word/WPS 决定；本包输出的是 `PAGE`/`NUMPAGES` 域与分页属性，不做像素级分页模拟。
 - 图片仅支持 PNG / JPEG。
 - 邮件合并区域不支持同名区域自我嵌套（嵌套区域请使用不同名称），也不支持跨节区域。

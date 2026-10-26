@@ -804,6 +804,47 @@ Console.WriteLine("    纯链接行 默认=" + Markdown.ToHtml("看 [链接](htt
 
 同一行里 `<` 出现在中间（第 6 步那句结尾段落）则只转义标签本身，链接照常解析。
 
+## 11. 字符实体与资源上限
+
+数字形式 `&#65;` / `&#x42;` 与 73 个常用命名字（`&amp;`、`&nbsp;`、`&copy;`、`&mdash;` 等）在解析阶段就解成字符，各写出口再按需转义；匹配不上的形式按字面保留，与 CommonMark 一致。
+
+```csharp
+string md = "文本 `&#65;` 与 &#65;&#x42;&copy;&nbsp;&mdash; 以及 &copy 和 &#0;";
+Console.WriteLine(Markdown.ToDocument(md).GetPlainText().Trim());
+Console.WriteLine(Markdown.ToHtml(md));
+```
+
+```text
+文本 &#65; 与 AB© — 以及 &copy 和 &#0;
+<p>文本 <code>&amp;#65;</code> 与 AB© — 以及 &amp;copy 和 &amp;#0;</p>
+```
+
+要点：等宽片段里的 `` `&#65;` `` 不解码（HTML 里保持 `&amp;#65;`）；`&copy` 缺分号、`&#0;` 码点为 0（同样非法的还有落在代理区、超过 U+10FFFF 的码点）都按字面留着；正文里的 `&#65;&#x42;&copy;` 解成 `AB©`，紧跟的 `&nbsp;` 是不换行空格 U+00A0（控制台看着像普通空格），`&mdash;` 解成长破折号。
+
+解析不受信任的 Markdown 时有资源上限，超限抛 `InvalidDataException` 而不是无界增长：单张表格 4 096 列、累计 65 536 个单元格，单篇文档嵌入图片合计 256 MB。
+
+```csharp
+try { Markdown.ToDocument(new string('|', 4096) + "\n" + new string('-', 4096) + "|"); }
+catch (Exception ex) { Console.WriteLine("列数：" + ex.GetType().Name + ": " + ex.Message); }
+
+StringBuilder row = new StringBuilder();
+StringBuilder sep = new StringBuilder();
+for (int i = 0; i < 400; i++) { row.Append("| c" + i + " "); sep.Append("| --- "); }
+row.Append('|'); sep.Append('|');
+StringBuilder many = new StringBuilder();
+many.Append(row).Append('\n').Append(sep).Append('\n');
+for (int r = 0; r < 200; r++) many.Append(row).Append('\n');
+try { Markdown.ToDocument(many.ToString()); }
+catch (Exception ex) { Console.WriteLine("单元格：" + ex.GetType().Name + ": " + ex.Message); }
+```
+
+```text
+列数：InvalidDataException: The Markdown table exceeds the 4096-column limit.
+单元格：InvalidDataException: The Markdown table exceeds the 65536-cell limit.
+```
+
+合法边界不受影响：4 095 列的表照常解析，400 列 × 160 个数据行（连表头 161 行、64 400 个单元格）也在限内。同一张本地图片被引用几百次时按归一化绝对路径只读一次、只存一份，累计字节也只计一次；单张图另受 `MarkdownOptions.MaxImageBytes`（默认 16 MB）约束，超限与网络图片一样降级成 alt 文本。
+
 ## 常见问题
 
 **`table.Rows[0].Cells.Count` 才是列数。** `Table.Columns` 是列宽定义，Markdown 表格没有宽度概念，解析器只按列数补了 `Width = 0` 的占位。手写文档时也一样：`AddRow(params string[])` 填的是 `Rows[i].Cells`。

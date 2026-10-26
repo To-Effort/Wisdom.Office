@@ -14,6 +14,7 @@ out/
   deck.docx      同一份演示文稿导出的 Word
   template.docx  带 {{key}} 与 {{#each}} 标记的 Word 模板
   filled.docx    用模板上下文填充后的 Word
+  xmltext.xlsx   第 12 步含脏字符的表格（写出时已清掉非法字符）
   sample.png     任意一张 PNG，供图片示例使用（本文用它测得 240x120 / 592 字节）
 ```
 
@@ -613,6 +614,56 @@ SpreadsheetRange.TryParse("台账!$B$2:$D$9",
 ```
 
 `LittleEndianReader` / `BigEndianReader` 用于 BIFF 与 PDF 的二进制读取，`Adler32` 是 zlib 校验和，`DateUtils` 负责 Excel 序列日期与 `DateTime` 互转（含 1904 日期系统）。
+
+## 12. 脏字符写进 XML
+
+XML 1.0 的合法字符只有 `#x9`、`#xA`、`#xD`、`[#x20-#xD7FF]`、`[#xE000-#xFFFD]`，落单的代理项与 `0xFFFE`/`0xFFFF` 都不在其中。`System.Xml` 遇到这些字符直接抛 `ArgumentException`——从数据库、OCR 结果或网络接口里带出的一个控制字符，就能让整份文档保存失败。写出端在落盘前统一清掉它们，所以脏数据最多损失一个字符，不会打断保存。
+
+```csharp
+Console.WriteLine(OfficeXmlText.Strip("甲\u0001\u000B乙\uFFFE丙"));   // 甲乙丙
+Console.WriteLine(OfficeXmlText.Strip("前\uD83D后"));                 // 前后 —— 落单高代理项丢弃
+Console.WriteLine(OfficeXmlText.Strip("前\uDE00后"));                 // 前后 —— 落单低代理项丢弃
+Console.WriteLine(OfficeXmlText.Strip("笑脸 \uD83D\uDE00 结尾"));      // 笑脸 😀 结尾 —— 成对代理项保留
+Console.WriteLine(OfficeXmlText.Strip("a\tb\nc\rd"));                 // a\tb\nc\rd —— 制表与换行合法，原样保留
+Console.WriteLine(OfficeXmlText.Strip(null) == null);                 // True
+```
+
+文本干净时返回**同一个字符串实例**，不产生额外分配，所以逐个单元格调用没有代价：
+
+```csharp
+string clean = "正常文本，含中文标点。";
+Console.WriteLine(ReferenceEquals(OfficeXmlText.Strip(clean), clean));   // True
+```
+
+整棵 DOM 就地清洗用 `Sanitize`——文本节点和属性值都过，节点结构不动。写出 Word / Excel / PowerPoint 时内部就是这样处理的：
+
+```csharp
+XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+XDocument document = new XDocument(new XElement(w + "p",
+    new XAttribute("desc", "值\u0002脏"),
+    new XElement(w + "t", "正文\u0007结束")));
+
+OfficeXmlText.Sanitize(document);
+Console.WriteLine(document.Root.Attribute("desc").Value);          // 值脏
+Console.WriteLine(document.Root.Element(w + "t").Value);            // 正文结束
+```
+
+对使用者来说，这意味着脏值可以直接写进模型，不需要自己预先清洗：
+
+```csharp
+OfficeWorkbook dirty = new OfficeWorkbook();
+Worksheet dirtySheet = dirty.AddWorksheet("脏数据");
+dirtySheet.GetCell(1, 1).Value = "名称\u0001\uFFFE";
+dirtySheet.GetCell(1, 2).Value = "备注\uD83D落单代理项";
+
+XlsxWriter.Write(dirty, "out/xmltext.xlsx");                       // 正常写出，实测 3,610 字节
+
+OfficeWorkbook back = XlsxReader.Load("out/xmltext.xlsx");
+Console.WriteLine(back.Worksheets[0].GetCell(1, 1).Value);          // 名称
+Console.WriteLine(back.Worksheets[0].GetCell(1, 2).Value);          // 备注落单代理项
+```
+
+清理是有损的（非法字符直接丢，不替换成别的符号）。要在导入阶段就发现脏数据，自己先用 `Strip` 比一下前后长度即可。
 
 ## 常见问题
 
