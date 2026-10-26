@@ -373,7 +373,7 @@ file.Save("article.pdf");                                 // Markdown -> PDF
 file.Save("article.pptx");                                // Markdown -> PPTX（按标题拆页）
 ```
 
-front-matter 的 `title` / `author` / `date` 会写进 `document.Metadata`；`MarkdownOptions` 控制表格、任务列表、硬换行、原始 HTML、等宽字体与基准字号（默认 `EnableTables` / `EnableTaskLists` / `TrimTrailingWhitespace` 为真，`HardLineBreaks` / `EnableRawHtml` 为假，等宽字体 `Consolas`，正文 11 磅）。HTML 出口只接受相对地址、`#锚点` 与 `http` / `https` / `mailto` / `ftp` / `ftps` / `tel`，`javascript:` 一类降级为不可点击的蓝色下划线文本。引用式链接、脚注与列表项内的缩进续段不解析，按字面文本保留。
+front-matter 的 `title` / `author` / `date` 会写进 `document.Metadata`；`MarkdownOptions` 控制表格、任务列表、硬换行、原始 HTML、等宽字体与基准字号（默认 `EnableTables` / `EnableTaskLists` / `TrimTrailingWhitespace` 为真，`HardLineBreaks` / `EnableRawHtml` 为假，等宽字体 `Consolas`，正文 11 磅）。HTML 出口只接受相对地址、`#锚点` 与 `http` / `https` / `mailto` / `ftp` / `ftps` / `tel`，`javascript:` 一类降级为不可点击的蓝色下划线文本；原始 HTML 永不透传，`EnableRawHtml` 只决定回写 Markdown 时用不用 `<u>` / `<span>`。引用式链接 `[文字][ref]` 与定义行、标题锚点 `id`、有序列表 `start`、CommonMark 的强调贴合与行内代码规则都已对齐；列表项内的缩进续行并进同一项，脚注 `[^1]` 会被当成引用名而不是脚注。
 
 ### 模板填充
 
@@ -488,7 +488,7 @@ OfficeConverter.ToWord(document, "document.docx");
 - PDF 字体嵌入支持 TrueType `glyf` 轮廓，不支持 CFF/OpenType（`OTTO`）字体嵌入；PNG 不支持隔行扫描。
 - Word/PDF/PPTX/Markdown 不能直接输出为 Excel；`WorkbookLayoutOptions` 不支持的复杂对象（如图表、形状）不会转入 PDF/Word。
 - PPTX 不读写旧版 `.ppt`，不处理图表、SmartArt、嵌入 OLE 与动画序列；版式与主题由本库生成一套固定的 `slideMaster` / `slideLayout` / `theme`，不解析外部模板 `.potx`。导出 PDF / Word 时按"每页一节"线性排版，不还原绝对坐标。
-- Markdown 没有文件头签名，只能靠扩展名兜底；不是完整 CommonMark / GFM 实现（引用式链接、脚注、HTML 块内 Markdown、列表项内缩进续段按字面文本保留），`ToMarkdown` 会丢弃字体、字号与引用块语义。
+- Markdown 没有文件头签名，只能靠扩展名兜底；不是完整 CommonMark / GFM 实现（脚注与 HTML 块容器不支持，`[^1]` 会被当作引用名而非脚注），`ToMarkdown` 会丢弃字体、字号与引用块语义。
 - 生成文件会通过 ZIP 包、内容类型、关系和 XML 合法性校验；正式上线前仍建议用目标 Office 版本抽查复杂排版效果。
 
 ## 1.0 版本说明

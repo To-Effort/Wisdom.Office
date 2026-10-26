@@ -35,17 +35,20 @@ dotnet add package Wisdom.Markdown --version 1.0.2
 
 | 类别 | 支持写法 | 落到文档模型的形式 |
 | --- | --- | --- |
-| 标题 | ATX `#` 到 `######`、Setext（下划线 `===` / `---`） | `Paragraph.HeadingLevel`（超过 6 级按 6 级） |
-| 强调 | `**粗体**`、`*斜体*`、`***粗斜体***`、`~~删除线~~`、`` `行内代码` `` | `TextRun` 的 `Bold` / `Italic` / `Strikeout` / 等宽 `TextFormat` |
-| 链接 | `[文字](URL "title")`、`[文字](相对路径)`、`<https://…>`、`<mailto:…>` 自动链接 | `TextRun.Link` 保存目标地址，同时置为蓝色下划线；title 字符串被识别但模型无对应字段，落地时丢弃 |
-| 图片 | `![alt](本地路径)` | `ImageRun`；本地 PNG / JPEG 直接嵌入（`Width`/`Height` 留 0，由导出器按图片像素与 DPI 回填自然尺寸），网络地址与缺失文件降级为 alt 文本 |
-| 列表 | `-` `*` `+` 无序、`1.` / `1)` 有序、缩进嵌套、`- [ ]` / `- [x]` 任务列表 | `Paragraph.ListMarker` + `LeftIndent`（第 N 层为 `12 + (N-1) * 24` 磅，写器按同一换算还原层级）；任务项的勾选状态记在标记前缀 `☐` / `☑` 里 |
+| 标题 | ATX `#` 到 `######`、Setext（下划线 `===` / `---`，整段并入标题） | `Paragraph.HeadingLevel`（超过 6 级按 6 级）；HTML 出口给每个标题带 `id` 锚点：取正文转小写、非字母数字并成单个 `-`、首尾 `-` 去掉，同名标题依次追加 `-1` / `-2`，中日韩标题按原文取锚点 |
+| 强调 | `**粗体**`、`*斜体*`、`***粗斜体***`、`~~删除线~~`、`` `行内代码` `` | `TextRun` 的 `Bold` / `Italic` / `Strikeout` / 等宽 `TextFormat`；贴合规则与 CommonMark 一致——词内下划线不成强调（`in_var_iable` 原样保留），星号允许词内成对（`2*3*4` → `2<em>3</em>4`），起始串后必须紧跟内容（`foo * bar*` 原样保留），相邻分隔符串按长度配对、内层先拿走自己的闭合位，剥掉标签后正文一字不差 |
+| 行内代码 | 一个或多个反引号定界，闭合串必须**等长** | 两侧各恰好一个空格时去掉一格，其余空白原样保留（`` ` a  b` `` 保住双空格，`` ` a ` `` 变成 `a`）；串内不做实体解码，`` `&#65;` `` 就输出 `&#65;` |
+| 链接 | `[文字](URL "title")`、`[文字](相对路径)`、`<https://…>`、`<mailto:…>` 自动链接，以及引用式 `[文字][ref]`、`[文字][]`、简写式 `[ref]` 与定义行 `[ref]: URL "title"` | `TextRun.Link` 保存目标地址，同时置为蓝色下划线，引用式与内联式落进同一个字段；定义行标签大小写与连续空白不敏感，本身不再渲染成正文；引用名未定义则整个结构退回字面文本；目标里出现未转义空格会使整个结构退回字面，用 `<…>` 包裹可含空格，成对括号可直接入目标；title 字符串被识别但模型无对应字段，落地时丢弃 |
+| 图片 | `![alt](本地路径)`、引用式 `![alt][pic]` | `ImageRun`；本地 PNG / JPEG 直接嵌入（`Width`/`Height` 留 0，由导出器按图片像素与 DPI 回填自然尺寸），网络地址与缺失文件降级为 alt 文本；引用式图片只输出 alt 文本 |
+| 列表 | `-` `*` `+` 无序、`1.` / `1)` 有序、缩进嵌套、缩进续行并入同一项、`- [ ]` / `- [x]` 任务列表 | `Paragraph.ListMarker` + `LeftIndent`（第 N 层为 `12 + (N-1) * 24` 磅，写器按同一换算还原层级）；任务项的勾选状态记在标记前缀 `☐` / `☑` 里；HTML 出口在有序首项不是 1 时写 `<ol start="N">`（`0` 也写），首项为 1 时不写该属性 |
 | 代码块 | 围栏 ```` ``` ```` 与 `~~~`（可带语言信息）、4 空格缩进块 | 连续等宽字体段落（字号比正文小 0.5 磅），写出时按"整段等宽"识别为代码块 |
 | 引用 | `>` 单层与 `>>` 多层 | 斜体段落 + 递进左缩进（单层 36 磅、每加一层 18 磅）；模型没有引用块类型，回写 Markdown 与渲染 HTML 时只剩斜体 |
 | 表格 | GFM 管道表格，含 `:---`、`---:`、`:---:` 三种对齐 | `Table` + `TableRow.IsHeader` + 灰底加粗表头；三种对齐落在每个单元格段落的 `Alignment` 上，`Table.Columns` 只按列数补 `Width = 0` 的占位 |
 | 其他 | 分割线 `---` / `***`、反斜杠转义、`\|` 单元格内转义 | 分割线落成居中、写着 `＊ ＊ ＊` 的段落（段落模型无下边框属性）；HTML 与 Markdown 出口按同一常量识别回 `<hr />` 与 `---`，Word / PDF 仍排这几个字符 |
 | 字符实体 | 数字形式 `&#65;` / `&#x41;` 与 73 个常用命名字（`&amp;`、`&nbsp;`、`&copy;`、`&mdash;`、`&hellip;` 等） | 解析阶段先解成字符，各写出口再按需转义；匹配不上的形式按字面保留，码点为 0、落在代理区或超过 U+10FFFF 视为非法，同样留字面（与 CommonMark 一致） |
 | Front-matter | 文件开头 `---` 包裹的 YAML 块 | 仅识别 `title` / `author` / `date`，写入 `document.Metadata` |
+
+块级判定与 CommonMark 的优先级一致：`* * *` 与 `- - -` 先判成分隔线（不会误当列表项），4 空格缩进的行先判成缩进代码（`    - not a list` 是代码块而非列表），且缩进行不能打断段落（段落之后缩进一行仍是同一段）；Setext 下划线把上面整段收进标题。围栏代码里的空白是保真的——块尾留一个换行、行尾空格不裁、块内空行不会把它拆成两块，回写成 Markdown 再解析结果不变。硬换行认两种写法：行尾两个空格与行尾反斜杠，`<br />` 之后还跟着一个真正的换行；`HardLineBreaks = true` 时每个换行都是硬换行。
 
 解析不受信任的 Markdown 时有资源上限，超限抛出 `InvalidDataException`（不是无界吃内存）：单张表格 4 096 列、累计 65 536 个单元格，单篇文档嵌入图片合计 256 MB。同一张本地图片被引用几百次时按归一化绝对路径只读一次、只存一份，字节数也只计一次。
 
@@ -83,7 +86,7 @@ MarkdownOptions options = new MarkdownOptions
     HardLineBreaks = false,            // 默认 false：单个换行不断行，行尾两空格才硬换行
     EnableTables = true,               // 默认 true：解析 GFM 管道表格
     EnableTaskLists = true,            // 默认 true：解析 - [ ] / - [x]
-    EnableRawHtml = false,             // 默认 false：false 时原始 HTML 标签按纯文本保留
+    EnableRawHtml = false,             // 默认 false：只影响回写 Markdown 时用不用 <u> / <span>，HTML 出口永远转义
     CodeFontFamily = "Consolas",       // 默认 Consolas：代码块与行内代码的等宽字体
     BodyFontFamily = null,             // 默认 null：沿用文档默认字体
     BaseFontSize = 11.0,               // 默认 11 磅：正文字号基准
@@ -104,7 +107,7 @@ string html = Markdown.ToHtml(File.ReadAllText("article.md", Encoding.UTF8));
 
 输出的是 HTML **片段**（不含 `<html>` / `<head>` 外壳）：段落转 `<p>`、标题转 `<h1>`~`<h6>`、列表转嵌套 `<ul>` / `<ol>`、任务项转 `<input type="checkbox" disabled>`、连续等宽段落转 `<pre><code>`、表格转 `<table>`、分割线转 `<hr />`、链接转 `<a href="…">`。图片一律转成 `data:` URI 内联，产物可离线单文件打开。
 
-`<a href>` 只接受相对地址、`#锚点` 与 `http` / `https` / `mailto` / `ftp` / `ftps` / `tel`；其余协议（`javascript:`、`data:` 等）不进 `href`，渲染成蓝 + 下划线的纯文本 `<span>`——看着像链接但点不动。文本与属性值统一做 `&`、`<`、`>`、`"` 转义，`EnableRawHtml` 也管不到这一步。行首就是 `<` 的整行按原始 HTML 行透传，该行不再做行内解析（`<b>粗</b> 与 [链接](https://example.com)` 里的链接不会转成 `<a>`）；`<` 出现在行中则只转义标签本身，其余照常解析。
+`<a href>` 只接受相对地址、`#锚点` 与 `http` / `https` / `mailto` / `ftp` / `ftps` / `tel`；其余协议（`javascript:`、`data:` 等）不进 `href`，渲染成蓝 + 下划线的纯文本 `<span>`——看着像链接但点不动。文本与属性值统一做 `&`、`<`、`>`、`"` 转义，**原始 HTML 永不透传**：`<b>粗</b> 与 [链接](https://example.com)` 出来的是 `&lt;b&gt;粗&lt;/b&gt;` 加一个真正的 `<a>`；`<div>` 独占一行也只被转义成一段文本，`<script>alert(1)</script>` 整行转义。`EnableRawHtml` 管的是回写 Markdown 时用不用 `<u>` / `<span>` 表达下划线与颜色，与 HTML 渲染无关。
 
 需要完整页面时自行包裹：
 
@@ -169,7 +172,8 @@ string markdown = OfficeConverter.ToMarkdown(file.AsDocument());    // 任意文
 
 ## 已知限制
 
-- 不是完整 CommonMark / GFM 实现：不支持引用式链接 `[text][ref]` 与其定义行、脚注 `[^1]`、HTML 块内再套 Markdown、列表项内以缩进续写的多段落内容（这些续行会退化成不带标记的普通段落）。以上都不抛异常，只按字面文本保留。
+- 不是完整 CommonMark / GFM 实现：脚注 `[^1]` 与 HTML 块容器不支持，都不抛异常。表现要看清——引用式链接的标签规则会把 `^1` 当成一个普通引用名，配套的 `[^1]: 脚注内容` 会被收进定义表，于是「文本带脚注[^1]。」加一行定义，实测渲染成 `<a href="脚注内容">^1</a>` 而不是脚注；没有 HTML 块容器概念，`<div>` 单独成行只会被转义成一段文本，块内那行照常按 Markdown 解析，`</div>` 同样转义。
+- 列表项内的缩进续行会**并进同一个列表项**（`- 第一段` 空行后接两空格缩进的 `第二段同项`，实测成一个 `<li>第一段 第二段同项</li>`，回写 Markdown 也合成一行），而不是保留成项内多个段落；模型里列表项就是段落序列，没有「松散列表」这一层。
 - Front-matter 只取 `title` / `author` / `date` 三个字段，其余键忽略；回写 Markdown 时不会重新生成 front-matter 块。
 - 网络图片与不存在的本地图片降级为 alt 文本；图片仅支持 PNG / JPEG。回写出的 data URI 图片再解析时同样降级为 alt 文本，字节不再入库，别用 md → md 往返存图。
 - 表格单元格内的块级内容（列表、代码块）不解析，只按行内文本处理；`Table.Columns` 在 Markdown 表里只是 `Width = 0` 的列占位，行列数看 `Rows` 与 `Cells`。

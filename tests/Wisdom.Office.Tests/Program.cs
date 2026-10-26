@@ -90,6 +90,7 @@ namespace Wisdom.Office.Tests
             RunPptTemplateTest(outputDirectory);
             RunMarkdownTest();
             RunMarkdownLimitTest(outputDirectory);
+            RunMarkdownFidelityTest();
             RunFormulaEngineTest();
             RunExcelEnhancementTest(outputDirectory);
             RunBatchConversionTest(outputDirectory);

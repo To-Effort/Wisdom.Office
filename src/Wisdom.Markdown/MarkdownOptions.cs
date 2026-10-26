@@ -27,8 +27,10 @@ namespace Wisdom.Markdown
         public bool EnableTaskLists { get; set; }
 
         /// <summary>
-        /// 是否将原始 HTML 行透传输出（false 时按纯文本保留标签）。
-        /// Whether to pass raw HTML lines through verbatim (when false, tags are kept as plain text).
+        /// 只作用于回写 Markdown：为真时把下划线与字体颜色用 &lt;u&gt; / &lt;span&gt; 表达。HTML 出口不受它影响——
+        /// 渲染阶段所有文本一律转义，原始 HTML 永不透传。
+        /// Affects only the Markdown writer: when true, underline and font colour are emitted as &lt;u&gt; / &lt;span&gt;.
+        /// It does not affect HTML output, where every text run is escaped and raw HTML is never passed through.
         /// </summary>
         public bool EnableRawHtml { get; set; }
 

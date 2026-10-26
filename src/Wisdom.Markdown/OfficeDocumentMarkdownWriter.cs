@@ -722,7 +722,7 @@ namespace Wisdom.Markdown
                 && name.Equals(options.CodeFontFamily, StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>判断代码段落：非标题非列表，且所有非空文本运行均为等宽字体。Detects a code paragraph: not a heading or list item, with every non-empty text run monospaced.</summary>
+        /// <summary>判断代码段落：先认解析器打的结构标记，无标记的手写文档才退回等宽字体推断（空白的等宽运行也算，空围栏与代码块内的空行靠它保住）。Detects a code paragraph: the parser's structural marker wins, and only a hand-built document with no marker falls back to the monospaced-font test (an empty monospaced run counts too, since an empty fence and the blank lines inside a block depend on it).</summary>
         /// <param name="paragraph">待判断段落。The paragraph to test.</param>
         /// <param name="options">渲染选项。The render options.</param>
         /// <returns>是否为代码段落。Whether it is a code paragraph.</returns>
@@ -732,21 +732,30 @@ namespace Wisdom.Markdown
             {
                 return false;
             }
-            bool sawText = false;
+            if (string.Equals(paragraph.StyleName, MarkdownParser.CodeStyleName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            if (string.Equals(paragraph.StyleName, MarkdownParser.InlineStyleName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+            bool sawCodeRun = false;
             for (int i = 0; i < paragraph.Inlines.Count; i++)
             {
                 TextRun run = paragraph.Inlines[i] as TextRun;
                 if (run != null)
                 {
-                    if (string.IsNullOrEmpty(run.Text))
+                    string fontFamily = run.Format != null ? run.Format.GetAsciiFontFamily() : null;
+                    if (!IsMonospace(fontFamily, options))
                     {
+                        if (!string.IsNullOrEmpty(run.Text))
+                        {
+                            return false;
+                        }
                         continue;
                     }
-                    if (!IsMonospace(run.Format != null ? run.Format.GetAsciiFontFamily() : null, options))
-                    {
-                        return false;
-                    }
-                    sawText = true;
+                    sawCodeRun = true;
                     continue;
                 }
                 if (!(paragraph.Inlines[i] is FieldRun))
@@ -754,7 +763,7 @@ namespace Wisdom.Markdown
                     return false;
                 }
             }
-            return sawText;
+            return sawCodeRun;
         }
 
         /// <summary>判断分隔线段落：去空白后的正文恰为 em 划线或星号/下划线三连等常见分隔写法。Detects a separator paragraph: trimmed text that is exactly an em dash or the common triple star/dash/underscore forms.</summary>
@@ -959,29 +968,64 @@ namespace Wisdom.Markdown
             }
         }
 
-        /// <summary>逐行去掉行尾空白，但保留恰好两个尾部空格（硬换行标记），并去掉整体尾部空行。Trims trailing whitespace per line but keeps exactly two trailing spaces (the hard-break marker), then removes trailing blank lines.</summary>
+        /// <summary>逐行去掉行尾空白，但保留恰好两个尾部空格（硬换行标记）、整段围栏代码内部不动，并去掉整体尾部空行。Trims trailing whitespace per line but keeps exactly two trailing spaces (the hard-break marker), leaves the inside of a fenced block untouched, then removes trailing blank lines.</summary>
         /// <param name="text">原始文本。The raw text.</param>
         /// <returns>整理后的文本。The tidied text.</returns>
         private static string TrimLines(string text)
         {
             string[] lines = text.Split('\n');
             StringBuilder trimmed = new StringBuilder(text.Length);
+            bool inFence = false;
+            char fenceChar = '\0';
+            int fenceLen = 0;
             for (int i = 0; i < lines.Length; i++)
             {
-                string line = lines[i].TrimEnd('\r', '\t');
-                int spaces = 0;
-                while (spaces < line.Length && line[line.Length - 1 - spaces] == ' ')
+                int run;
+                int restIndex;
+                char marker = ReadFenceMarker(lines[i], out run, out restIndex);
+                // 只有同种字符且不短于起始围栏、其后只剩空白的行才能闭合，代码里的 ``` 因此不会被误判成结尾。
+                // Only a run of the same character, at least as long as the opener and followed by whitespace alone,
+                // closes the fence, so a ``` inside the code is never mistaken for the end.
+                bool keep;
+                if (inFence)
                 {
-                    spaces++;
-                }
-                if (spaces >= 2)
-                {
-                    // 保留恰好两个尾部空格以维持 CommonMark 硬换行。Keep exactly two trailing spaces so the CommonMark hard break survives.
-                    line = line.Substring(0, line.Length - spaces) + "  ";
+                    keep = true;
+                    if (marker == fenceChar && run >= fenceLen && lines[i].Substring(restIndex).Trim().Length == 0)
+                    {
+                        inFence = false;
+                    }
                 }
                 else
                 {
-                    line = line.TrimEnd(' ');
+                    keep = marker != '\0' && lines[i].IndexOf(marker, restIndex) < 0;
+                    if (keep)
+                    {
+                        fenceChar = marker;
+                        fenceLen = run;
+                        inFence = true;
+                    }
+                }
+                // 围栏内部的行尾空格是代码内容，裁掉就不再是同一份代码；起止标记行同样原样保留。
+                // Trailing spaces inside a fence are code content; trimming them changes the code. The marker lines
+                // themselves are kept as written too.
+                string line = lines[i];
+                if (!keep)
+                {
+                    line = line.TrimEnd('\r', '\t');
+                    int spaces = 0;
+                    while (spaces < line.Length && line[line.Length - 1 - spaces] == ' ')
+                    {
+                        spaces++;
+                    }
+                    if (spaces >= 2)
+                    {
+                        // 保留恰好两个尾部空格以维持 CommonMark 硬换行。Keep exactly two trailing spaces so the CommonMark hard break survives.
+                        line = line.Substring(0, line.Length - spaces) + "  ";
+                    }
+                    else
+                    {
+                        line = line.TrimEnd(' ');
+                    }
                 }
                 if (i < lines.Length - 1)
                 {
@@ -993,6 +1037,43 @@ namespace Wisdom.Markdown
                 }
             }
             return trimmed.ToString();
+        }
+
+        /// <summary>
+        /// 读取一行的围栏标记：≤3 格缩进、同种围栏字符连写 ≥3，返回该字符与连写长度及其后的下标。
+        /// Reads a line's fence marker: at most three columns of indent and three or more identical fence characters,
+        /// returning the character, the run length and the index just after it.
+        /// </summary>
+        /// <param name="line">待判定行。The line to test.</param>
+        /// <param name="run">输出的连写长度。The run length on output.</param>
+        /// <param name="restIndex">输出标记之后的下标。The index just after the marker on output.</param>
+        /// <returns>围栏字符，非标记行返回 0。The fence character, or 0 for a non-marker line.</returns>
+        private static char ReadFenceMarker(string line, out int run, out int restIndex)
+        {
+            run = 0;
+            restIndex = 0;
+            int i = 0;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t') && i < 4)
+            {
+                i++;
+            }
+            if (i >= line.Length)
+            {
+                return '\0';
+            }
+            char marker = line[i];
+            if (marker != '`' && marker != '~')
+            {
+                return '\0';
+            }
+            int start = i;
+            while (i < line.Length && line[i] == marker)
+            {
+                i++;
+            }
+            run = i - start;
+            restIndex = i;
+            return run >= 3 ? marker : '\0';
         }
 
         /// <summary>

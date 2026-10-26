@@ -21,6 +21,21 @@ namespace Wisdom.Markdown
         /// <summary>分割线在文档模型里的承载文本；两个写器按同一常量识别回 `---` 与 <c>&lt;hr /&gt;</c>。The text a thematic break carries in the document model; both writers match this same constant to restore <c>---</c> and <c>&lt;hr /&gt;</c>.</summary>
         internal const string ThematicBreakText = "＊ ＊ ＊";
 
+        /// <summary>
+        /// 围栏与缩进代码块段落的结构标记。模型里没有独立的代码块节点，等宽字体是唯一可见信号，
+        /// 而这个信号与行内代码用的完全相同（整段只有一个行内代码的段落会被误判成代码块），
+        /// 所以解析端在此打标记，两个写器优先读它，字体推断只留给手写文档兜底。
+        /// Structural marker of a fenced or indented code-block paragraph. The model has no code-block node, so the
+        /// monospaced font is the only visible signal - and it is indistinguishable from an inline code span, which
+        /// turns a paragraph holding nothing but one code span into a bogus code block. The parser marks these
+        /// paragraphs and both writers trust the marker first, keeping the font heuristic as a fallback for
+        /// hand-built documents.
+        /// </summary>
+        internal const string CodeStyleName = "MarkdownCode";
+
+        /// <summary>经行内解析生成的段落标记，含义是「这是正文，不是代码块」。两处标记互斥，其它样式名一律走字体推断。The marker of a paragraph built by the inline scanner, meaning body text rather than a code block. The two markers are exclusive; any other style name falls through to the font heuristic.</summary>
+        internal const string InlineStyleName = "MarkdownInline";
+
         /// <summary>行内元素最大嵌套深度，超出后按字面文本输出，防止栈溢出。The maximum inline nesting depth; deeper content becomes literal text, preventing a stack overflow.</summary>
         private const int MaxInlineDepth = 64;
 
@@ -54,6 +69,38 @@ namespace Wisdom.Markdown
         private readonly MarkdownOptions options;
 
         /// <summary>
+        /// 链接引用定义表（CommonMark 的 [label]: url "title"），键为归一化后的标签；整篇解析开始前一次性收集。
+        /// Link reference definitions (CommonMark's [label]: url "title"), keyed by the normalized label and
+        /// collected once before the block pass starts.
+        /// </summary>
+        private readonly Dictionary<string, LinkDefinition> _definitions = new Dictionary<string, LinkDefinition>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// 引用块嵌套层数上限：每层引用都要把剥掉 &gt; 的内部行再解析一遍，一行几万个 &gt;
+        /// 就会递归同样多次而爆栈。超过上限的引用标记按字面文本留在段落里。
+        /// Ceiling for block-quote nesting: every level re-parses its '>'-stripped lines, so a line of tens of
+        /// thousands of '&gt;' would recurse that many times and overflow the stack. Beyond the ceiling the remaining
+        /// markers stay as literal text in the paragraph.
+        /// </summary>
+        private const int MaxQuoteDepth = 24;
+
+        /// <summary>当前引用嵌套深度，仅解析期间使用。The block-quote nesting depth currently in effect, used only during a parse.</summary>
+        private int _quoteDepth;
+
+        /// <summary>引用块在正文左侧增加的一格缩进（磅），与旧版单层引用的观感保持一致。The one column of left indent a block quote adds, in points, matching how a single-level quote used to look.</summary>
+        private const double QuoteIndent = 18.0;
+
+        /// <summary>
+        /// 单篇文档链接引用定义的数量上限：定义表整篇常驻内存，无上限时几万个不同标签即可把模型撑大。
+        /// Ceiling for the link reference definitions of one document: the table stays resident for the whole parse,
+        /// so tens of thousands of distinct labels would bloat the model.
+        /// </summary>
+        private const int MaxLinkDefinitions = 4096;
+
+        /// <summary>链接引用定义里的标签长度上限（字符）。Ceiling for the label length of a link reference definition, in characters.</summary>
+        private const int MaxDefinitionLabelChars = 1000;
+
+        /// <summary>
         /// 本次解析已读入的图片，按归一化后的绝对路径缓存：同一张图被引用几百次也只读一次、只存一份。
         /// Images loaded by this parse, keyed by normalized absolute path: a picture referenced hundreds of times
         /// is read once and stored once.
@@ -62,6 +109,16 @@ namespace Wisdom.Markdown
 
         /// <summary>本次解析累计读入的图片字节数。The image bytes loaded so far by this parse.</summary>
         private long _imageBytes;
+
+        /// <summary>一条链接引用定义的目标与可选标题。The destination and optional title of one link reference definition.</summary>
+        private sealed class LinkDefinition
+        {
+            /// <summary>链接目标（已去尖括号与转义）。The destination, angle brackets and backslash escapes removed.</summary>
+            public string Destination;
+
+            /// <summary>可选标题，未提供为 null。The optional title, null when absent.</summary>
+            public string Title;
+        }
 
         /// <summary>
         /// 以指定选项构造解析器。
@@ -102,6 +159,31 @@ namespace Wisdom.Markdown
             // Handle YAML front matter (a leading --- block); only title/author/date are recognised.
             index = ParseFrontMatter(lines, index, document);
 
+            // 先一次性收集链接引用定义：定义可出现在文档任意块起始处，必须早于行内解析才知道。
+            // Collect link reference definitions first: they may appear at any block start, and inline parsing has
+            // to know them before it runs.
+            bool[] definitionLines = CollectLinkDefinitions(lines, index, true);
+
+            ParseBlocks(lines, index, section, document, definitionLines);
+
+            return document;
+        }
+
+        /// <summary>
+        /// 块级主循环：按 CommonMark 的优先级依次判定围栏代码、ATX 标题、引用、分隔线、缩进代码、列表、表格、段落。
+        /// 引用块会把内部行交给本方法递归解析，所以循环体不留在 <see cref="Parse"/> 里。
+        /// The block-level main loop: CommonMark precedence, testing fenced code, ATX headings, block quotes, thematic
+        /// breaks, indented code, lists, tables and paragraphs in turn. Block quotes hand their stripped inner lines
+        /// back to this method, which is why the loop lives here rather than in <see cref="Parse"/>.
+        /// </summary>
+        /// <param name="lines">待解析行。The lines to parse.</param>
+        /// <param name="start">起始行。The start index.</param>
+        /// <param name="section">目标节。The target section.</param>
+        /// <param name="document">所属文档，用于元数据标题。The owning document, used for the metadata title.</param>
+        /// <param name="definitionLines">与 <paramref name="lines"/> 等长的链接定义标记。Definition markers, as long as <paramref name="lines"/>.</param>
+        private void ParseBlocks(string[] lines, int start, Section section, OfficeDocument document, bool[] definitionLines)
+        {
+            int index = start;
             int nextHeadingLevel = -1;
 
             while (index < lines.Length)
@@ -109,6 +191,14 @@ namespace Wisdom.Markdown
                 string line = lines[index];
 
                 if (line.Trim().Length == 0)
+                {
+                    index++;
+                    continue;
+                }
+
+                // 引用定义行只贡献给链接表，自身不产生任何块。
+                // A definition line only feeds the link table and produces no block of its own.
+                if (definitionLines[index])
                 {
                     index++;
                     continue;
@@ -146,7 +236,7 @@ namespace Wisdom.Markdown
                 // Block quote >.
                 if (StartsQuote(line))
                 {
-                    index = ParseQuote(lines, index, section);
+                    index = ParseQuote(lines, index, section, document);
                     continue;
                 }
 
@@ -191,8 +281,6 @@ namespace Wisdom.Markdown
                 // A normal paragraph (including Setext-heading detection for the following line).
                 index = ParseParagraph(lines, index, section, document);
             }
-
-            return document;
         }
 
         /// <summary>
@@ -351,6 +439,11 @@ namespace Wisdom.Markdown
             {
                 fenceLen++;
             }
+            // 围栏自身的缩进要一并从内容行去掉（CommonMark：正文按起始围栏的缩进对齐），
+            // 否则列表项里的代码块会带着两格缩进原样输出。
+            // The opening fence's own indent is stripped from the content lines (CommonMark aligns the body with the
+            // opener), otherwise a code block inside a list item would keep its two-space indentation verbatim.
+            int openIndent = LeadingSpaceCount(lines[start]);
 
             int i2 = start + 1;
             bool anyLine = false;
@@ -362,7 +455,7 @@ namespace Wisdom.Markdown
                     i2++;
                     break;
                 }
-                AddCodeParagraph(section, lines[i2]);
+                AddCodeParagraph(section, StripLeadingSpaces(lines[i2], openIndent));
                 anyLine = true;
                 i2++;
             }
@@ -487,6 +580,414 @@ namespace Wisdom.Markdown
             return line.TrimStart(' ');
         }
 
+        /// <summary>行首连续空格数（制表符按 4 格折算，与缩进判定一致）。The count of leading spaces, with a tab worth four to match the indent tests.</summary>
+        /// <param name="line">原始行。The raw line.</param>
+        /// <returns>前导缩进格数。The leading indent width.</returns>
+        private static int LeadingSpaceCount(string line)
+        {
+            int n = 0;
+            while (n < line.Length)
+            {
+                if (line[n] == ' ')
+                {
+                    n++;
+                    continue;
+                }
+                if (line[n] == '\t')
+                {
+                    n += 4;
+                    continue;
+                }
+                break;
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// 从行首最多去掉 count 个空白（制表符整块去掉），用于还原围栏代码块的相对缩进。
+        /// Removes at most &lt;count&gt; leading spaces (a tab is removed whole), restoring a fenced block's relative indent.
+        /// </summary>
+        /// <param name="line">原始行。The raw line.</param>
+        /// <param name="count">最多去掉的格数。The maximum number of columns to remove.</param>
+        /// <returns>去缩进后的行。The dedented line.</returns>
+        private static string StripLeadingSpaces(string line, int count)
+        {
+            if (count <= 0 || line.Length == 0)
+            {
+                return line;
+            }
+            int n = 0;
+            while (n < line.Length && n < count)
+            {
+                if (line[n] == ' ')
+                {
+                    n++;
+                    continue;
+                }
+                if (line[n] == '\t')
+                {
+                    n++;
+                    break;
+                }
+                break;
+            }
+            return line.Substring(n);
+        }
+
+        /// <summary>
+        /// 预扫一遍收集链接引用定义（<c>[label]: url "title"</c>），并标记被定义占用的行。
+        /// 只有块起始位置（空行或另一条定义之后）的行才算定义，缩进不超过 3 格，围栏代码块内部的行一律跳过
+        /// ——CommonMark 规定定义不能打断段落，也不存在于代码块里。
+        /// Pre-scans the lines for link reference definitions (<c>[label]: url "title"</c>) and marks the lines they
+        /// occupy. Only a line at a block start (after a blank line or another definition), indented by at most three
+        /// columns, counts as a definition, and lines inside a fenced block are skipped outright - CommonMark forbids a
+        /// definition from interrupting a paragraph and never recognizes one inside code.
+        /// </summary>
+        /// <param name="lines">全部行。All lines.</param>
+        /// <param name="start">正文起始行。The first body line.</param>
+        /// <param name="reset">是否清空已有链接表；仅顶层为 true，引用块内部的定义做增量合并。Whether to clear the table; only the top level does, so definitions inside a block quote merge in.</param>
+        /// <returns>与 <paramref name="lines"/> 等长的定义行标记。Markers, one per line of <paramref name="lines"/>.</returns>
+        private bool[] CollectLinkDefinitions(string[] lines, int start, bool reset)
+        {
+            if (reset)
+            {
+                _definitions.Clear();
+            }
+            bool[] marked = new bool[lines.Length];
+            bool blockStart = true;
+            for (int i = start; i < lines.Length; i++)
+            {
+                string line = lines[i];
+                if (line.Trim().Length == 0)
+                {
+                    blockStart = true;
+                    continue;
+                }
+                string fenceInfo;
+                if (IsFenceStart(line, out fenceInfo))
+                {
+                    i = FindFenceEnd(lines, i);
+                    blockStart = false;
+                    continue;
+                }
+                if (!blockStart)
+                {
+                    continue;
+                }
+                string label;
+                string destination;
+                string title;
+                if (TryParseLinkDefinition(line, out label, out destination, out title))
+                {
+                    if (_definitions.Count < MaxLinkDefinitions && !_definitions.ContainsKey(label))
+                    {
+                        LinkDefinition definition = new LinkDefinition();
+                        definition.Destination = destination;
+                        definition.Title = title;
+                        _definitions[label] = definition;
+                    }
+                    // 上限之外的行同样不渲染：识别不出来的定义会退化成段落文本，比凭空多出一张表更保守。
+                    // Lines beyond the cap are still swallowed: an unrecognized definition degrades into paragraph
+                    // text, which is worse than a table that silently never appears, so the line stays consumed.
+                    marked[i] = true;
+                    continue;
+                }
+                blockStart = false;
+            }
+            return marked;
+        }
+
+        /// <summary>
+        /// 解析一行链接引用定义：缩进 ≤3、形如 <c>[label]:</c>、目标为尖括号或无空白串、可选标题为成对引号或括号。
+        /// Parses one definition line: indent of at most three, the form <c>[label]:</c>, a destination in angle
+        /// brackets or a whitespace-free run, and an optional title in matching quotes or parentheses.
+        /// </summary>
+        /// <param name="line">待判定行。The line to test.</param>
+        /// <param name="label">输出的归一化标签。The normalized label on output.</param>
+        /// <param name="destination">输出的链接目标。The destination on output.</param>
+        /// <param name="title">输出的可选标题，缺省为 null。The optional title, null when absent.</param>
+        /// <returns>是否为合法定义。Whether the line is a valid definition.</returns>
+        private static bool TryParseLinkDefinition(string line, out string label, out string destination, out string title)
+        {
+            label = null;
+            destination = null;
+            title = null;
+            if (LeadingSpaceCount(line) > 3)
+            {
+                return false;
+            }
+            int i = 0;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t'))
+            {
+                i++;
+            }
+            if (i >= line.Length || line[i] != '[')
+            {
+                return false;
+            }
+            int close = IndexUnescaped(line, ']', i + 1);
+            if (close < 0 || close - i - 1 <= 0 || close - i - 1 > MaxDefinitionLabelChars)
+            {
+                return false;
+            }
+            string rawLabel = NormalizeLabel(line.Substring(i + 1, close - i - 1));
+            if (rawLabel.Length == 0 || rawLabel.IndexOf('[') >= 0)
+            {
+                return false;
+            }
+            i = close + 1;
+            if (i >= line.Length || line[i] != ':')
+            {
+                return false;
+            }
+            i++;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t'))
+            {
+                i++;
+            }
+            if (i >= line.Length)
+            {
+                return false;
+            }
+
+            int rest;
+            string dest = ReadDefinitionDestination(line, i, out rest);
+            if (dest == null)
+            {
+                return false;
+            }
+            i = rest;
+            while (i < line.Length && (line[i] == ' ' || line[i] == '\t'))
+            {
+                i++;
+            }
+            if (i < line.Length)
+            {
+                string inlineTitle;
+                int titleEnd;
+                if (!ReadDefinitionTitle(line, i, out inlineTitle, out titleEnd))
+                {
+                    return false;
+                }
+                title = inlineTitle;
+                i = titleEnd;
+                while (i < line.Length && (line[i] == ' ' || line[i] == '\t'))
+                {
+                    i++;
+                }
+                if (i < line.Length)
+                {
+                    return false;
+                }
+            }
+            label = rawLabel;
+            destination = dest;
+            return true;
+        }
+
+        /// <summary>
+        /// 读取定义里的链接目标：尖括号形式可含空白与转义尖括号，普通形式遇到空白即止。
+        /// Reads a definition's destination: the angle-bracket form may contain spaces and escaped brackets, the bare
+        /// form ends at the first whitespace.
+        /// </summary>
+        /// <param name="line">原始行。The raw line.</param>
+        /// <param name="start">目标起始位置。The start index.</param>
+        /// <param name="end">目标结束后的位置。The index just after the destination.</param>
+        /// <returns>链接目标，非法时为 null。The destination, or null when invalid.</returns>
+        private static string ReadDefinitionDestination(string line, int start, out int end)
+        {
+            end = start;
+            if (line[start] == '<')
+            {
+                StringBuilder sb = new StringBuilder();
+                for (int i = start + 1; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    if (c == '\n')
+                    {
+                        return null;
+                    }
+                    if (c == '\\' && i + 1 < line.Length && IsEscapable(line[i + 1]))
+                    {
+                        sb.Append(line[i + 1]);
+                        i++;
+                        continue;
+                    }
+                    if (c == '>')
+                    {
+                        end = i + 1;
+                        return sb.ToString();
+                    }
+                    sb.Append(c);
+                }
+                return null;
+            }
+            int j = start;
+            while (j < line.Length && !char.IsWhiteSpace(line[j]))
+            {
+                if (line[j] == '\\' && j + 1 < line.Length)
+                {
+                    j += 2;
+                    continue;
+                }
+                if (line[j] == '<')
+                {
+                    return null;
+                }
+                j++;
+            }
+            if (j == start)
+            {
+                return null;
+            }
+            end = j;
+            return UnescapeBackslashes(line.Substring(start, j - start));
+        }
+
+        /// <summary>
+        /// 读取定义的可选标题：双引号、单引号或圆括号成对包裹，必须延伸到行尾。
+        /// Reads an optional title: matched double quotes, single quotes or parentheses running to the end of the line.
+        /// </summary>
+        /// <param name="line">原始行。The raw line.</param>
+        /// <param name="start">标题起始位置。The start index.</param>
+        /// <param name="value">输出的标题文本。The title text on output.</param>
+        /// <param name="end">标题结束后的位置。The index just after the title.</param>
+        /// <returns>是否为合法标题。Whether a valid title was read.</returns>
+        private static bool ReadDefinitionTitle(string line, int start, out string value, out int end)
+        {
+            value = null;
+            end = start;
+            char open = line[start];
+            char closeChar;
+            if (open == '"')
+            {
+                closeChar = '"';
+            }
+            else if (open == '\'')
+            {
+                closeChar = '\'';
+            }
+            else if (open == '(')
+            {
+                closeChar = ')';
+            }
+            else
+            {
+                return false;
+            }
+            int last = line.Length - 1;
+            if (last <= start || line[last] != closeChar)
+            {
+                return false;
+            }
+            value = UnescapeBackslashes(line.Substring(start + 1, last - start - 1));
+            end = last + 1;
+            return true;
+        }
+
+        /// <summary>
+        /// 反斜杠转义还原：把 <c>\&gt;</c> 这类可转义字符还原成字符本身，其余反斜杠原样保留。
+        /// Resolves backslash escapes: an escapable character following a backslash becomes that character, any other
+        /// backslash stays literal.
+        /// </summary>
+        /// <param name="text">原始串。The raw string.</param>
+        /// <returns>还原后的串。The resolved string.</returns>
+        private static string UnescapeBackslashes(string text)
+        {
+            if (text.IndexOf('\\') < 0)
+            {
+                return text;
+            }
+            StringBuilder sb = new StringBuilder(text.Length);
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '\\' && i + 1 < text.Length && IsEscapable(text[i + 1]))
+                {
+                    sb.Append(text[i + 1]);
+                    i++;
+                    continue;
+                }
+                sb.Append(text[i]);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 归一化引用标签：连续空白并成一格、去首尾空白、转小写（CommonMark 的标签大小写不敏感）。
+        /// Normalizes a reference label: runs of whitespace collapse to one space, the ends are trimmed and the case
+        /// is folded, since CommonMark labels are case-insensitive.
+        /// </summary>
+        /// <param name="raw">原始标签。The raw label.</param>
+        /// <returns>归一化标签。The normalized label.</returns>
+        private static string NormalizeLabel(string raw)
+        {
+            StringBuilder sb = new StringBuilder(raw.Length);
+            bool pendingSpace = false;
+            for (int i = 0; i < raw.Length; i++)
+            {
+                if (char.IsWhiteSpace(raw[i]))
+                {
+                    pendingSpace = sb.Length > 0;
+                    continue;
+                }
+                if (pendingSpace)
+                {
+                    sb.Append(' ');
+                    pendingSpace = false;
+                }
+                sb.Append(char.ToLowerInvariant(raw[i]));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>查找未被反斜杠转义的目标字符位置，找不到返回 -1。Finds the next unescaped occurrence of a character, or -1 when absent.</summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="target">目标字符。The character to find.</param>
+        /// <param name="from">起始位置。The start index.</param>
+        /// <returns>目标位置或 -1。The found index or -1.</returns>
+        private static int IndexUnescaped(string text, char target, int from)
+        {
+            for (int i = from; i < text.Length; i++)
+            {
+                if (text[i] == '\\')
+                {
+                    i++;
+                    continue;
+                }
+                if (text[i] == target)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// 返回围栏块闭合行的下标；未闭合时返回末行下标。
+        /// Returns the index of a fence's closing line, or the last line index when the fence is never closed.
+        /// </summary>
+        /// <param name="lines">全部行。All lines.</param>
+        /// <param name="start">起始围栏行。The opening fence line.</param>
+        /// <returns>闭合行下标。The closing line index.</returns>
+        private static int FindFenceEnd(string[] lines, int start)
+        {
+            string opener = TrimLeftUpTo3(lines[start]);
+            char fenceChar = opener[0];
+            int fenceLen = 0;
+            for (int i = 0; i < opener.Length && opener[i] == fenceChar; i++)
+            {
+                fenceLen++;
+            }
+            for (int i = start + 1; i < lines.Length; i++)
+            {
+                if (IsFenceClose(TrimLeftUpTo3(lines[i]), fenceChar, fenceLen))
+                {
+                    return i;
+                }
+            }
+            return lines.Length - 1;
+        }
+
         /// <summary>
         /// 追加一个等宽字体代码段落。刻意不设背景色（模型仅表格单元格支持底纹，代码段落无背景属性）。
         /// Appends a monospaced code paragraph. No background is set deliberately (the model supports shading only on table cells; paragraphs have no background property).
@@ -496,6 +997,7 @@ namespace Wisdom.Markdown
         private void AddCodeParagraph(Section section, string text)
         {
             Paragraph paragraph = new Paragraph();
+            paragraph.StyleName = CodeStyleName;
             paragraph.LeftIndent = 12;
             paragraph.LineSpacing = 1.0;
             TextFormat format = NewCodeFormat();
@@ -861,43 +1363,209 @@ namespace Wisdom.Markdown
         }
 
         /// <summary>
-        /// 解析引用块，支持 &gt;&gt; 嵌套（用递增左缩进 + 斜体表达），返回块之后的行号。
-        /// Parses a block quote, supporting '&gt;&gt;' nesting (increasing left indent plus italics), and returns the index after the block.
+        /// 解析引用块：连续的 &gt; 行（含 CommonMark 的懒惰续行）先各剥掉一层标记攒成缓冲区，
+        /// 再当作普通块递归解析，最后统一补缩进与斜体。逐行成段会把引用里的列表、代码块、标题压成字面文本；
+        /// 嵌套的 &gt;&gt; 不需要特判，内层行仍以 &gt; 开头，交给递归自然多缩一层。
+        /// Parses a block quote: consecutive '&gt;' lines, plus CommonMark lazy continuations, each lose one marker
+        /// level into a buffer that is parsed recursively as ordinary blocks; the resulting paragraphs then gain the
+        /// indent and italics. Turning every line into its own paragraph used to flatten lists, code and headings
+        /// inside a quote into literal text, and nested '&gt;&gt;' needs no special case - those lines still begin
+        /// with '&gt;' and the recursion adds another level of indent.
         /// </summary>
         /// <param name="lines">全部行。All lines.</param>
         /// <param name="start">起始行。The start index.</param>
         /// <param name="section">目标节。The target section.</param>
+        /// <param name="document">所属文档。The owning document.</param>
         /// <returns>块之后的行号。The index following the block.</returns>
-        private int ParseQuote(string[] lines, int start, Section section)
+        private int ParseQuote(string[] lines, int start, Section section, OfficeDocument document)
         {
+            List<string> buffer = new List<string>();
             int i = start;
-            while (i < lines.Length && StartsQuote(lines[i]))
+            while (i < lines.Length)
             {
-                string content = TrimLeftUpTo3(lines[i]);
-                int depth = 0;
-                int pos = 0;
-                while (pos < content.Length && content[pos] == '>')
+                string line = lines[i];
+                if (StartsQuote(line))
                 {
-                    depth++;
-                    pos++;
-                    if (pos < content.Length && (content[pos] == ' ' || content[pos] == '\t'))
+                    buffer.Add(RemoveOneQuoteMarker(TrimLeftUpTo3(line)));
+                    i++;
+                    continue;
+                }
+                // 懒惰续行：引用里未闭合的段落可以直接吃下后面这个普通行。
+                // Lazy continuation: an open paragraph inside the quote swallows the next plain line.
+                if (buffer.Count > 0 && IsLazyQuoteLine(line, buffer[buffer.Count - 1]))
+                {
+                    buffer.Add(line);
+                    i++;
+                    continue;
+                }
+                break;
+            }
+
+            string[] inner = buffer.ToArray();
+            if (_quoteDepth >= MaxQuoteDepth)
+            {
+                // 超深嵌套不再递归，逐行按字面文本收成斜体段落，引用标记本身留在文本里。
+                // Beyond the ceiling the buffer stops recursing: each line becomes an italic paragraph and the
+                // remaining markers stay as literal text.
+                AddQuoteParagraphs(section, inner, 0);
+                return i;
+            }
+
+            Section quoted = new Section();
+            bool[] definitions = CollectLinkDefinitions(inner, 0, false);
+            _quoteDepth++;
+            try
+            {
+                ParseBlocks(inner, 0, quoted, document, definitions);
+            }
+            finally
+            {
+                _quoteDepth--;
+            }
+
+            for (int b = 0; b < quoted.Blocks.Count; b++)
+            {
+                Paragraph paragraph = quoted.Blocks[b] as Paragraph;
+                if (paragraph == null)
+                {
+                    // 表格没有可供引用表达的属性，原样接过来。Tables carry no place to express a quote, so they move over as built.
+                    section.Blocks.Add(quoted.Blocks[b]);
+                    continue;
+                }
+                // 列表项的缩进就是层级本身，加一格会让 HTML 写器把整项算成更深一层。
+                // A list item's indent is its nesting level, so adding a column would make the writers read the item one level too deep.
+                if (string.IsNullOrEmpty(paragraph.ListMarker))
+                {
+                    paragraph.LeftIndent += QuoteIndent;
+                    if (paragraph.HeadingLevel == 0)
                     {
-                        pos++;
+                        paragraph.SpaceBefore = 2;
+                        paragraph.SpaceAfter = 2;
                     }
                 }
-                string inner = content.Substring(Math.Min(pos, content.Length)).Trim();
+                ApplyQuoteItalic(paragraph);
+                section.Blocks.Add(paragraph);
+            }
+            return i;
+        }
 
+        /// <summary>
+        /// 把缓冲区行逐行收成斜体段落，供超过嵌套上限的引用兜底。Collapses the buffer line by line into italic paragraphs, the fallback past the nesting ceiling.
+        /// </summary>
+        /// <param name="section">目标节。The target section.</param>
+        /// <param name="inner">已剥掉一层标记的行。The lines with one marker level stripped.</param>
+        /// <param name="extraIndent">本层之外还要补上的缩进。The indent to add on top of this level.</param>
+        private void AddQuoteParagraphs(Section section, string[] inner, double extraIndent)
+        {
+            for (int k = 0; k < inner.Length; k++)
+            {
+                if (inner[k].Trim().Length == 0)
+                {
+                    continue;
+                }
                 Paragraph paragraph = new Paragraph();
-                paragraph.LeftIndent = 18 + depth * 18;
+                paragraph.LeftIndent = extraIndent + QuoteIndent;
                 paragraph.SpaceBefore = 2;
                 paragraph.SpaceAfter = 2;
                 TextFormat format = NewBodyFormat();
                 format.Italic = true;
-                AddInlinesFromText(paragraph, inner, format);
+                AddInlinesFromText(paragraph, inner[k].Trim(), format);
                 section.Blocks.Add(paragraph);
-                i++;
             }
-            return i;
+        }
+
+        /// <summary>
+        /// 给引用里的段落补斜体；等宽运行（代码块与行内代码）保持原样，斜体只让代码更难认。
+        /// Italicises the runs of a quoted paragraph; monospaced runs (code blocks and spans) stay as they are,
+        /// since italics only make code harder to read.
+        /// </summary>
+        /// <param name="paragraph">待处理段落。The paragraph to process.</param>
+        private void ApplyQuoteItalic(Paragraph paragraph)
+        {
+            bool isCodeBlock = string.Equals(paragraph.StyleName, CodeStyleName, StringComparison.Ordinal);
+            for (int r = 0; r < paragraph.Inlines.Count; r++)
+            {
+                TextRun run = paragraph.Inlines[r] as TextRun;
+                if (run == null || run.Format == null)
+                {
+                    continue;
+                }
+                string family = run.Format.GetAsciiFontFamily();
+                if (isCodeBlock || IsCodeFamily(family))
+                {
+                    continue;
+                }
+                run.Format.Italic = true;
+            }
+        }
+
+        /// <summary>字体名是否代码字体：解析器自己的代码族，外加 Consolas/Courier 前缀。Whether a family is the code font: the parser's own code family plus the Consolas/Courier prefixes.</summary>
+        /// <param name="family">字体名。The font family.</param>
+        /// <returns>是否等宽代码字体。Whether it is a monospaced code font.</returns>
+        private bool IsCodeFamily(string family)
+        {
+            if (string.IsNullOrEmpty(family))
+            {
+                return false;
+            }
+            string code = string.IsNullOrEmpty(options.CodeFontFamily) ? "Consolas" : options.CodeFontFamily;
+            return family.Equals(code, StringComparison.OrdinalIgnoreCase)
+                || family.StartsWith("Consolas", StringComparison.OrdinalIgnoreCase)
+                || family.StartsWith("Courier", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 去掉一行最前面的一层 &gt; 标记（连同其后恰好一个空白）。Removes the leading '&gt;' marker of a line, together with the single space that may follow it.
+        /// </summary>
+        /// <param name="content">已去掉≤3 前导空白的行。The line with its up-to-three leading spaces already trimmed.</param>
+        /// <returns>剥掉一层标记的行。The line with one marker level removed.</returns>
+        private static string RemoveOneQuoteMarker(string content)
+        {
+            int pos = content.Length > 0 && content[0] == '>' ? 1 : 0;
+            if (pos < content.Length && (content[pos] == ' ' || content[pos] == '\t'))
+            {
+                pos++;
+            }
+            return content.Substring(pos).TrimEnd('\r', ' ', '\t');
+        }
+
+        /// <summary>
+        /// 判断一个非引用行能否作为懒惰续行接进上方未闭合的引用段落：空行、围栏、ATX 标题、分隔线、缩进代码都不能。
+        /// Decides whether a non-quote line may join the open quote paragraph above it as a lazy continuation: blank
+        /// lines, fences, ATX headings, thematic breaks and indented code may not.
+        /// </summary>
+        /// <param name="line">待判定行。The line to test.</param>
+        /// <param name="previous">缓冲区里的上一行。The previous buffered line.</param>
+        /// <returns>是否接续引用段落。Whether it continues the quote.</returns>
+        private static bool IsLazyQuoteLine(string line, string previous)
+        {
+            if (line.Trim().Length == 0 || StartsQuote(line))
+            {
+                return false;
+            }
+            if (IsIndentedCode(line) || IsThematicBreak(line))
+            {
+                return false;
+            }
+            int level;
+            string text;
+            if (IsAtxHeading(line, out level, out text))
+            {
+                return false;
+            }
+            string fenceInfo;
+            if (IsFenceStart(line, out fenceInfo))
+            {
+                return false;
+            }
+            // 上一行本身若是围栏、缩进代码或空行，引用段落早已闭合，普通行只是新块。
+            // A fence, indented code or blank previous line means no paragraph is open, so the plain line starts a block.
+            if (previous.Trim().Length == 0 || IsIndentedCode(previous))
+            {
+                return false;
+            }
+            string previousFence;
+            return !IsFenceStart(previous, out previousFence);
         }
 
         /// <summary>
@@ -1405,6 +2073,14 @@ namespace Wisdom.Markdown
         /// <param name="baseFormat">基准文本格式。The base text format.</param>
         private void AddInlinesFromText(Paragraph paragraph, string text, TextFormat baseFormat)
         {
+            // 代码块的标记一旦打上就不再改写；其余经行内解析的段落一律记为正文，
+            // 免得「整段只有一个行内代码」被写器的字体推断读成代码块。
+            // A code-block marker is never overwritten; every other paragraph built here is recorded as body text,
+            // so a paragraph containing nothing but one code span cannot be misread as a code block.
+            if (string.IsNullOrEmpty(paragraph.StyleName))
+            {
+                paragraph.StyleName = InlineStyleName;
+            }
             List<Inline> inlines = ParseInlines(text ?? string.Empty, baseFormat);
             for (int i = 0; i < inlines.Count; i++)
             {
@@ -1623,35 +2299,40 @@ namespace Wisdom.Markdown
                     {
                         run++;
                     }
-                    int delimLen = run >= 3 ? 3 : run;
-                    string delim = new string(c, delimLen);
-                    // CommonMark 的两侧贴合规则：起始串后必须是内容（非空白），闭合串前同理；
+                    // CommonMark 的两侧贴合规则：起始串整串后面必须紧跟内容（非空白），闭合串前面同理；
                     // 下划线还禁止词内强调（in_var_iable、foo_bar_baz 都保持字面）。
-                    // CommonMark's flanking rules: the opener must be followed by content and the closer preceded by
-                    // content; underscores additionally refuse intraword emphasis (in_var_iable, foo_bar_baz stay literal).
-                    int afterOpen = i + delimLen;
-                    bool leftFlank = afterOpen < length && !char.IsWhiteSpace(text[afterOpen])
-                        && (c != '_' || i == 0 || !char.IsLetterOrDigit(text[i - 1]));
+                    // CommonMark's flanking rules: the whole opener run must be followed by content and the closer
+                    // run preceded by content; underscores additionally refuse intraword emphasis (in_var_iable,
+                    // foo_bar_baz stay literal).
+                    bool leftFlank = IsLeftFlankingRun(text, c, i, run);
                     int closer = -1;
+                    int closerRun = 0;
                     if (leftFlank)
                     {
-                        int search = afterOpen;
-                        while (search < length)
+                        // CommonMark 规则 11：一方能同时开合强调、另一方不能时，这一对不成立。
+                        // 这里用 "两侧都能开又能合" 的布尔值相等来近似：一端是纯起始串、另一端是纯闭合串才配对，
+                        // 像 *a**b* 里既是起始又是闭合的 ** 就不去抢那对单星。
+                        // CommonMark rule 11: when one delimiter can both open and close emphasis and the other
+                        // cannot, the pair is invalid. Approximated here by requiring both sides to agree on
+                        // "can open and can close", so the ** in *a**b* (which both opens and closes) does not steal
+                        // the single-star pair.
+                        bool openerBoth = IsRightFlankingRun(text, c, i, run);
+                        // 第一轮只接受长度不小于起始串的闭合串：`**a *b* c**` 中间那对单星属于内层强调，
+                        // 不能当成外层 `**` 的闭合。第一轮空手而归才允许半配对，`***a**` 用掉两枚成粗体，
+                        // 起始侧多出的那一枚退回字面文本。
+                        // The first pass only accepts a closer at least as long as the opener: inside `**a *b* c**`
+                        // the single asterisks belong to the inner emphasis and cannot close the outer pair. Only if
+                        // that finds nothing does the second pass allow a partial pair, so `***a**` spends two markers
+                        // on the strong and leaves the surplus opener as literal text.
+                        for (int pass = 0; pass < 2 && closer < 0; pass++)
                         {
-                            int at = FindDelim(text, delim, search);
-                            if (at < 0)
+                            int need = pass == 0 ? run : 1;
+                            int matched;
+                            closer = FindEmphasisCloser(text, c, i, run, need, openerBoth, 0, out matched);
+                            if (closer >= 0)
                             {
-                                break;
+                                closerRun = matched;
                             }
-                            int after = at + delimLen;
-                            bool rightFlank = !char.IsWhiteSpace(text[at - 1])
-                                && (c != '_' || after >= length || !char.IsLetterOrDigit(text[after]));
-                            if (rightFlank && at > afterOpen)
-                            {
-                                closer = at;
-                                break;
-                            }
-                            search = after;
                         }
                     }
                     if (closer < 0)
@@ -1660,24 +2341,30 @@ namespace Wisdom.Markdown
                         i += run;
                         continue;
                     }
-                    string inner = text.Substring(afterOpen, closer - afterOpen);
+                    // 一对分隔符各吃掉 min(两侧长度) 个字符：`**a***` 用掉两枚成粗体，余下一枚退回字面。
+                    // Each pair consumes min(run lengths) markers, so `**a***` spends two on the strong and leaves one
+                    // literal.
+                    int used = Math.Min(run, closerRun);
                     TextFormat em = baseFormat.Clone();
-                    if (delimLen >= 3)
-                    {
-                        em.Bold = true;
-                        em.Italic = true;
-                    }
-                    else if (delimLen == 2)
+                    if (used >= 2)
                     {
                         em.Bold = true;
                     }
-                    else
+                    // 四枚是两层粗体，模型里粗体不可叠加，斜体只在层数为奇数时才出现。
+                    // Four markers mean two nested strongs, which the model flattens to bold alone; italics only come
+                    // with an odd number of levels.
+                    if ((used & 1) == 1)
                     {
                         em.Italic = true;
+                    }
+                    for (int lead = run - used; lead > 0; lead--)
+                    {
+                        buffer.Append(c);
                     }
                     FlushBuffer(buffer, result, baseFormat);
+                    string inner = text.Substring(i + run, closer - i - run);
                     result.AddRange(ParseInlines(inner, em, depth + 1));
-                    i = closer + delimLen;
+                    i = closer + used;
                     continue;
                 }
 
@@ -1708,21 +2395,15 @@ namespace Wisdom.Markdown
             {
                 return null;
             }
-            if (bracketClose + 1 >= text.Length || text[bracketClose + 1] != '(')
-            {
-                return null;
-            }
-            int parenClose = map.ParenClose(bracketClose + 1);
-            if (parenClose < 0)
-            {
-                return null;
-            }
-
             string alt = text.Substring(bracketOpen + 1, bracketClose - bracketOpen - 1);
-            string target = text.Substring(bracketClose + 2, parenClose - bracketClose - 2);
-            string src = ExtractLinkTarget(target);
+            string src;
+            int end;
+            if (!TryReadLinkTarget(text, alt, bracketClose, map, out src, out end))
+            {
+                return null;
+            }
 
-            consumed = parenClose + 1;
+            consumed = end;
 
             OfficeImage image = TryLoadLocalImage(src);
             if (image != null)
@@ -1741,14 +2422,92 @@ namespace Wisdom.Markdown
             }
             else
             {
-                fallback.Add(new TextRun(text.Substring(start, parenClose - start + 1), baseFormat));
+                fallback.Add(new TextRun(text.Substring(start, end - start), baseFormat));
             }
             return fallback;
         }
 
         /// <summary>
-        /// 尝试解析链接 [text](url "title")：文本以蓝色下划线呈现（模型无超链接元素，故仅保留可见样式）。
-        /// Attempts to parse a link [text](url "title"): the text renders in blue underline (the model has no hyperlink element, so only the visible style is kept).
+        /// 读取 <c>]</c> 之后的链接目标：内联形式 <c>(url "title")</c> 与引用形式 <code>[label]</code> / 简写 <code>[label]</code>
+        /// 都支持；内联目标含未转义空白或尾随杂串时整体退回字面文本（CommonMark 判定不合法）。
+        /// Reads the link target following <c>]</c>: the inline form <c>(url "title")</c> and the reference forms
+        /// <code>[text][label]</code>, <code>[text][]</code> and the shortcut <code>[label]</code> all resolve; an
+        /// inline destination with unescaped whitespace or trailing junk makes the whole construct literal (CommonMark
+        /// rejects it).
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="linkText">方括号内的文本，引用简写时兼作标签。The bracketed text, also the label for a shortcut reference.</param>
+        /// <param name="bracketClose">闭合 <c>]</c> 的下标。The index of the closing ']'.</param>
+        /// <param name="map">本段文本的配对查找表。The pairing table for this text.</param>
+        /// <param name="target">输出的链接目标。The destination on output.</param>
+        /// <param name="consumed">输出消费到的位置。The consumed end index on output.</param>
+        /// <returns>是否解析成功。Whether a target was resolved.</returns>
+        private bool TryReadLinkTarget(string text, string linkText, int bracketClose, ScanMap map, out string target, out int consumed)
+        {
+            target = null;
+            consumed = 0;
+            int after = bracketClose + 1;
+            while (after < text.Length && (text[after] == ' ' || text[after] == '\t'))
+            {
+                after++;
+            }
+
+            if (after < text.Length && text[after] == '(')
+            {
+                int parenClose = map.ParenClose(after);
+                if (parenClose < 0)
+                {
+                    return false;
+                }
+                string raw = text.Substring(after + 1, parenClose - after - 1);
+                string dest;
+                if (!TrySplitLinkTarget(raw, out dest))
+                {
+                    return false;
+                }
+                target = dest;
+                consumed = parenClose + 1;
+                return true;
+            }
+
+            if (_definitions.Count == 0)
+            {
+                return false;
+            }
+
+            string label = NormalizeLabel(linkText);
+            int end = after;
+            if (after < text.Length && text[after] == '[')
+            {
+                int refClose = IndexUnescaped(text, ']', after + 1);
+                if (refClose < 0)
+                {
+                    return false;
+                }
+                string explicitLabel = NormalizeLabel(text.Substring(after + 1, refClose - after - 1));
+                if (explicitLabel.Length > 0)
+                {
+                    label = explicitLabel;
+                }
+                end = refClose + 1;
+            }
+            LinkDefinition definition;
+            if (label.Length == 0 || label.Length > MaxDefinitionLabelChars || !_definitions.TryGetValue(label, out definition))
+            {
+                return false;
+            }
+            target = definition.Destination;
+            consumed = end;
+            return true;
+        }
+
+
+        /// <summary>
+        /// 尝试解析链接：内联形式 <c>[text](url "title")</c> 与引用形式 <c>[text][ref]</c>、<c>[text][]</c>、<c>[ref]</c>。
+        /// 链接文本以蓝色下划线呈现，并把原始地址记在 TextRun.Link 上供写器输出超链接。
+        /// Attempts to parse a link: the inline form <c>[text](url "title")</c> and the reference forms
+        /// <c>[text][ref]</c>, <c>[text][]</c> and <c>[ref]</c>. The text renders in blue underline and the resolved
+        /// destination is recorded on TextRun.Link so writers can emit a hyperlink.
         /// </summary>
         /// <param name="text">全文。The full text.</param>
         /// <param name="start">'[' 的位置。The index of '['.</param>
@@ -1765,19 +2524,13 @@ namespace Wisdom.Markdown
             {
                 return null;
             }
-            if (bracketClose + 1 >= text.Length || text[bracketClose + 1] != '(')
-            {
-                return null;
-            }
-            int parenClose = map.ParenClose(bracketClose + 1);
-            if (parenClose < 0)
-            {
-                return null;
-            }
-
             string linkText = text.Substring(start + 1, bracketClose - start - 1);
-            string target = text.Substring(bracketClose + 2, parenClose - bracketClose - 2);
-            string url = ExtractLinkTarget(target);
+            string url;
+            int end;
+            if (!TryReadLinkTarget(text, linkText, bracketClose, map, out url, out end))
+            {
+                return null;
+            }
 
             TextFormat linkFormat = baseFormat.Clone();
             linkFormat.Underline = true;
@@ -1796,7 +2549,7 @@ namespace Wisdom.Markdown
                     run.Link = url;
                 }
             }
-            consumed = parenClose + 1;
+            consumed = end;
             return inner;
         }
 
@@ -1844,28 +2597,62 @@ namespace Wisdom.Markdown
         }
 
         /// <summary>
-        /// 从链接目标 "url 或 url \"title\"" 中取出 url 部分（去掉可选标题与尖括号）。
-        /// Extracts the URL portion from a link target "url" or "url \"title\"", stripping an optional title and angle brackets.
+        /// 校验并拆出括号内的链接目标：目标必须不含未转义空白（尖括号包裹除外），
+        /// 其后可跟一个成对引号标题；任何多余内容都让整个结构退回字面文本（CommonMark 的判定）。
+        /// Validates and splits the parenthesized target: the destination may not contain unescaped whitespace unless
+        /// wrapped in angle brackets, an optional quoted title may follow, and any leftover text makes the whole
+        /// construct fall back to literals (CommonMark's verdict).
         /// </summary>
-        /// <param name="target">原始目标。The raw target.</param>
-        /// <returns>URL 字符串。The URL string.</returns>
-        private static string ExtractLinkTarget(string target)
+        /// <param name="raw">括号内的原始内容。The raw content between the parentheses.</param>
+        /// <param name="destination">输出的链接目标。The destination on output.</param>
+        /// <returns>是否为合法目标。Whether the target is valid.</returns>
+        private static bool TrySplitLinkTarget(string raw, out string destination)
         {
-            string t = target.Trim();
-            if (t.Length == 0)
+            destination = null;
+            int i = 0;
+            while (i < raw.Length && char.IsWhiteSpace(raw[i]))
             {
-                return t;
+                i++;
             }
-            int space = t.IndexOf(' ');
-            if (space > 0)
+            if (i >= raw.Length)
             {
-                t = t.Substring(0, space);
+                // [a]() 是合法的空目标。An empty target, as in [a](), is valid.
+                destination = string.Empty;
+                return true;
             }
-            if (t.Length >= 2 && t[0] == '<' && t[t.Length - 1] == '>')
+            int end;
+            string dest = ReadDefinitionDestination(raw, i, out end);
+            if (dest == null)
             {
-                t = t.Substring(1, t.Length - 2);
+                return false;
             }
-            return t;
+            i = end;
+            while (i < raw.Length && char.IsWhiteSpace(raw[i]))
+            {
+                i++;
+            }
+            if (i >= raw.Length)
+            {
+                destination = dest;
+                return true;
+            }
+            string title;
+            int titleEnd;
+            if (!ReadDefinitionTitle(raw, i, out title, out titleEnd))
+            {
+                return false;
+            }
+            i = titleEnd;
+            while (i < raw.Length && char.IsWhiteSpace(raw[i]))
+            {
+                i++;
+            }
+            if (i < raw.Length)
+            {
+                return false;
+            }
+            destination = dest;
+            return true;
         }
 
         /// <summary>
@@ -2230,6 +3017,166 @@ namespace Wisdom.Markdown
             }
             return -1;
         }
+
+        /// <summary>
+        /// 从 from 起查找下一段连续的同种强调字符（跳过转义），并输出这段的长度。
+        /// Finds the next run of consecutive emphasis characters from the given index, skipping escapes, and reports
+        /// how long that run is.
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="delimiter">目标字符。The character to look for.</param>
+        /// <param name="from">起始查找位置。The start search index.</param>
+        /// <param name="length">输出的连续长度。The length of the run on output.</param>
+        /// <returns>这段的起始位置或 -1。The start index of the run or -1.</returns>
+        private static int NextDelimRun(string text, char delimiter, int from, out int length)
+        {
+            length = 0;
+            int i = from;
+            while (i < text.Length)
+            {
+                if (text[i] == '\\')
+                {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == delimiter)
+                {
+                    int run = 1;
+                    while (i + run < text.Length && text[i + run] == delimiter)
+                    {
+                        run++;
+                    }
+                    length = run;
+                    return i;
+                }
+                i++;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// 判断 &lt;start&gt; 处长为 length 的分隔符串能否开启强调：整串后紧跟内容，下划线另禁词内起始。
+        /// Tests whether the delimiter run of the given length at &lt;start&gt; can open emphasis: the whole run must be
+        /// followed by content, and an underscore run additionally refuses to open inside a word.
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="delimiter">分隔符字符。The delimiter character.</param>
+        /// <param name="start">分隔符串起点。The start index of the run.</param>
+        /// <param name="length">分隔符串长度。The length of the run.</param>
+        /// <returns>能否开启强调。Whether the run can open emphasis.</returns>
+        private static bool IsLeftFlankingRun(string text, char delimiter, int start, int length)
+        {
+            int after = start + length;
+            if (after >= text.Length || char.IsWhiteSpace(text[after]))
+            {
+                return false;
+            }
+            if (delimiter == '_' && start > 0 && char.IsLetterOrDigit(text[start - 1]))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 判断 &lt;start&gt; 处长为 length 的分隔符串能否闭合强调：整串前紧跟内容，下划线另禁词内闭合。
+        /// Tests whether the delimiter run of the given length at &lt;start&gt; can close emphasis: the whole run must be
+        /// preceded by content, and an underscore run additionally refuses to close inside a word.
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="delimiter">分隔符字符。The delimiter character.</param>
+        /// <param name="start">分隔符串起点。The start index of the run.</param>
+        /// <param name="length">分隔符串长度。The length of the run.</param>
+        /// <returns>能否闭合强调。Whether the run can close emphasis.</returns>
+        private static bool IsRightFlankingRun(string text, char delimiter, int start, int length)
+        {
+            if (start <= 0 || char.IsWhiteSpace(text[start - 1]))
+            {
+                return false;
+            }
+            int after = start + length;
+            if (delimiter == '_' && after < text.Length && char.IsLetterOrDigit(text[after]))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// 为一个强调起始串寻找闭合串：先替内层起始串找它自己的闭合串并整对跳过，
+        /// 再按 CommonMark 规则 11 拒绝"一端能同时开合、另一端不能"的配对。
+        /// Finds the closer for an emphasis opener: an inner run that can itself open emphasis gets its own closer
+        /// searched first so the whole inner pair is skipped, and per CommonMark rule 11 a pair is rejected when one
+        /// side can both open and close emphasis while the other cannot (so the ** in *a**b* does not steal the
+        /// single-star pair).
+        /// </summary>
+        /// <param name="text">全文。The full text.</param>
+        /// <param name="delimiter">分隔符字符。The delimiter character.</param>
+        /// <param name="openStart">起始串起点。The start index of the opener run.</param>
+        /// <param name="openLength">起始串长度。The length of the opener run.</param>
+        /// <param name="minLength">闭合串允许的最短长度。The shortest closer run accepted.</param>
+        /// <param name="openerBoth">起始串是否既能开又能合。Whether the opener can both open and close emphasis.</param>
+        /// <param name="depth">内层递归深度，超上限即停止下探。The inner recursion depth; scanning stops at the cap.</param>
+        /// <param name="matchedLength">输出闭合串实测长度。The measured length of the closer run on output.</param>
+        /// <returns>闭合串起点或 -1。The start index of the closer, or -1.</returns>
+        private static int FindEmphasisCloser(string text, char delimiter, int openStart, int openLength, int minLength, bool openerBoth, int depth, out int matchedLength)
+        {
+            matchedLength = 0;
+            int length = text.Length;
+            int search = openStart + openLength;
+            while (search < length)
+            {
+                int runLength;
+                int at = NextDelimRun(text, delimiter, search, out runLength);
+                if (at < 0)
+                {
+                    return -1;
+                }
+                int after = at + runLength;
+                bool canClose = IsRightFlankingRun(text, delimiter, at, runLength);
+                bool canOpen = IsLeftFlankingRun(text, delimiter, at, runLength);
+                // 单星起始串不抢两枚以上、且自身还能开场的闭合串：*a**b* 里的 ** 属于内容，
+                // 抢过来会让中间两个星凭空消失。等长的正常配对（*a*、**a**）不受影响。
+                // A one-star opener must not steal a longer run that can itself open emphasis: in *a**b* the ** is
+                // content, and pairing with it would silently delete the two markers. Equal-length pairs (*a*,
+                // **a**) are unaffected.
+                bool ruleElevenBlocked = canOpen && runLength >= 2 && openLength == 1 && !openerBoth;
+                // 反向的同形陷阱：a**b* 里既能开场又能闭合的双星去配一个更短的单星，用掉一枚就剩不下闭合位，
+                // 整串只能退回字面文本，否则尾部那颗星会凭空消失。等长或更长的闭合串照常配对。
+                // The mirror-image trap: in a**b* a run that can both open and close tries to close with a shorter
+                // single star, and spending one marker leaves nothing to close with, so the whole run must fall back
+                // to literals or the trailing star silently disappears. Equal-or-longer closers pair as usual.
+                bool partialCloserBlocked = canClose && !canOpen && openerBoth && runLength < openLength;
+                if (ruleElevenBlocked || partialCloserBlocked)
+                {
+                    // 被规则挡住的这串按内容跳过，不再替它找内层配对：*a**b* 的 ** 就此留在正文里。
+                    // A run blocked by the rule is skipped as content instead of being given an inner partner, so
+                    // the ** in *a**b* stays in the text.
+                    search = after;
+                    continue;
+                }
+                if (canClose && runLength >= minLength)
+                {
+                    matchedLength = runLength;
+                    return at;
+                }
+                int innerMatched;
+                if (canOpen && depth < MaxDelimiterScanDepth)
+                {
+                    int inner = FindEmphasisCloser(text, delimiter, at, runLength, 1, canClose, depth + 1, out innerMatched);
+                    if (inner >= 0)
+                    {
+                        search = inner + innerMatched;
+                        continue;
+                    }
+                }
+                search = after > search ? after : search + 1;
+            }
+            return -1;
+        }
+
+        /// <summary>内层强调配对搜索的最大递归深度，避免超长分隔符串把扫描拖成平方级。Maximum nesting of the inner emphasis pair search, so long delimiter runs cannot degrade scanning into quadratic time.</summary>
+        private const int MaxDelimiterScanDepth = 32;
 
         /// <summary>
         /// 将缓冲区文本作为带基准格式的运行刷出（空缓冲不产生元素）。

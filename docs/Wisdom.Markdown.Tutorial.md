@@ -1,6 +1,6 @@
 # Wisdom.Markdown 使用教程
 
-Markdown 引擎的实战教程：把一份带 front-matter 的发布说明解析成统一文档模型，逐类看标题、强调、链接、列表、任务项、代码块、引用与表格在模型里落成什么形状，渲染成可离线打开的 HTML 片段，再用 `MarkdownOptions` 逐个开关看效果，最后把文档模型回写成 Markdown、经 `Wisdom.Office` 门面转 PDF / Word，并实测哪些语法是明确不支持的。
+Markdown 引擎的实战教程：把一份带 front-matter 的发布说明解析成统一文档模型，逐类看标题、强调、链接、列表、任务项、代码块、引用与表格在模型里落成什么形状，渲染成可离线打开的 HTML 片段，再用 `MarkdownOptions` 逐个开关看效果，最后把文档模型回写成 Markdown、经 `Wisdom.Office` 门面转 PDF / Word，实测哪些写法会降级，并逐组核对与 CommonMark 对齐的行内与块级细节。
 
 安装方式见[包说明](../src/Wisdom.Markdown/README.md#安装)。本教程示例是 .NET 8 控制台工程，文中所有输出、字符数与字节数都是这份工程实测打印的；只有第 9 步用到 `Wisdom.Office` 门面包（`OfficeFile` / `OfficeConverter`），其余只用 `Wisdom.Markdown` + `Wisdom.Office.Core`。
 
@@ -699,7 +699,7 @@ Console.WriteLine("[14] PDF 文本含 ＊ ＊ ＊=" + pdfBack.ExtractText().Cont
 
 段落模型没有"下边框"属性，所以分割线在文档模型里是一条居中、写着 `＊ ＊ ＊` 的段落，Word / PDF 就排这行字符；只有 HTML 与 Markdown 两条出口会把它还原成 `<hr />` 与 `---`。
 
-## 10. 明确不支持的语法，实测长什么样
+## 10. 降级行为实测：哪些写法会被改写、哪些留字面
 
 ```csharp
 string limits = string.Join("\n", new string[]
@@ -721,13 +721,13 @@ string limits = string.Join("\n", new string[]
 });
 OfficeDocument limitDoc = Markdown.ToDocument(limits);
 string limitHtml = Markdown.ToHtml(limits);
-Console.WriteLine("[10] 限制实测：块=" + CountBlocks(limitDoc)
-    + " 引用链接留原样=" + limitDoc.Sections[0].Blocks[0].GetType().Name);
-Console.WriteLine("    首段文本=\"" + ((Paragraph)limitDoc.Sections[0].Blocks[0]).GetText() + "\"");
-Console.WriteLine("    脚注行=\"" + LastText(limitDoc) + "\" 远程图片段落=\"" + FindImageFallback(limitDoc) + "\"");
-Console.WriteLine("    列表续写段数=" + ListParagraphs(limitDoc).Count
-    + " 表格单元格文本=\"" + CellText(Tables(limitDoc)[0], 1, 0) + "\"");
-Console.WriteLine("    HTML 长度=" + limitHtml.Length + " <a>=" + CountOf(limitHtml, "<a href"));
+Console.WriteLine("[10] 块=" + CountBlocks(limitDoc)
+    + " 首块=" + limitDoc.Sections[0].Blocks[0].GetType().Name
+    + " <a>=" + CountOf(limitHtml, "<a href") + " HTML 长度=" + limitHtml.Length);
+Console.WriteLine("    首段=\"" + ((Paragraph)limitDoc.Sections[0].Blocks[0]).GetText()
+    + "\" 末段=\"" + LastText(limitDoc) + "\"");
+Console.WriteLine("    表格单元格文本=\"" + CellText(Tables(limitDoc)[0], 1, 0)
+    + "\" 列表项段数=" + ListParagraphs(limitDoc).Count);
 foreach (Block block in limitDoc.Sections[0].Blocks)
 {
     Paragraph p = block as Paragraph;
@@ -739,37 +739,22 @@ foreach (Block block in limitDoc.Sections[0].Blocks)
 实测输出：
 
 ```text
-[10] 限制实测：块=7 引用链接留原样=Paragraph
-    首段文本="引用式链接 [文档][ref] 与脚注[^1]。"
-    脚注行="[文档]: https://example.com/a" 远程图片段落="远程"
-    列表续写段数=1 表格单元格文本="- 内嵌列表"
-    HTML 长度=366 <a>=0
-    - Paragraph "引用式链接 [文档][ref] 与脚注[^1]。" 标记=无
-    - Paragraph "[^1]: 脚注内容" 标记=无
-    - Paragraph "列表首段" 标记=•
-    - Paragraph "续写第二段落" 标记=无
+[10] 块=4 首块=Paragraph <a>=1 HTML 长度=365
+    首段="引用式链接 [文档][ref] 与脚注^1。" 末段="远程"
+    表格单元格文本="- 内嵌列表" 列表项段数=1
+    - Paragraph "引用式链接 [文档][ref] 与脚注^1。" 标记=无
+    - Paragraph "列表首段 续写第二段落" 标记=•
     - Paragraph "远程" 标记=无
     - Table "" 标记=-
-    - Paragraph "[文档]: https://example.com/a" 标记=无
 ```
 
-三个辅助函数只取文本，注意 `TableCell` 没有 `GetText()`，单元格内容在 `Blocks` 里：
+两个辅助函数只取文本，注意 `TableCell` 没有 `GetText()`，单元格内容在 `Blocks` 里：
 
 ```csharp
 static string LastText(OfficeDocument doc)
 {
     List<Paragraph> list = Paragraphs(doc);
     return list[list.Count - 1].GetText();
-}
-
-static string FindImageFallback(OfficeDocument doc)
-{
-    foreach (Paragraph paragraph in Paragraphs(doc))
-    {
-        string text = paragraph.GetText();
-        if (text.Contains("远程")) return text;
-    }
-    return string.Empty;
 }
 
 static string CellText(Table table, int row, int column)
@@ -781,28 +766,30 @@ static string CellText(Table table, int row, int column)
 
 对应包说明里的「已知限制」，全部是不抛异常、只降级：
 
-- **引用式链接** `[文字][ref]` 与定义行 `[文档]: URL` 原样留作文本，HTML 里一个 `<a>` 都没有（`<a>=0`）。
-- **脚注** `[^1]` 不识别，定义行也当普通段落。
-- **列表项内多段落**：续写的"第二段落"变成独立普通段落（`标记=无`），不再属于那个列表项。
-- **远程图片** `![远程](https://…)` 不下载，降级成 alt 文本"远程"；本地路径找不到同理。
+- **引用式链接要标签对上才生效**：`[文档][ref]` 找的是标签 `ref` 的定义，而这段里定义的是 `[文档]: …`，标签不匹配，整个结构按字面文本留着；对上了（如 `[a][1]` 配 `[1]: /url`）就渲染成 `<a>`，定义行本身不再占一个块（实测块数从 7 降到 4）。未定义的引用不抛异常，也不凭空造链接。
+- **脚注 `[^1]` 不是脚注**：引用式的标签规则会把 `^1` 当成一个普通引用名，配套的 `[^1]: 脚注内容` 被收进定义表，实测渲染成 `<a href="脚注内容">^1</a>`——不是上标脚注，模型里那段文本也变成"引用式链接 [文档][ref] 与脚注^1。"（方括号被吃掉）。写文档时别把脚注定义行混进来。
+- **列表项内的缩进续行并进同一个项**：`- 列表首段` 后面紧跟两空格缩进的"续写第二段落"，实测成一个 `<li>列表首段 续写第二段落</li>`、`列表项段数=1`，两段文字合成一段（回写 Markdown 也合成一行）。模型里列表项就是段落序列，没有"松散列表"这一层。
+- **远程图片** `![远程](https://…)` 不下载，降级成 alt 文本"远程"；本地路径找不到同理；引用式图片 `![alt][pic]` 也只输出 alt 文本。
 - **表格单元格内不解析块级语法**：`| - 内嵌列表 |` 里的 `- ` 只是文字（单元格文本实测就是 `- 内嵌列表`），行内 `` `代码` `` 之类仍按行内处理。
-- 行首就是 `<` 的整行按原始 HTML 行透传，该行的行内 Markdown 不再解析：
+- **HTML 出口永远转义，原始 HTML 永不透传**：`EnableRawHtml` 只决定回写 Markdown 时用不用 `<u>` / `<span>` 表达下划线与颜色，对 HTML 渲染没有任何影响。
 
 ```csharp
 MarkdownOptions rawOn = new MarkdownOptions();
 rawOn.EnableRawHtml = true;
 Console.WriteLine("    EnableRawHtml=true 的 HTML=" + Markdown.ToHtml("<b>粗</b> 与 [链接](https://example.com)", rawOn));
 Console.WriteLine("    同输入默认选项 HTML=" + Markdown.ToHtml("<b>粗</b> 与 [链接](https://example.com)"));
-Console.WriteLine("    纯链接行 默认=" + Markdown.ToHtml("看 [链接](https://example.com)"));
+Console.WriteLine("    <div> 独占一行=" + Markdown.ToHtml("<div>"));
+Console.WriteLine("    <script> 一行=" + Markdown.ToHtml("<script>alert(1)</script>"));
 ```
 
 ```text
-    EnableRawHtml=true 的 HTML=<p>&lt;b&gt;粗&lt;/b&gt; 与 [链接](https://example.com)</p>
-    同输入默认选项 HTML=<p>&lt;b&gt;粗&lt;/b&gt; 与 [链接](https://example.com)</p>
-    纯链接行 默认=<p>看 <a href="https://example.com"><span style="color:#0000FF"><u>链接</u></span></a></p>
+    EnableRawHtml=true 的 HTML=<p>&lt;b&gt;粗&lt;/b&gt; 与 <a href="https://example.com"><span style="color:#0000FF"><u>链接</u></span></a></p>
+    同输入默认选项 HTML=<p>&lt;b&gt;粗&lt;/b&gt; 与 <a href="https://example.com"><span style="color:#0000FF"><u>链接</u></span></a></p>
+    <div> 独占一行=<p>&lt;div&gt;</p>
+    <script> 一行=<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>
 ```
 
-同一行里 `<` 出现在中间（第 6 步那句结尾段落）则只转义标签本身，链接照常解析。
+标签被转义成文本，同一行的行内 Markdown 照常解析（链接仍然是 `<a>`）；`<div>` 单独成行也只是变成一段转义文本，块里那一行仍按 Markdown 走——没有 HTML 块容器的概念。
 
 ## 11. 字符实体与资源上限
 
@@ -844,6 +831,167 @@ catch (Exception ex) { Console.WriteLine("单元格：" + ex.GetType().Name + ":
 ```
 
 合法边界不受影响：4 095 列的表照常解析，400 列 × 160 个数据行（连表头 161 行、64 400 个单元格）也在限内。同一张本地图片被引用几百次时按归一化绝对路径只读一次、只存一份，累计字节也只计一次；单张图另受 `MarkdownOptions.MaxImageBytes`（默认 16 MB）约束，超限与网络图片一样降级成 alt 文本。
+
+## 12. 与 CommonMark 对齐的行内与块级细节
+
+这一轮把引用式链接、标题锚点、列表起始编号、强调贴合规则、行内代码与块级优先级按 CommonMark 补齐。下面每组都是 `Markdown.ToHtml` 直接打印的实测结果。
+
+### 引用式链接与定义行
+
+```csharp
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "[a][1]", "", "[1]: /url")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "[1]", "", "[1]: /url")));          // 简写式
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "[a][]", "", "[a]: /u2")));         // 折叠式
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "[a][REF]", "", "[ref]: /url3")));  // 标签不区分大小写
+Console.WriteLine(Markdown.ToHtml("[a][zz]"));                                          // 引用没定义
+Console.WriteLine(Markdown.ToMarkdown(Markdown.ToDocument(string.Join("\n", "[a][1]", "", "[1]: /url"))));
+```
+
+```text
+<p><a href="/url"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p><a href="/url"><span style="color:#0000FF"><u>1</u></span></a></p>
+<p><a href="/u2"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p><a href="/url3"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p>[a][zz]</p>
+[a](/url)
+```
+
+定义行本身不再渲染成正文（第 10 节实测块数因此从 7 降到 4）；定义里带的 `"标题"` 只识别、不输出，模型没有放 title 的字段。四种形态里只有**标签对上**才成链接，对不上就整串留字面，绝不凭空造地址。引用式图片 `![alt][pic]` 只输出 alt 文本；定义行的地址是 `javascript:` 一类时同样拒绝进 `href`，降级成不可点击的蓝色下划线文本。回写 Markdown 时引用式统一落成内联式 `[a](/url)`。
+
+### 标题锚点
+
+```csharp
+Console.WriteLine(Markdown.ToHtml("# Hello World"));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "# A", "", "# A")));
+Console.WriteLine(Markdown.ToHtml("# C# & *fancy* name"));
+Console.WriteLine(Markdown.ToHtml("# 中文标题"));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "line1", "line2", "===")));
+```
+
+```text
+<h1 id="hello-world"><span style="color:#1F3A5F"><strong>Hello World</strong></span></h1>
+<h1 id="a"><span style="color:#1F3A5F"><strong>A</strong></span></h1>
+<h1 id="a-1"><span style="color:#1F3A5F"><strong>A</strong></span></h1>
+<h1 id="c-fancy-name"><span style="color:#1F3A5F"><strong>C# &amp; <em>fancy</em> name</strong></span></h1>
+<h1 id="中文标题"><span style="color:#1F3A5F"><strong>中文标题</strong></span></h1>
+<h1 id="line1-line2"><span style="color:#1F3A5F"><strong>line1 line2</strong></span></h1>
+```
+
+`id` 取标题**正文**（强调标记不算字符）转小写、非字母数字并成单个 `-`、首尾的 `-` 去掉；同名标题依次追加 `-1` / `-2`。中日韩标题按原文取锚点——`id="中文标题"` 是能直接跳转的 id，把非 ASCII 一律压成 `section` 反而没法用。Setext 写法（`===` / `---` 压在下文上）同样生成锚点，且整段并成一个标题。锚点只在 HTML 出口出现，文档模型里没有这个字段。
+
+### 有序列表起始编号
+
+```csharp
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "5. five", "6. six")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "0. zero", "1. one")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "1. one", "2. two")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "3) three", "4) four")));
+```
+
+```text
+<ol start="5">
+<li>five</li>
+<li>six</li>
+</ol>
+<ol start="0">
+<li>zero</li>
+<li>one</li>
+</ol>
+<ol>
+<li>one</li>
+<li>two</li>
+</ol>
+<ol start="3">
+<li>three</li>
+<li>four</li>
+</ol>
+```
+
+首项不是 1 才写 `start`（`0` 也照写），首项是 1 时不写这个属性；`1)` 这种括号分隔符一样识别。无序列表从不带 `start`。
+
+### 强调的贴合与相邻分隔符串
+
+```csharp
+Console.WriteLine(Markdown.ToHtml("in_var_iable"));
+Console.WriteLine(Markdown.ToHtml("2*3*4"));
+Console.WriteLine(Markdown.ToHtml("foo * bar*"));
+Console.WriteLine(Markdown.ToHtml("*a**b*"));
+Console.WriteLine(Markdown.ToHtml("**a *b* c**"));
+Console.WriteLine(Markdown.ToHtml("**a***b***"));
+Console.WriteLine(Markdown.ToHtml("**bold *italic* bold**"));
+```
+
+```text
+<p>in_var_iable</p>
+<p>2<em>3</em>4</p>
+<p>foo * bar*</p>
+<p><em>a**b</em></p>
+<p><strong>a <em>b</em> c</strong></p>
+<p><strong>a</strong><em>b</em>**</p>
+<p><strong>bold <em>italic</em> bold</strong></p>
+```
+
+词内的下划线不成强调（`in_var_iable` 原样），星号允许词内成对（`2*3*4` 出 `<em>3</em>`）；起始串后面必须紧跟内容，所以 `foo * bar*` 只是文本。相邻的分隔符串按 CommonMark 配对：单星不能抢既能开场又能闭合的双星（`*a**b*` 里那两个星是正文），内层成对的星号先拿走自己的闭合位、外层不越过去抢，最后**剥掉标签剩下的字符与原文一致**——星号只会变成标签，不会凭空消失。
+
+### 行内代码与围栏代码的空白
+
+```csharp
+Console.WriteLine(Markdown.ToHtml("` a `"));
+Console.WriteLine(Markdown.ToHtml("`a  b`"));
+Console.WriteLine(Markdown.ToHtml("`` a ` b ``"));
+Console.WriteLine(Markdown.ToHtml("`&#65;`"));
+Console.WriteLine(Markdown.ToHtml("` `"));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "```", "int x;  ", "```")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "```", "a", "", "b", "```")));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "```", "```")));
+```
+
+```text
+<p><code>a</code></p>
+<p><code>a  b</code></p>
+<p><code>a ` b</code></p>
+<p><code>&amp;#65;</code></p>
+<p><code> </code></p>
+<pre><code>int x;  
+</code></pre>
+<pre><code>a
+
+b
+</code></pre>
+<pre><code></code></pre>
+```
+
+闭合串必须与起始串**等长**（` `` a ` b `` ` 里的单星号是内容），两侧各恰好一个空格时各去掉一格、其余空白一律保留（`` `a  b` `` 的双空格、`" "` 这种纯空格片段都原样出）；串内不做实体解码，`` `&#65;` `` 就是 `&#65;`——这正是反引号的用途。围栏代码的空白同样保真：行尾空格不裁、块内空行不会把它拆成两块、块尾留一个换行，回写成 Markdown 再解析结果不变；空围栏输出 `<pre><code></code></pre>` 而不是消失。
+
+### 块级优先级与链接目标
+
+```csharp
+Console.WriteLine(Markdown.ToHtml("* * *"));
+Console.WriteLine(Markdown.ToHtml("- - -"));
+Console.WriteLine(Markdown.ToHtml("    - not a list"));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "para", "    still para")));
+Console.WriteLine(Markdown.ToHtml("[a](/url with space)"));
+Console.WriteLine(Markdown.ToHtml("[a](</url with space>)"));
+Console.WriteLine(Markdown.ToHtml("[a](/u(te)f)"));
+Console.WriteLine(Markdown.ToHtml("[a](/u \"the title\")"));
+Console.WriteLine(Markdown.ToHtml(string.Join("\n", "line1  ", "line2")));
+```
+
+```text
+<hr />
+<hr />
+<pre><code>- not a list
+</code></pre>
+<p>para still para</p>
+<p>[a](/url with space)</p>
+<p><a href="/url with space"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p><a href="/u(te)f"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p><a href="/u"><span style="color:#0000FF"><u>a</u></span></a></p>
+<p>line1<br />
+line2</p>
+```
+
+`* * *` 与 `- - -` 先判成分隔线，不会被误当成三个列表项；4 空格缩进的行先判成缩进代码（`    - not a list` 是代码不是列表），但缩进行**不能打断段落**——段落后面缩进一行仍是同一段。链接目标里出现未转义空格时整个结构退回字面文本，用 `<…>` 包裹就可以带空格，成对括号可直接写进目标，`"title"` 认出来但不输出。硬换行两种写法都认：行尾两个空格、行尾反斜杠，`<br />` 之后还跟着一个真正的换行；`HardLineBreaks = true` 时每个换行都是硬换行。
 
 ## 常见问题
 

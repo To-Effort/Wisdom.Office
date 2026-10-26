@@ -38,6 +38,9 @@ namespace Wisdom.Markdown
             List<Block> blocks = FlattenBlocks(document);
             StringBuilder builder = new StringBuilder();
             ListStack stacks = new ListStack(builder);
+            // 标题锚点：与 Markdig 的 AutoIdentifier 同样保证一篇文档内不重名。
+            // Heading anchors: like Markdig's AutoIdentifier, unique within one document.
+            Dictionary<string, int> usedSlugs = new Dictionary<string, int>(StringComparer.Ordinal);
             int index = 0;
             while (index < blocks.Count)
             {
@@ -86,14 +89,14 @@ namespace Wisdom.Markdown
                 string listKind = GetListKind(paragraph);
                 if (listKind != null)
                 {
-                    stacks.OpenItem(GetLevel(paragraph), listKind == "ol");
+                    stacks.OpenItem(GetLevel(paragraph), listKind == "ol", GetListItemNumber(paragraph));
                     WriteListItem(builder, paragraph, options);
                     index++;
                     continue;
                 }
 
                 stacks.CloseAll();
-                WriteTextParagraph(builder, paragraph, options);
+                WriteTextParagraph(builder, paragraph, options, usedSlugs);
                 index++;
             }
             stacks.CloseAll();
@@ -169,6 +172,38 @@ namespace Wisdom.Markdown
             return "ul";
         }
 
+        /// <summary>
+        /// 读取有序列表项的起始编号：解析器把 "5." 这样的标记存进 ListMarker，非数字或超过 9 位（溢出风险）返回 -1。
+        /// Reads an ordered item's start number: the parser keeps markers such as "5." in ListMarker; non-numeric or
+        /// longer than nine digits (an overflow risk) returns -1.
+        /// </summary>
+        /// <param name="paragraph">列表段落。The list paragraph.</param>
+        /// <returns>起始编号，无法判定时 -1。The start number, -1 when undeterminable.</returns>
+        private static int GetListItemNumber(Paragraph paragraph)
+        {
+            string marker = paragraph.ListMarker;
+            if (string.IsNullOrEmpty(marker))
+            {
+                return -1;
+            }
+            int value = 0;
+            int digits = 0;
+            while (digits < marker.Length && marker[digits] >= '0' && marker[digits] <= '9')
+            {
+                digits++;
+                if (digits > 9)
+                {
+                    return -1;
+                }
+                value = value * 10 + (marker[digits - 1] - '0');
+            }
+            if (digits == 0 || digits >= marker.Length || (marker[digits] != '.' && marker[digits] != ')'))
+            {
+                return -1;
+            }
+            return value;
+        }
+
         /// <summary>判断分隔线段落：去空白后的正文恰为 em 划线或星号/下划线三连等常见分隔写法。Detects a separator paragraph: trimmed text that is exactly an em dash or the common triple star/dash/underscore forms.</summary>
         /// <param name="paragraph">待判断段落。The paragraph to test.</param>
         /// <returns>是否为分隔线。Whether it is a separator.</returns>
@@ -183,7 +218,7 @@ namespace Wisdom.Markdown
                 || text == "---" || text == "***" || text == "___";
         }
 
-        /// <summary>判断代码段落：非标题非列表，且所有非空文本运行均为等宽字体。Detects a code paragraph: not a heading or list item, with every non-empty text run monospaced.</summary>
+        /// <summary>判断代码段落：先认解析器打的结构标记，没有标记的手写文档才退回等宽字体推断（空文本的等宽运行也算，代码块内的空行与空围栏靠它保住）。Detects a code paragraph: the parser's structural marker wins, and only a hand-built document with no marker falls back to the monospaced-font test (an empty monospaced run counts too, since blank lines inside a block and an empty fence depend on it).</summary>
         /// <param name="paragraph">待判断段落。The paragraph to test.</param>
         /// <param name="options">渲染选项。The render options.</param>
         /// <returns>是否为代码段落。Whether it is a code paragraph.</returns>
@@ -193,21 +228,32 @@ namespace Wisdom.Markdown
             {
                 return false;
             }
-            bool sawText = false;
+            if (string.Equals(paragraph.StyleName, MarkdownParser.CodeStyleName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            if (string.Equals(paragraph.StyleName, MarkdownParser.InlineStyleName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+            bool sawCodeRun = false;
             for (int i = 0; i < paragraph.Inlines.Count; i++)
             {
                 TextRun run = paragraph.Inlines[i] as TextRun;
                 if (run != null)
                 {
-                    if (string.IsNullOrEmpty(run.Text))
+                    string fontFamily = run.Format != null ? run.Format.GetAsciiFontFamily() : null;
+                    if (!IsMonospace(fontFamily, options))
                     {
+                        // 空白的正文字体运行只是段落里的空行，不影响判定。
+                        // A blank run in the body font is only an empty line; it does not disqualify the block.
+                        if (!string.IsNullOrEmpty(run.Text))
+                        {
+                            return false;
+                        }
                         continue;
                     }
-                    if (!IsMonospace(run.Format != null ? run.Format.GetAsciiFontFamily() : null, options))
-                    {
-                        return false;
-                    }
-                    sawText = true;
+                    sawCodeRun = true;
                     continue;
                 }
                 if (!(paragraph.Inlines[i] is FieldRun))
@@ -215,7 +261,7 @@ namespace Wisdom.Markdown
                     return false;
                 }
             }
-            return sawText;
+            return sawCodeRun;
         }
 
         /// <summary>判断字体名是否等宽：Consolas/Courier/Monospace 前缀匹配，或等于选项指定的代码字体。Tests whether a font family is monospaced: prefix match on Consolas/Courier/Monospace, or equal to the configured code font.</summary>
@@ -239,11 +285,12 @@ namespace Wisdom.Markdown
                 && name.Equals(options.CodeFontFamily, StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>输出普通段落或标题；空内容段落跳过，非左对齐时附带 text-align 样式。Writes a plain paragraph or heading; empty paragraphs are skipped and non-left alignment adds a text-align style.</summary>
+        /// <summary>输出普通段落或标题；空内容段落跳过，非左对齐时附带 text-align 样式，标题带唯一锚点 id。Writes a plain paragraph or heading; empty paragraphs are skipped, non-left alignment adds a text-align style, and headings carry a unique anchor id.</summary>
         /// <param name="builder">输出缓冲区。The output buffer.</param>
         /// <param name="paragraph">源段落。The source paragraph.</param>
         /// <param name="options">渲染选项。The render options.</param>
-        private static void WriteTextParagraph(StringBuilder builder, Paragraph paragraph, MarkdownOptions options)
+        /// <param name="usedSlugs">已用过的标题锚点，用于去重。Slugs used so far, for de-duplication.</param>
+        private static void WriteTextParagraph(StringBuilder builder, Paragraph paragraph, MarkdownOptions options, Dictionary<string, int> usedSlugs)
         {
             StringBuilder content = new StringBuilder();
             WriteInlines(content, paragraph.Inlines, options);
@@ -251,11 +298,76 @@ namespace Wisdom.Markdown
             {
                 return;
             }
-            string tag = paragraph.HeadingLevel > 0
+            bool heading = paragraph.HeadingLevel > 0;
+            string tag = heading
                 ? "h" + (paragraph.HeadingLevel > 6 ? 6 : paragraph.HeadingLevel).ToString(CultureInfo.InvariantCulture)
                 : "p";
-            builder.Append('<').Append(tag).Append(GetStyleAttribute(paragraph.Alignment, null, null)).Append('>')
+            builder.Append('<').Append(tag);
+            if (heading)
+            {
+                builder.Append(" id=\"").Append(Escape(NextSlug(usedSlugs, Slugify(paragraph.GetText())))).Append('"');
+            }
+            builder.Append(GetStyleAttribute(paragraph.Alignment, null, null)).Append('>')
                    .Append(content.ToString()).Append("</").Append(tag).Append(">\n");
+        }
+
+        /// <summary>
+        /// 生成标题锚点：转小写、空白变连字符、只留字母数字与 - 和 _（中日韩字符按 Unicode 字母原样保留）。
+        /// Builds a heading anchor: case-folded, whitespace becomes hyphens, and only letters, digits, hyphen and
+        /// underscore survive (CJK ideographs are letters in Unicode and are kept verbatim).
+        /// </summary>
+        /// <param name="text">标题正文。The heading text.</param>
+        /// <returns>锚点串，可能为空。The slug, possibly empty.</returns>
+        private static string Slugify(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+            StringBuilder slug = new StringBuilder(text.Length);
+            bool pendingHyphen = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (char.IsWhiteSpace(c))
+                {
+                    pendingHyphen = slug.Length > 0;
+                    continue;
+                }
+                if (c == '-' || c == '_' || char.IsLetterOrDigit(c))
+                {
+                    if (pendingHyphen)
+                    {
+                        slug.Append('-');
+                        pendingHyphen = false;
+                    }
+                    slug.Append(char.ToLowerInvariant(c));
+                }
+            }
+            return slug.ToString();
+        }
+
+        /// <summary>
+        /// 取一个未被占用的锚点：同名时依次追加 -1、-2……
+        /// Takes an unused anchor, appending -1, -2 and so on while the slug collides.
+        /// </summary>
+        /// <param name="usedSlugs">已用锚点计数表。The table of slugs used so far.</param>
+        /// <param name="slug">候选锚点。The candidate slug.</param>
+        /// <returns>唯一锚点。A unique anchor.</returns>
+        private static string NextSlug(Dictionary<string, int> usedSlugs, string slug)
+        {
+            if (slug.Length == 0)
+            {
+                slug = "section";
+            }
+            int count;
+            if (!usedSlugs.TryGetValue(slug, out count))
+            {
+                usedSlugs[slug] = 1;
+                return slug;
+            }
+            usedSlugs[slug] = count + 1;
+            return slug + "-" + count.ToString(CultureInfo.InvariantCulture);
         }
 
         /// <summary>输出一个列表项的正文（开闭标签由层级栈管理）；启用任务列表时识别行首复选框。Writes a list item's body (the tags are managed by the level stack); with task lists enabled a leading checkbox is recognized.</summary>
@@ -362,7 +474,14 @@ namespace Wisdom.Markdown
                 }
                 body.Append(Escape(GetRawText((Paragraph)blocks[i])));
             }
-            builder.Append("<pre><code>").Append(body.ToString()).Append("</code></pre>\n");
+            // 空代码块不带收尾换行，与 CommonMark 的 <pre><code></code></pre> 一致。
+            // An empty block gets no trailing newline, matching CommonMark's <pre><code></code></pre>.
+            builder.Append("<pre><code>");
+            if (body.Length > 0)
+            {
+                builder.Append(body.ToString()).Append('\n');
+            }
+            builder.Append("</code></pre>\n");
         }
 
         /// <summary>输出表格；未启用表格时降级为逐行的纯文本段落。Writes a table; when tables are disabled each row degrades to a plain text paragraph.</summary>
@@ -507,7 +626,13 @@ namespace Wisdom.Markdown
             }
         }
 
-        /// <summary>输出段落内全部行内元素：粗体转 strong、斜体转 em、下划线转 u、删除线转 del、等宽转 code、颜色转 span，嵌套顺序为 strong&gt;em&gt;code。Writes all inlines of a paragraph: bold to strong, italic to em, underline to u, strikeout to del, monospace to code, color to span, nested strong&gt;em&gt;code.</summary>
+        /// <summary>
+        /// 输出段落内全部行内元素：链接转 a、颜色转 span、下划线转 u、删除线转 del、粗体转 strong、斜体转 em、等宽转 code。
+        /// 相邻同格式的运行共用一对标签（连续层用状态机开合），因此 "bold <em>italic</em> bold" 不再被拆成三段 strong。
+        /// Writes a paragraph's inlines: links to a, color to span, underline to u, strikeout to del, bold to strong,
+        /// italic to em and monospace to code. Adjacent runs sharing a format reuse one pair of tags - the layers open
+        /// and close through a state machine - so "bold italic bold" is no longer split into three strong elements.
+        /// </summary>
         /// <param name="builder">输出缓冲区。The output buffer.</param>
         /// <param name="inlines">行内元素列表。The inline elements.</param>
         /// <param name="options">渲染选项。The render options.</param>
@@ -517,90 +642,221 @@ namespace Wisdom.Markdown
             {
                 return;
             }
+            InlineFrame frame = new InlineFrame(builder, options);
             for (int i = 0; i < inlines.Count; i++)
             {
                 Inline inline = inlines[i];
                 TextRun text = inline as TextRun;
                 if (text != null)
                 {
-                    if (string.IsNullOrEmpty(text.Link) || !IsSafeLink(text.Link))
-                    {
-                        WriteTextRun(builder, text.Text, text.Format, options);
-                    }
-                    else
-                    {
-                        builder.Append("<a href=\"").Append(Escape(text.Link)).Append("\">");
-                        WriteTextRun(builder, text.Text, text.Format, options);
-                        builder.Append("</a>");
-                    }
+                    frame.Apply(text.Text, text.Link, text.Format);
                     continue;
                 }
                 FieldRun field = inline as FieldRun;
                 if (field != null)
                 {
-                    WriteTextRun(builder, field.DisplayText, field.Format, options);
+                    frame.Apply(field.DisplayText, null, field.Format);
                     continue;
                 }
                 ImageRun image = inline as ImageRun;
                 if (image != null)
                 {
-                    WriteImage(builder, image);
+                    frame.AppendImage(image);
                 }
+            }
+            frame.Close();
+        }
+
+        /// <summary>
+        /// 行内标签层的状态机：按 a &gt; span &gt; u &gt; del &gt; strong &gt; em &gt; code 的固定顺序开合标签
+        /// （粗斜体合并成一个同时带两面格式的运行，这个顺序让 <c>strong</c> 能横跨整段而不被 <c>em</c> 切开），
+        /// 只在相邻运行的层序真正变化时才闭合再重开，避免同一段格式被切成多个同名元素。
+        /// The inline tag state machine: layers open and close in the fixed order a &gt; span &gt; u &gt; del &gt;
+        /// strong &gt; em &gt; code, which keeps one &lt;strong&gt; stretch unbroken around the &lt;em&gt; inside it, and only the
+        /// part of the stack that actually changed is closed and reopened, so one formatted stretch is never cut into
+        /// several identically named elements.
+        /// </summary>
+        private sealed class InlineFrame
+        {
+            private const int LayerLink = 0;
+            private const int LayerSpan = 1;
+            private const int LayerUnderline = 2;
+            private const int LayerDelete = 3;
+            private const int LayerStrong = 4;
+            private const int LayerEmphasis = 5;
+            private const int LayerCode = 6;
+            private const int LayerCount = 7;
+
+            private readonly StringBuilder builder;
+            private readonly MarkdownOptions options;
+            private readonly int[] openLayers = new int[LayerCount];
+            private readonly string[] openKeys = new string[LayerCount];
+            private readonly int[] wantedLayers = new int[LayerCount];
+            private readonly string[] wantedKeys = new string[LayerCount];
+            private int depth;
+            private int wantedDepth;
+
+            /// <summary>绑定输出缓冲区与渲染选项。Binds the output buffer and the render options.</summary>
+            /// <param name="builder">输出缓冲区。The output buffer.</param>
+            /// <param name="options">渲染选项。The render options.</param>
+            public InlineFrame(StringBuilder builder, MarkdownOptions options)
+            {
+                this.builder = builder;
+                this.options = options;
+            }
+
+            /// <summary>写一段文本：先按该运行的格式调整标签层，再输出转义后的正文。Writes a text run: the tag layers are adjusted to the run's format, then the escaped text is emitted.</summary>
+            /// <param name="text">文本内容。The text content.</param>
+            /// <param name="link">超链接地址，可为空。The link target, possibly empty.</param>
+            /// <param name="format">文本格式。The text format.</param>
+            public void Apply(string text, string link, TextFormat format)
+            {
+                if (string.IsNullOrEmpty(text))
+                {
+                    return;
+                }
+                if (IsNewLineOnly(text))
+                {
+                    builder.Append("<br />\n");
+                    return;
+                }
+                Build(format, link);
+                Sync();
+                WriteText(text);
+            }
+
+            /// <summary>在当前仍打开的标签层里写图片。Writes an image inside the layers still open.</summary>
+            /// <param name="image">图片运行。The image run.</param>
+            public void AppendImage(ImageRun image)
+            {
+                WriteImage(builder, image);
+            }
+
+            /// <summary>闭合所有仍然打开的标签层。Closes every layer still open.</summary>
+            public void Close()
+            {
+                CloseTo(0);
+            }
+
+            /// <summary>把该运行的格式换算成期望的层序列（顺序即嵌套顺序）。Turns a run's format into the wanted layer sequence, in nesting order.</summary>
+            /// <param name="format">文本格式。The text format.</param>
+            /// <param name="link">超链接地址。The link target.</param>
+            private void Build(TextFormat format, string link)
+            {
+                wantedDepth = 0;
+                TextFormat effective = format ?? new TextFormat();
+                if (!string.IsNullOrEmpty(link) && IsSafeLink(link))
+                {
+                    Add(LayerLink, "<a href=\"" + Escape(link) + "\">");
+                }
+                if (effective.Color != OfficeColor.Black && effective.Color.A != 0)
+                {
+                    Add(LayerSpan, "<span style=\"color:#" + effective.Color.ToHex() + "\">");
+                }
+                if (effective.Underline)
+                {
+                    Add(LayerUnderline, "<u>");
+                }
+                if (effective.Strikeout)
+                {
+                    Add(LayerDelete, "<del>");
+                }
+                if (effective.Bold)
+                {
+                    Add(LayerStrong, "<strong>");
+                }
+                if (effective.Italic)
+                {
+                    Add(LayerEmphasis, "<em>");
+                }
+                if (IsMonospace(effective.GetAsciiFontFamily(), options))
+                {
+                    Add(LayerCode, "<code>");
+                }
+            }
+
+            /// <summary>追加一层。Appends one layer.</summary>
+            /// <param name="layer">层序号。The layer index.</param>
+            /// <param name="openTag">起始标签。The opening tag.</param>
+            private void Add(int layer, string openTag)
+            {
+                wantedLayers[wantedDepth] = layer;
+                wantedKeys[wantedDepth] = openTag;
+                wantedDepth++;
+            }
+
+            /// <summary>把已打开的层调整到期望状态：公共前缀保持不动，多出来的闭合、缺少的打开。Adjusts the open stack to the wanted state, keeping the common prefix, closing what is left over and opening what is missing.</summary>
+            private void Sync()
+            {
+                int common = 0;
+                while (common < depth && common < wantedDepth
+                       && openLayers[common] == wantedLayers[common]
+                       && string.Equals(openKeys[common], wantedKeys[common], StringComparison.Ordinal))
+                {
+                    common++;
+                }
+                CloseTo(common);
+                for (int i = common; i < wantedDepth; i++)
+                {
+                    builder.Append(wantedKeys[i]);
+                    openLayers[depth] = wantedLayers[i];
+                    openKeys[depth] = wantedKeys[i];
+                    depth++;
+                }
+            }
+
+            /// <summary>闭合到指定深度。Closes layers down to the given depth.</summary>
+            /// <param name="common">要保留的层数。The number of layers to keep.</param>
+            private void CloseTo(int common)
+            {
+                while (depth > common)
+                {
+                    depth--;
+                    builder.Append(CloseTag(openLayers[depth]));
+                }
+            }
+
+            /// <summary>层序号对应的闭合标签。The closing tag matching a layer index.</summary>
+            /// <param name="layer">层序号。The layer index.</param>
+            /// <returns>闭合标签。The closing tag.</returns>
+            private static string CloseTag(int layer)
+            {
+                switch (layer)
+                {
+                    case LayerLink:
+                        return "</a>";
+                    case LayerSpan:
+                        return "</span>";
+                    case LayerUnderline:
+                        return "</u>";
+                    case LayerDelete:
+                        return "</del>";
+                    case LayerStrong:
+                        return "</strong>";
+                    case LayerEmphasis:
+                        return "</em>";
+                    default:
+                        return "</code>";
+                }
+            }
+
+            /// <summary>输出转义后的正文，硬换行选项决定文本内嵌换行的处理。Emits the escaped text; the hard-break option governs embedded newlines.</summary>
+            /// <param name="text">原始文本。The raw text.</param>
+            private void WriteText(string text)
+            {
+                string content = Escape(text);
+                if (options != null && options.HardLineBreaks)
+                {
+                    content = content.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "<br />\n");
+                }
+                else
+                {
+                    content = content.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
+                }
+                builder.Append(content);
             }
         }
 
-        /// <summary>输出单个文本运行；纯换行运行输出 br，硬换行选项决定文本内嵌换行的处理。Writes one text run; a newline-only run emits br, and the hard-break option governs embedded newlines.</summary>
-        /// <param name="builder">输出缓冲区。The output buffer.</param>
-        /// <param name="text">文本内容。The text content.</param>
-        /// <param name="format">文本格式。The text format.</param>
-        /// <param name="options">渲染选项。The render options.</param>
-        private static void WriteTextRun(StringBuilder builder, string text, TextFormat format, MarkdownOptions options)
-        {
-            if (string.IsNullOrEmpty(text))
-            {
-                return;
-            }
-            if (IsNewLineOnly(text))
-            {
-                builder.Append("<br />");
-                return;
-            }
-            TextFormat effective = format ?? new TextFormat();
-            string content = Escape(text);
-            if (options.HardLineBreaks)
-            {
-                content = content.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "<br />");
-            }
-            else
-            {
-                content = content.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
-            }
-            if (IsMonospace(effective.GetAsciiFontFamily(), options))
-            {
-                content = "<code>" + content + "</code>";
-            }
-            if (effective.Italic)
-            {
-                content = "<em>" + content + "</em>";
-            }
-            if (effective.Bold)
-            {
-                content = "<strong>" + content + "</strong>";
-            }
-            if (effective.Strikeout)
-            {
-                content = "<del>" + content + "</del>";
-            }
-            if (effective.Underline)
-            {
-                content = "<u>" + content + "</u>";
-            }
-            if (effective.Color != OfficeColor.Black && effective.Color.A != 0)
-            {
-                content = "<span style=\"color:#" + effective.Color.ToHex() + "\">" + content + "</span>";
-            }
-            builder.Append(content);
-        }
 
         /// <summary>输出图片为内联 base64 data URI 的 img 标签；尺寸取显式磅值，缺省用图片默认磅值并换算为像素。刻意为之：内联字节使 HTML 片段无需外部资源即可独立查看。Writes the image as an img tag with an inline base64 data URI; sizes use explicit points or the defaults converted to pixels. Deliberate: inlining the bytes lets the fragment stand alone without external resources.</summary>
         /// <param name="builder">输出缓冲区。The output buffer.</param>
@@ -836,9 +1092,21 @@ namespace Wisdom.Markdown
         {
             string[] lines = text.Split('\n');
             StringBuilder trimmed = new StringBuilder(text.Length);
+            bool inPre = false;
             for (int i = 0; i < lines.Length; i++)
             {
-                string line = lines[i].TrimEnd('\r', ' ', '\t');
+                // <pre> 里的行尾空白是代码内容本身，裁掉就改变了导出的字节序列；
+                // 起始标签与正文同处一行，所以含 <pre 的那一行也整体保留。
+                // Trailing whitespace inside <pre> is code content; trimming it changes the exported bytes. The
+                // opening tag shares a line with the first body line, so a line containing <pre is kept as well.
+                bool keep = inPre || lines[i].IndexOf("<pre", StringComparison.Ordinal) >= 0;
+                string line = keep ? lines[i] : lines[i].TrimEnd('\r', ' ', '\t');
+                int open = lines[i].IndexOf("<pre", StringComparison.Ordinal);
+                int close = lines[i].IndexOf("</pre", StringComparison.Ordinal);
+                if (open >= 0 || close >= 0)
+                {
+                    inPre = open >= 0 && (close < 0 || open > close);
+                }
                 if (i < lines.Length - 1)
                 {
                     trimmed.Append(line).Append('\n');
@@ -868,10 +1136,11 @@ namespace Wisdom.Markdown
                 this.builder = builder;
             }
 
-            /// <summary>在指定层级开一个新列表项，必要时先闭合更深层级或补开中间层级。Opens a list item at the given level, closing deeper levels or opening intermediate ones as needed.</summary>
+            /// <summary>在指定层级开一个新列表项，必要时先闭合更深层级或补开中间层级；新开一层的有序表带上起始编号。Opens a list item at the given level, closing deeper levels or opening intermediate ones as needed; a freshly opened ordered list carries its start number.</summary>
             /// <param name="level">层级（从 0 开始）。The zero-based level.</param>
             /// <param name="ordered">是否为有序列表。Whether the list is ordered.</param>
-            public void OpenItem(int level, bool ordered)
+            /// <param name="number">本项的编号，0 表示未知或无序。This item's number, 0 when unknown or unordered.</param>
+            public void OpenItem(int level, bool ordered, int number)
             {
                 while (orderedFlags.Count > level + 1)
                 {
@@ -898,7 +1167,16 @@ namespace Wisdom.Markdown
                         itemOpen = true;
                     }
                     bool nestedOrdered = orderedFlags.Count == level && ordered;
-                    builder.Append(nestedOrdered ? "<ol>\n" : "<ul>\n");
+                    if (nestedOrdered && number >= 0 && number != 1)
+                    {
+                        // CommonMark 只在起始编号不是 1 时输出 start 属性（0 也要输出）。
+                        // CommonMark emits the start attribute whenever the first number is not 1, zero included.
+                        builder.Append("<ol start=\"").Append(number.ToString(CultureInfo.InvariantCulture)).Append("\">\n");
+                    }
+                    else
+                    {
+                        builder.Append(nestedOrdered ? "<ol>\n" : "<ul>\n");
+                    }
                     orderedFlags.Add(nestedOrdered);
                     itemOpen = false;
                 }
