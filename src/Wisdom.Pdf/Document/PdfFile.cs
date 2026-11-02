@@ -1107,16 +1107,28 @@ namespace Wisdom.Pdf
 
             PdfParser header = new PdfParser(body, 0, ResolveReference);
             int offset = -1;
-            for (int i = 0; i < count; i++)
+            int pairs = 0;
+            try
             {
-                int number = header.ReadInteger();
-                int relative = header.ReadInteger();
-                if (number == targetNumber) offset = relative;
+                for (int i = 0; i < count; i++)
+                {
+                    int number = header.ReadInteger();
+                    int relative = header.ReadInteger();
+                    pairs++;
+                    if (number == targetNumber) offset = relative;
+                }
             }
-            if (offset < 0 && objectIndex >= 0)
+            catch (InvalidDataException)
+            {
+                // /N 比实际配对数大（截断文件与增量更新工具的常见产物）：读到哪儿算哪儿，
+                // 已经命中的偏移不能跟着异常一起丢。
+                // /N overshoots the pairs actually present (truncated files, incremental-update tools):
+                // read as far as the data allows and keep an offset already matched.
+            }
+            if (offset < 0 && objectIndex >= 0 && objectIndex < pairs)
             {
                 header.Position = 0;
-                for (int i = 0; i <= objectIndex && i < count; i++)
+                for (int i = 0; i <= objectIndex; i++)
                 {
                     header.ReadInteger();
                     offset = header.ReadInteger();

@@ -24,6 +24,7 @@ namespace Wisdom.Office.Tests
         private static void RunRemediationPhaseTwoTest(string pdfPath, string outputDirectory)
         {
             RunPagesNodeWithoutKidsTest();
+            RunObjectStreamShortHeaderTest();
 
             Console.WriteLine("[remediation] phase-two malformed page tree and object stream ok");
         }
@@ -48,6 +49,34 @@ namespace Wisdom.Office.Tests
 
             PdfDocument again = PdfDocument.Load(danglingKids);
             Require(again.PageCount == 0, "a /Kids reference to a missing object should yield zero pages, got " + again.PageCount);
+        }
+
+        /// <summary>PD2：对象流声明的 /N 大于实际配对数时，已经命中的偏移必须留下，不能整条流作废。PD2: when an object stream declares a larger /N than the pairs it actually carries, offsets already matched must survive instead of voiding the whole stream.</summary>
+        private static void RunObjectStreamShortHeaderTest()
+        {
+            string catalog = "<< /Type /Catalog /Pages 5 0 R >>";
+            string pages = "<< /Type /Pages /Kids [2 0 R] /Count 1 >>";
+            string header = "4 0 5 " + catalog.Length + " ";
+            string body = header + catalog + pages;
+            string stream = "<< /Type /ObjStm /N 3 /First " + header.Length + " /Length " +
+                Encoding.ASCII.GetByteCount(body) + " >>\nstream\n" + body + "\nendstream";
+            string page = "<< /Type /Page /Parent 5 0 R /MediaBox [0 0 595 842] >>";
+
+            string[] bodies = new string[] { stream, page };
+            long[] offsets = ObjectOffsets(bodies);
+            byte[] rows = new byte[]
+            {
+                0, 0, 0, 0, 0, 0, 0,
+                1, (byte)(offsets[0] >> 24), (byte)(offsets[0] >> 16), (byte)(offsets[0] >> 8), (byte)offsets[0], 0, 0,
+                1, (byte)(offsets[1] >> 24), (byte)(offsets[1] >> 16), (byte)(offsets[1] >> 8), (byte)offsets[1], 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                2, 0, 0, 0, 1, 0, 0,
+                2, 0, 0, 0, 1, 0, 1
+            };
+            byte[] pdf = AssembleXrefStreamPdf(bodies, rows, 4, 6L, 0L, 6L);
+
+            Require(PdfDocument.Load(pdf).PageCount == 1, "a short object-stream header dropped the catalog");
+            Require(PdfFile.Load(pdf).PageCount == 1, "a short object-stream header dropped the catalog in the object-level reader");
         }
     }
 }

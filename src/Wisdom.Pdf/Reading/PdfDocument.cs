@@ -708,7 +708,10 @@ namespace Wisdom.Pdf
         /// <param name="targetNumber">目标对象号，用于校验。Target object number, used for verification.</param>
         /// <returns>流内对象；流缺失、正文为空或定位不到时返回 null。Null when the stream is missing, empty or the object cannot be located.</returns>
         /// <remarks>先按对象号在 "号 偏移" 表头中精确匹配，匹配不到才回退用 /ObjStm 序号，以兼容只写对序号的生成器；
-        /// 条目数按正文长度上限截断，防止畸形 /N 造成越界读取。The number is matched first and the index only used as a fallback for writers that record only the index.</remarks>
+        /// 条目数按正文长度上限截断，防止畸形 /N 造成越界读取；表头读到不合法配对即停止，已命中的偏移照常返回。
+        /// The number is matched first and the index only used as a fallback for writers that record only the
+        /// index. The declared count is clamped to the body length, and a header pair that cannot be read ends
+        /// the scan without discarding an offset already matched.</remarks>
         private PdfObject LoadFromObjectStream(int streamNumber, int objectIndex, int targetNumber)
         {
             PdfStream stream = LoadObject(streamNumber) as PdfStream;
@@ -723,16 +726,28 @@ namespace Wisdom.Pdf
 
             PdfParser header = new PdfParser(data, 0, ResolveReference);
             int offset = -1;
-            for (int i = 0; i < count; i++)
+            int pairs = 0;
+            try
             {
-                int number = header.ReadInteger();
-                int relative = header.ReadInteger();
-                if (number == targetNumber) offset = relative;
+                for (int i = 0; i < count; i++)
+                {
+                    int number = header.ReadInteger();
+                    int relative = header.ReadInteger();
+                    pairs++;
+                    if (number == targetNumber) offset = relative;
+                }
             }
-            if (offset < 0 && objectIndex >= 0)
+            catch (InvalidDataException)
+            {
+                // /N 比实际配对数大（截断文件与增量更新工具的常见产物）：读到哪儿算哪儿，
+                // 已经命中的偏移不能跟着异常一起丢。
+                // /N overshoots the pairs actually present (truncated files, incremental-update tools):
+                // read as far as the data allows and keep an offset already matched.
+            }
+            if (offset < 0 && objectIndex >= 0 && objectIndex < pairs)
             {
                 header.Position = 0;
-                for (int i = 0; i <= objectIndex && i < count; i++)
+                for (int i = 0; i <= objectIndex; i++)
                 {
                     header.ReadInteger();
                     offset = header.ReadInteger();
