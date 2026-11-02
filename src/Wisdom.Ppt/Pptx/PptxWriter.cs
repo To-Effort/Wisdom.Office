@@ -1686,7 +1686,7 @@ namespace Wisdom.Ppt
                             new XElement(P + "nvGrpSpPr",
                                 new XElement(P + "cNvPr", new XAttribute("id", "1"), new XAttribute("name", string.Empty)),
                                 new XElement(P + "cNvGrpSpPr"),
-                                new XElement(P + "nvGrpPr")),
+                                new XElement(P + "nvPr")),
                             new XElement(P + "grpSpPr",
                                 new XElement(A + "xfrm",
                                     new XElement(A + "off", new XAttribute("x", "0"), new XAttribute("y", "0")),
