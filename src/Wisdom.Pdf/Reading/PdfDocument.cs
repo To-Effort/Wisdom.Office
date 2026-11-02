@@ -866,6 +866,10 @@ namespace Wisdom.Pdf
                 return;
             }
 
+            // /Type /Pages 却取不到 /Kids（键缺失或指向不存在的对象）时这是个空容器，跳过而不是解引用 null。
+            // A /Type /Pages node whose /Kids is missing, or resolves to a nonexistent object, is an
+            // empty container: skip it instead of dereferencing null.
+            if (kids == null) return;
             for (int i = 0; i < kids.Count; i++)
             {
                 PdfDictionary kid = Resolve(kids[i]) as PdfDictionary;
