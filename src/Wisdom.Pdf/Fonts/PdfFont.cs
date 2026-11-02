@@ -313,7 +313,9 @@ namespace Wisdom.Pdf
             PdfDictionary descriptor = new PdfDictionary();
             descriptor.SetName("Type", "FontDescriptor");
             descriptor.SetName("FontName", subsetFontName);
-            int flags = 4 | (_face.IsItalic ? 64 : 0);
+            // ISO 32000-1 表 223：4 是 Symbolic、32 是 Italic、64 是 AllCap；规范没有 Bold 位，粗体只由 StemV 表达。
+            // ISO 32000-1 Table 223: 4 is Symbolic, 32 is Italic, 64 is AllCap; there is no Bold bit, so boldness rides on StemV.
+            int flags = 4 | (_face.IsItalic ? 32 : 0);
             descriptor.SetNumber("Flags", flags);
             descriptor.Set("FontBBox", new PdfArray()
                 .AddNumber(ScaleMetric(_face.XMin, scale))
