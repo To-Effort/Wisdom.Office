@@ -485,7 +485,7 @@ OfficeConverter.ToWord(document, "document.docx");
 - `.xls` 仅支持 BIFF8（Excel 97-2003），不支持 BIFF5/7、加密工作簿；公式只保留缓存值，不还原公式文本。
 - PDF 加密走标准安全处理器（RC4-40、RC4-128、AES-128、AES-256 读写双向支持），不支持公钥加密与 Adobe 自定义安全处理器；`OfficeDocument` → PDF 的保存依据统一模型重新排版，不保留原始 PDF 的字节和完整视觉结构。
 - PDF 文本提取依赖文本操作符，扫描件需要额外 OCR；表格识别为启发式，复杂版式可能需人工校正。
-- PDF 字体嵌入支持 TrueType `glyf` 轮廓，不支持 CFF/OpenType（`OTTO`）字体嵌入；PNG 不支持隔行扫描。
+- PDF 字体嵌入支持 TrueType `glyf` 轮廓，不支持 CFF/OpenType（`OTTO`）字体嵌入；PNG 不支持隔行扫描。页面 `/Rotate` 只认 0/90/180/270，`SetPageRotation` 收到的其它角度会就近规整到这四个值。
 - Word/PDF/PPTX/Markdown 不能直接输出为 Excel；`WorkbookLayoutOptions` 不支持的复杂对象（如图表、形状）不会转入 PDF/Word。
 - PPTX 不读写旧版 `.ppt`，不处理图表、SmartArt、嵌入 OLE 与动画序列；版式与主题由本库生成一套固定的 `slideMaster` / `slideLayout` / `theme`，不解析外部模板 `.potx`。导出 PDF / Word 时按"每页一节"线性排版，不还原绝对坐标。
 - Markdown 没有文件头签名，只能靠扩展名兜底；不是完整 CommonMark / GFM 实现（脚注与 HTML 块容器不支持，`[^1]` 会被当作引用名而非脚注），`ToMarkdown` 会丢弃字体、字号与引用块语义。

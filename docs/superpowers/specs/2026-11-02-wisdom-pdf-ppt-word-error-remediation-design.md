@@ -130,17 +130,17 @@
 ### PD12｜`SetPageRotation` 写出非 90 倍数的 `/Rotate`，与自身文档注释和包内既有函数矛盾　A
 
 - 位置：`src/Wisdom.Pdf/Document/PdfFile.Pages.cs:241-244`；同文件 `:234-235` 的文档注释声明「角度会规整到 0/90/180/270」，`:577` 已有 `NormalizeRotation` 且读端 `:551` 确实在用。
-- 后果：`SetPageRotation(0, 45)` 写出 `/Rotate 45`（规范强制 90 的倍数）；重新打开读回 0，写入与读回不一致；水印按 `rotation == 90 || 270` 判方向，45 度页按不旋转算，与 `PD11` 同源放大。
+- 后果：`SetPageRotation(0, 45)` 写出 `/Rotate 45`（规范强制 90 的倍数，见 ISO 32000-1 §7.9.2.4），校验器直接判非法；读端 `:551` 会把它规整成 90，于是「写 45 读回 90」——往返断言今天就能通过，红测必须断言写出字节。水印按 `rotation == 90 || 270` 判方向，45 度页按不旋转算，与 `PD11` 同源放大。
 - 目标行为：写端调用 `NormalizeRotation`。
-- 红测：45/91/负角三例，断言输出为规整值或抛声明内异常。
+- 红测：45/91/200/-90 四例，断言写出字节里的 `/Rotate` 值。
 
-### PD13｜嵌入字体的 `/Flags` 位义用错：恒置 Italic、斜体写进保留位、Bold 从不置　A
+### PD13｜嵌入字体的 `/Flags` 把斜体写进 AllCap 位　A
 
 - 位置：`src/Wisdom.Pdf/Fonts/PdfFont.cs:316-317` `int flags = 4 | (_face.IsItalic ? 64 : 0);`。
-- 依据：ISO 32000-1 表 113 中 4 是 Italic、8 是 Bold、16/32 是 Symbolic/Nonsymbolic，64 与 128 为保留位。`TrueTypeFace` 已算出 `IsBold`（`:113`、`:141`）却从未参与。
-- 后果：每个嵌入子集的字体描述符都带 `/Flags 4`，直立字体被判斜体；粗体文本既不 Bold 也不 Italic；缺 Nonsymbolic 位使查看器的文本检索与重排分类退化。
-- 目标行为：`(_face.IsItalic ? 4 : 0) | (_face.IsBold ? 8 : 0) | 32`。
-- 红测：断言直立、斜体、粗体三种字体描述符的 `/Flags` 值。
+- 依据：ISO 32000-1 表 223（§9.6.2 字体描述符）按位值给出 `1 FixedPitch、2 Serif、4 Symbolic、8 Script、16 Nonsymbolic、32 Italic、64 AllCap、128 SmallCap、256 ForceBold`。本条初稿把 TrueType `OS/2 fsSelection` 的位义（`TrueTypeFace.cs:113-114` 用的 0x20/0x01）套到了 PDF 标志上，误记为「4 是 Italic、8 是 Bold」——**PDF 根本没有 Bold 位**，粗体由 `StemV`（本文件 `:328` 已按 `IsBold` 写 120/80）表达，`ForceBold` 是「强制加粗渲染」而非「该字体是粗体」，不可挪用。
+- 后果：斜体子集写成 `/Flags 68` = Symbolic|AllCap，查看器按「全大写」处理该字体，跨平台文本检索与大小写还原会退化为大写；嵌入的是 Identity-H 自定义编码子集，`Symbolic`（4）本就是正确取值，无需再补 `Nonsymbolic`（16，两者互斥）。
+- 目标行为：`4 | (_face.IsItalic ? 32 : 0)`。
+- 红测：从样例 PDF 逐个抽出字体描述符的 `/FontName`、`/Flags`、`/ItalicAngle`，断言 `ItalicAngle != 0` 与 32 位互为充要、任何描述符都不得置 64 位、4 位恒置。用 `ItalicAngle` 而不是字体名做斜体判据，避免依赖解析器恰好选中哪个物理字体。
 
 ### PD14｜表单扁平化的外观资源名硬编码 `/Fm<序号>`，与同名条目相互顶替　A
 
@@ -372,6 +372,7 @@
 | 编号 | 变更 | 需同步的文档 |
 | --- | --- | --- |
 | `PD12` | `SetPageRotation` 从不规整改为规整（或抛异常），45 度输入的结果变化 | `docs/Wisdom.Pdf.Tutorial.md` 页面旋转段；`README.md:482` 已知限制 |
+| `PD13` | 斜体嵌入子集的 `/Flags` 从 `68`（Symbolic|AllCap）改为 `36`（Symbolic|Italic），产出字节变化 | `docs/Wisdom.Pdf.Tutorial.md` 字体嵌入段无需新增承诺；仅在已知限制里说明粗体只由 `StemV` 表达、规范无 Bold 位 |
 | `PD16`、`PD20`、`PT4` | 超限与畸形输入从静默产出空结果改为可检测失败 | `docs/Wisdom.Pdf.Tutorial.md`、`docs/Wisdom.Ppt.Tutorial.md` 的容错说明 |
 | `PD9`、`WE7`、`WE9` | 引入告警集合后，读入失败的返回语义变化 | 两个包的教程与 `articles/Wisdom.Pdf.md`、`articles/Wisdom.Ppt.md` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
@@ -401,3 +402,21 @@
 - [ ] §9 表中 BREAKING 条目逐条同步文档，文档内无本地绝对路径、无发布步骤。
 - [ ] 新增与改动代码注释中英并列，公共成员文档注释完整；`WE6` 的方法文档补上其真实抛出的异常类型。
 - [ ] §7.1 排除项中「已有闸门」的部分补一条守护断言防回归；无法自动化的注明原因。
+
+### 11.1 Phase 1 落地记录（2026-11-02）
+
+断言落在 `tests/Wisdom.Office.Tests/RemediationPhaseOneTests.cs`，标记行 `[remediation]`，接在 `Program.Main` 的 PDF 段之后。运行器是 fail-fast 的，所以三条修复前的失败信息是逐条放开取证的原文：
+
+```text
+Test failed: notes master writes the illegal element p:nvGrpPr
+Test failed: SetPageRotation(45) did not write /Rotate 90
+Test failed: font descriptor flags: /AAAAAE+Arial-ItalicMT forges the AllCap bit (/Flags 68) | /AAAAAE+Arial-ItalicMT is italic but lost the Italic bit (/Flags 68)
+```
+
+修复后 net8.0 与 net461 双目标均跑到末行 `All tests finished.`，产物字节复核：样例 PDF 的五个描述符由 `4 × /Flags 4 + 1 × /Flags 68` 变为 `4 × /Flags 4 + 1 × /Flags 36`；`SetPageRotation(0, 45)` 写出 `/Rotate 90`、`-90` 写出 `/Rotate 270`；`notesMaster1.xml` 的 `p:nvGrpSpPr` 现在是 `cNvPr / cNvGrpSpPr / nvPr` 三子元素。
+
+两点副产物记录在案：
+
+- `PD13` 初稿的位表是错的（把 TrueType `fsSelection` 当成了 PDF 标志），已就地改写；**PDF 没有 Bold 位**，粗体由 `StemV` 表达，本集不再追查「Bold 从不置」这条伪缺陷。
+- 形状树兼容性：本库读端只按名字取 `p:nvPr`（`PptxReader.cs:1326-1336` 的占位符定位），从不解析 `p:nvGrpSpPr` 的子元素名，因此 `PT1` 不会打断本库自己的往返；风险只落在外部生产者写下非规范子元素、又指望本库宽容读取的文件上，这类兼容本集按「不承诺」处理（见 §9 的 `PT1` 行）。
+- `PD1` 复核仍然成立：`PdfDocument.cs:855-869` 先以 `/Type /Pages` 判定 `isPages`，`kids` 为 null 时照样进 `kids.Count`，NRE 未被并行批次修掉（兄弟实现 `PdfFile.Pages.cs:554` 的守卫是另一处）。

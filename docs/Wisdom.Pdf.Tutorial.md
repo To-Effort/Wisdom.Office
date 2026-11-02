@@ -179,6 +179,8 @@ Console.WriteLine(FontResolver.NormalizeFamily("  Microsoft  YaHei "));  // micr
 
 字体只写出文档里实际用到的字形（子集化），所以体积跟用到的字符数相关，而不是字体文件大小。
 
+嵌入子集的字体描述符按 ISO 32000-1 表 223 写标志位：`Symbolic` 恒置（自定义编码的子集不提供标准拉丁字符集），斜体字面再并上 `Italic` 位。规范里**没有 Bold 位**，粗体只能由 `StemV`（粗体 120、常规 80）传达，因此想让粗体真正变粗，请保证解析命中的是 Bold 字面（用 `RegisterFont(family, bold: true, …)` 显式注册），而不是指望查看器合成描边。
+
 ## 5. 解析既有 PDF
 
 ```csharp
@@ -250,6 +252,10 @@ byte[] content = file.GetPageContentBytes(0);                       // 原内容
 对象级改写还能直接动对象：`GetObject<T>(number)`、`AddObject`、`SetObject`、`RemoveObject`、`MarkModified`
 拿到的是 PDF 原始字典，`Trailer` 与 `Catalog` 也可读写；页面内容用 `SetPageContent` 整段替换，
 `PrependPageContent` 只在原内容前面插一段。
+
+`SetPageRotation` 收任意角度，写出前一律规整到 0/90/180/270（就近取 90 的倍数，负角先加满 360）：
+`/Rotate` 在规范里只允许这四个值，传 45 得到的是 90 而不是 45，想要 45° 的斜跨效果请走水印的
+`WatermarkOptions.Angle`，那是内容流里的 `cm` 旋转，与页面 `/Rotate` 是两回事。
 
 水印就在这一层工作：默认斜跨 45°、浅灰、30% 不透明度、背景层，中文自动回退到中文字体。
 
