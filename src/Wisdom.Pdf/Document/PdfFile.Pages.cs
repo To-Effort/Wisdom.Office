@@ -238,10 +238,8 @@ namespace Wisdom.Pdf
         /// <param name="rotation">旋转角度。The rotation angle.</param>
         public void SetPageRotation(int index, int rotation)
         {
-            int value = rotation % 360;
-            if (value < 0) value += 360;
             PdfDictionary page = GetPageDictionary(index);
-            page.SetNumber("Rotate", value);
+            page.SetNumber("Rotate", NormalizeRotation(rotation));
             MarkModified(GetPageReference(index).Number);
             _pageNodes = null;
         }
