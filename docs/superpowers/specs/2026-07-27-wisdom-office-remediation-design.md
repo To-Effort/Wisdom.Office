@@ -243,7 +243,7 @@ A 类条目在进入修复前，同样必须先跑红（§3）。
 | 一次失败的分支操作残留 | `stash@{0}`，标题为「正在签出 main 执行 main 签出前，暂存未提交的更改」 | 先比对其内容与在飞批次是否重复；确认无独有内容后丢弃，处理前导出留档 |
 | 双解决方案文件 | 根目录 `Wisdom.Office.sln`（已跟踪）与 `Wisom.Office.sln`（未跟踪，目录名拼写为 `Wisom`） | 删除拼写错的未跟踪 sln，避免 IDE 载入错误的工程集合 |
 | 拼写错的测试目录 | 未跟踪 `tests/Wisom.Office.Tests/` | 核对是否为历史副本，确认无用则删除 |
-| 其它未跟踪产物 | `articles/`、`tmp-docverify/`、`bin/`、`obj/`、`out/`、`nupkg/` | 确属构建产物的补进 `.gitignore`；`tmp-docverify/` 此前已移出版本库；`articles/` 需明确是文档资产还是临时物 |
+| 其它未跟踪产物 | `articles/`、`tmp-docverify/`、`bin/`、`obj/`、`out/`、`nupkg/`；八个包目录下各有 `.hbDebug/`（隔离构建输出，`git check-ignore` 确认未被忽略） | 确属构建产物的补进 `.gitignore`（`.hbDebug/` 应与 `bin/`、`obj/` 同列）；`tmp-docverify/` 此前已移出版本库；`articles/` 需明确是文档资产还是临时物 |
 | 提交信息质量 | 历史含 `d554a22 123` 这类无信息量标题 | 本规范之后的提交沿用现有「scope: 描述」中文风格，不回改历史 |
 
 ---
