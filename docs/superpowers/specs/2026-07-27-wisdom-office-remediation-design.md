@@ -7,7 +7,7 @@
 
 ## 1. 背景与当前基线
 
-四个源码审计代理并行通读上述三个包，合计回报约 80 条发现。逐条对**当前工作区**复核后，至少 12 条已不成立——它们描述的是提交历史里的旧代码，而工作区有一批 692 行未提交改动（下称「在飞批次」）已经修掉了其中一部分。因此本规范不采信任何未经复现的结论。
+四个源码审计代理并行通读上述三个包，合计回报约 80 条发现。逐条对**当前工作区**复核后，至少 12 条已不成立——它们描述的是提交历史里的旧代码，而工作区有一批未提交改动（下称「在飞批次」）已经修掉了其中一部分。因此本规范不采信任何未经复现的结论。该批次在本规范撰写期间仍在被并行编辑，从约 692 行增长到 17 文件 921 增 / 185 删，所以下文凡引用其规模或状态，都以 Phase 0 起点的重测为准。
 
 复核时确立的事实：
 
@@ -16,7 +16,7 @@
 | 自检运行器是自制控制台断言器，不是 xUnit | `tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj` 为 `OutputType=Exe`，入口 `tests/Wisdom.Office.Tests/Program.cs` |
 | `dotnet test` 在本仓库等于空跑 | 只输出「所有项目均是最新的」，返回码 0，但一条测试都没执行 |
 | 有效验证命令 | `dotnet run --project tests/Wisdom.Office.Tests -f net8.0`，以及 `-f net461` |
-| 当前基线全绿 | 双目标均返回 0 且末行 `All tests finished.`（72 行输出，含 `[hardening]`/`[security]`/`[limits]` 各组） |
+| 基线必须在 Phase 0 起点重测，不可沿用历史结论 | 本规范撰写过程中曾取得双目标全绿（72 行输出，含 `[hardening]`/`[security]`/`[limits]` 各组）；此后在飞批次继续增长到 17 文件 921 增 / 185 删，`dotnet run --project tests/Wisdom.Office.Tests -f net8.0` 转为编译失败：两处 `CS0122` 保护级别错误——`XlsxStyles.ApplyBorder` 声明为 `private` 却被 `XlsxDecorationReader` 调用，`XlsxWriter.BorderEntry.CreateEdge` 声明为 `private` 却被同文件外层写出逻辑调用。主题与边框那条改动线仍未收尾 |
 | 在飞批次曾带一个硬崩溃 | `src/Wisdom.Word/Docx/DocxWriter.cs` 里出现过 `new XElement(WordNamespace + "p")`；`WordNamespace` 是字符串常量（`:20`），拼接得到 `...mainp` 而非「命名空间 + 本地名」，写出任何含相邻两张表的文档直接抛 `XmlException`，`Program.Main` 在 `:85` 未捕获中止，其后所有测试不执行。现工作区已改为方法内 `XNamespace w = WordNamespace;`（`:727`）并用 `w + "p"`（`:741`） |
 
 Phase 0（§10）先把在飞批次按模块分组提交，取得干净基线，再动任何修复。
@@ -240,7 +240,7 @@ A 类条目在进入修复前，同样必须先跑红（§3）。
 
 | 现象 | 证据 | 建议处置 |
 | --- | --- | --- |
-| 一次失败的分支操作残留 | `stash@{0}`，标题为「正在签出 main 执行 main 签出前，暂存未提交的更改」 | 先比对其内容与工作区 692 行是否重复；确认无独有内容后丢弃，处理前导出留档 |
+| 一次失败的分支操作残留 | `stash@{0}`，标题为「正在签出 main 执行 main 签出前，暂存未提交的更改」 | 先比对其内容与在飞批次是否重复；确认无独有内容后丢弃，处理前导出留档 |
 | 双解决方案文件 | 根目录 `Wisdom.Office.sln`（已跟踪）与 `Wisom.Office.sln`（未跟踪，目录名拼写为 `Wisom`） | 删除拼写错的未跟踪 sln，避免 IDE 载入错误的工程集合 |
 | 拼写错的测试目录 | 未跟踪 `tests/Wisom.Office.Tests/` | 核对是否为历史副本，确认无用则删除 |
 | 其它未跟踪产物 | `articles/`、`tmp-docverify/`、`bin/`、`obj/`、`out/`、`nupkg/` | 确属构建产物的补进 `.gitignore`；`tmp-docverify/` 此前已移出版本库；`articles/` 需明确是文档资产还是临时物 |
@@ -256,7 +256,7 @@ A 类条目在进入修复前，同样必须先跑红（§3）。
 
 ## 10. 实施阶段与依赖
 
-- **Phase 0 建立基线**：把在飞批次按模块分组提交——公式引擎、`SpreadsheetModel` 与 `ExcelRange`、`XlsxConditionalFormatBuilder`、`DocxWriter` 与 `DocxPartReader`。每组提交前后各跑一次双目标运行器；随后按 §7.2 核对哪些发现已被这批改动覆盖，缺断言的按 E8 补齐。
+- **Phase 0 建立基线**：前置条件是在飞批次能编译——当前它有两处 `CS0122`（§1），须由该改动线的作者收尾或明确弃写，本规范不代为改动未完成的特性。编译通过后把在飞批次按模块分组提交——公式引擎、`SpreadsheetModel` 与 `ExcelRange`、`XlsxConditionalFormatBuilder`、`DocxWriter` 与 `DocxPartReader`、主题与边框（`XlsxTheme`、`XlsxDecorationReader`、`XlsxStyles`、`XlsxWriter`）。每组提交前后各跑一次双目标运行器；随后按 §7.2 核对哪些发现已被这批改动覆盖，缺断言的按 E8 补齐。
 - **Phase 1 P0**：E1、E2、F1、F2。四条相互独立；E2 与 F3 共用「单元格级异常不得升级为整簿失败」的收敛策略，建议同一批设计。
 - **Phase 2 P1 引擎与 Excel**：F3 至 F7、E3、E4。F7 与 E1 都涉及日期与数值口径，先定口径再改调用点。
 - **Phase 3 P1 Word**：W1、C1、PR1；W2 与 W3 属新增部件与域模型的里程碑级改造，单独排期。
