@@ -31,6 +31,7 @@ namespace Wisdom.Office.Tests
             RunPdfFormTest(pdfPath, outputDirectory);
             RunPdfEncryptionTest(pdfPath, outputDirectory);
             RunPdfHostileInputTest(outputDirectory);
+            RunRemediationPhaseOneTest(pdfPath, outputDirectory);
 
             string fixtureDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "fixtures"));
             string chromePdfPath = Path.Combine(fixtureDirectory, "chrome-print.pdf");
