@@ -68,12 +68,23 @@ namespace Wisdom.Pdf
             });
 
             List<LineBuilder> builders = new List<LineBuilder>();
+            // 片段已按 Y 升序，而并入要求包围盒竖直重叠至少半格，所以 Bottom 已经越过当前片段的行
+            // 再也接不到后续任何片段；用一个只前进的游标把它们划到窗口外，扫全表退化成扫竖直窗口。
+            // Fragments arrive sorted by Y and a merge needs at least half a box of vertical overlap, so a
+            // builder whose Bottom is already behind this fragment can never take this one or any later one.
+            // A forward-only cursor moves those out of the window, turning the full-table scan into a scan
+            // over the lines that still overlap the current Y.
+            int firstLive = 0;
             for (int i = 0; i < sorted.Count; i++)
             {
                 PdfTextFragment fragment = sorted[i];
                 double tolerance = Math.Max(2.0, Math.Max(fragment.FontSize, 6) * 0.55);
+                while (firstLive < builders.Count && builders[firstLive].Bottom <= fragment.Y)
+                {
+                    firstLive++;
+                }
                 LineBuilder target = null;
-                for (int b = 0; b < builders.Count; b++)
+                for (int b = firstLive; b < builders.Count; b++)
                 {
                     LineBuilder candidate = builders[b];
                     if (Math.Abs(candidate.Angle - fragment.Angle) > 0.05) continue;
