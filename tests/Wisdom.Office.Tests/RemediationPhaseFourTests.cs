@@ -24,6 +24,7 @@ namespace Wisdom.Office.Tests
             RunPredictorSingleRowTest();
             RunCatalogGenerationTest();
             RunOffsetNumberMismatchTest();
+            RunRebuiltXrefIncrementalTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -118,6 +119,70 @@ namespace Wisdom.Office.Tests
                     .Append(pair.Value == null ? "null" : pair.Value.GetType().Name);
             }
             return builder.ToString();
+        }
+
+        /// <summary>
+        /// PD8：交叉表靠全文扫描救回来的文档再做增量保存，追加段既没有 <c>/Prev</c> 也不含未改动的对象，
+        /// 从最后一个 <c>startxref</c> 读起的阅读器只能看见这次改动的几个对象。这样的保存必须改成全量重写。
+        /// PD8: an incremental save on a document whose cross-reference came from the scan fallback appends a
+        /// section with neither /Prev nor the unchanged objects, so a reader starting at the last startxref
+        /// sees only what this edit touched; that save has to become a full rewrite.
+        /// </summary>
+        private static void RunRebuiltXrefIncrementalTest()
+        {
+            string first = "BT /F1 12 Tf 20 700 Td (First) Tj ET";
+            string second = "BT /F1 12 Tf 20 700 Td (Second) Tj ET";
+            string font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 5 0 R "
+                    + "/Resources << /Font << /F1 7 0 R >> >> >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 6 0 R "
+                    + "/Resources << /Font << /F1 7 0 R >> >> >>",
+                "<< /Length " + first.Length + " >>\nstream\n" + first + "\nendstream",
+                "<< /Length " + second.Length + " >>\nstream\n" + second + "\nendstream",
+                font,
+            };
+            byte[] broken = BreakStartxref(AssembleClassicPdf(bodies, 1, null), 9);
+
+            PdfFile file = PdfFile.Load(broken);
+            Require(file.PageCount == 2,
+                "PD8 control failed: the scan-recovered document must open with 2 pages, got " + file.PageCount);
+            Require(PdfDocument.Load(broken).ExtractText().Contains("Second"),
+                "PD8 control failed: the scan-recovered document itself already lost the second page text");
+
+            file.RemovePage(0);
+            byte[] saved = file.SaveIncrementalToBytes();
+
+            PdfDocument reopened = PdfDocument.Load(saved);
+            string text = reopened.ExtractText();
+            Require(reopened.PageCount == 1, "the incremental update kept " + reopened.PageCount
+                + " page(s), expected 1");
+            Require(text != null && text.Contains("Second"),
+                "the incremental update on a scan-recovered document dropped the untouched objects: "
+                    + "second page text reads '" + text + "'");
+        }
+
+        /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
+        /// <param name="pdf">完整的 PDF 字节。The complete PDF bytes.</param>
+        /// <param name="bogusOffset">要写进去的错误偏移。The forged offset to write.</param>
+        /// <returns>改坏后的 PDF 字节。The damaged PDF bytes.</returns>
+        private static byte[] BreakStartxref(byte[] pdf, int bogusOffset)
+        {
+            string text = Encoding.ASCII.GetString(pdf);
+            int at = text.LastIndexOf("startxref", StringComparison.Ordinal);
+            Require(at >= 0, "PD8 fixture has no startxref to break");
+            int digits = at + "startxref".Length;
+            while (digits < text.Length && (text[digits] == '\n' || text[digits] == '\r' || text[digits] == ' '))
+            {
+                digits++;
+            }
+            int end = digits;
+            while (end < text.Length && text[end] >= '0' && text[end] <= '9') end++;
+            string rebuilt = text.Substring(0, digits) + bogusOffset.ToString() + text.Substring(end);
+            return Encoding.ASCII.GetBytes(rebuilt);
         }
 
         /// <summary>
