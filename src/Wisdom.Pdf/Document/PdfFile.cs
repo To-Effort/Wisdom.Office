@@ -117,7 +117,11 @@ namespace Wisdom.Pdf
         private PdfReference _encryptReference;
         /// <summary>待应用的新加密设置。Pending new encryption settings.</summary>
         private PdfEncryptionOptions _pendingEncryption;
-        /// <summary>加密设置已变化，增量保存不再安全，必须全量重写。Encryption changed, so an incremental save is unsafe and a full rewrite is required.</summary>
+        /// <summary>
+        /// 内存状态与源文件已不对应，增量保存不再安全，必须全量重写；加密改动与交叉表扫描重建都会置真。
+        /// The in-memory state no longer matches the source file, so an incremental save is unsafe and a full
+        /// rewrite is required; both an encryption change and a scan-rebuilt cross-reference set this.
+        /// </summary>
         private bool _rewriteRequired;
         /// <summary>文件头版本（如 1.7）。The file header version, such as 1.7.</summary>
         private string _version = "1.7";
@@ -965,6 +969,11 @@ namespace Wisdom.Pdf
             }
             _trailer = trailer;
             _lastXrefOffset = 0;
+            // 扫描出来的条目不对应文件里任何一个交叉表区段，追加段也就没有 /Prev 可指；增量保存只会
+            // 写出改动对象，未改动的页面树与内容流从最后一个 startxref 读起即不可达。
+            // The scanned rows match no cross-reference section in the file, so an appended section has no
+            // /Prev to point at and would carry nothing but the changed objects; leave only a full rewrite.
+            _rewriteRequired = true;
         }
 
         /// <summary>扫描对象头并记录对象号、代次与偏移。Scans object headers and records number, generation and offset.</summary>
