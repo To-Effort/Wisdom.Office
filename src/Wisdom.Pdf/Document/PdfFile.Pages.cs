@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -228,6 +229,37 @@ namespace Wisdom.Pdf
             }
             group.Set(name, value);
             MarkModified(GetPageReference(index).Number);
+        }
+
+        /// <summary>
+        /// 在一类页面资源里挑一个还没被占用的名字。Picks a name that no entry of one page resource category uses yet.
+        /// </summary>
+        /// <param name="index">页面下标。The page index.</param>
+        /// <param name="category">资源类别，如 XObject。The resource category, such as XObject.</param>
+        /// <param name="baseName">首选名字（不含斜杠）。The preferred name without the slash.</param>
+        /// <returns>空闲的名字；被占用时依次加下划线序号。A free name, suffixed with _1, _2… when taken.</returns>
+        /// <remarks>页面自身没有该类资源时也要看继承来的资源字典：第三方 PDF 的 <c>/Fm0</c>、<c>/Fm1</c> 常住在
+        /// 继承资源里，只查页面自己那份会漏掉冲突。
+        /// The inherited resource dictionary is consulted too, because third-party pages often keep /Fm0 and
+        /// /Fm1 there; looking only at the page's own group would miss the clash.</remarks>
+        internal string FreeResourceName(int index, string category, string baseName)
+        {
+            PdfDictionary page = GetPageDictionary(index);
+            PdfDictionary resources = Resolve(page.Get("Resources")) as PdfDictionary;
+            PdfDictionary group = resources == null ? null : Resolve(resources.Get(category)) as PdfDictionary;
+            if (group == null)
+            {
+                PdfDictionary inherited = GetPageResources(index);
+                if (inherited != null) group = Resolve(inherited.Get(category)) as PdfDictionary;
+            }
+            string candidate = baseName;
+            int suffix = 1;
+            while (group != null && group.ContainsKey(candidate))
+            {
+                candidate = baseName + "_" + suffix.ToString(CultureInfo.InvariantCulture);
+                suffix++;
+            }
+            return candidate;
         }
 
         /// <summary>

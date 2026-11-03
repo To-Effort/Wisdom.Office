@@ -1124,7 +1124,13 @@ namespace Wisdom.Pdf
             double translateX = rect.Left - box[0] * scaleX;
             double translateY = rect.Bottom - box[1] * scaleY;
 
-            string resourceName = "Fm" + serial.ToString(CultureInfo.InvariantCulture);
+            // 序号每轮都从 1 起，名字必须现挑：页面（或它的继承资源）里可能已经住着 /Fm1，
+            // 那是第三方生成器常用的命名，直接覆盖会让上一轮留下的 Do 画出别的字段。
+            // The serial restarts at one every round, so the name has to be picked live: the page, or the
+            // resources it inherits, may already host /Fm1 - the name third-party generators favour - and
+            // overwriting it makes a Do left by an earlier round paint a different field.
+            string resourceName = FreeResourceName(pageIndex, "XObject",
+                "Fm" + serial.ToString(CultureInfo.InvariantCulture));
             SetPageResource(pageIndex, "XObject", resourceName, appearance);
 
             StringBuilder builder;

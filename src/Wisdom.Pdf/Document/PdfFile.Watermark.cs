@@ -579,23 +579,7 @@ namespace Wisdom.Pdf
         /// <returns>资源名（不含斜杠）。The resource name without the slash.</returns>
         private string WatermarkResourceName(int index, int serial)
         {
-            string baseName = "Wm" + serial.ToString(CultureInfo.InvariantCulture);
-            PdfDictionary page = GetPageDictionary(index);
-            PdfDictionary resources = Resolve(page.Get("Resources")) as PdfDictionary;
-            PdfDictionary group = resources == null ? null : Resolve(resources.Get("XObject")) as PdfDictionary;
-            if (group == null)
-            {
-                PdfDictionary inherited = GetPageResources(index);
-                if (inherited != null) group = Resolve(inherited.Get("XObject")) as PdfDictionary;
-            }
-            string candidate = baseName;
-            int suffix = 1;
-            while (group != null && group.ContainsKey(candidate))
-            {
-                candidate = baseName + "_" + suffix.ToString(CultureInfo.InvariantCulture);
-                suffix++;
-            }
-            return candidate;
+            return FreeResourceName(index, "XObject", "Wm" + serial.ToString(CultureInfo.InvariantCulture));
         }
 
         /// <summary>
