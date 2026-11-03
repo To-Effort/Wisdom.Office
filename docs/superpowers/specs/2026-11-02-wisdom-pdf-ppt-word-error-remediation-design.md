@@ -495,5 +495,12 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   ```
 
   断言用的 fixture 需要二进制流正文，而 `AssembleClassicPdf` 全程走 `Encoding.ASCII`，会把 zlib 字节打成 `?`，因此另写一个按字节计偏移的 `AssembleBinaryPdf`。修复后双目标均跑到末行 `All tests finished.`，无新增公共承诺：预测器只在「正文不足滤波一整行」时改为原样交回，其余分支字节不变。
-- 验证方式更正一条：并行批次正把 `DocxWriter.cs` 改到语法不通（`CS1031` 等），共享工作副本在此期间无法编译，因此 `Phase 3`/`Phase 4` 的双目标运行是在一棵与工作副本隔离的临时构建树里完成的——该树取当前受版本控制的文件，仅 `DocxWriter.cs` 退回入库版本、测试入口退回不含并行挂接行的版本。等共享副本可编译后需再跑一遍确认。
+- `PD10`（`cfa7146` + `be31658`）：目标行为「与编号一并保存 `_catalogGeneration`，`/Root` 用真实世代」照原样落地。fixture 用新的 `AssembleGenerationsPdf` 把目录对象写成 `1 2 obj`、交叉表行 `0000000009 00002 n`、trailer `/Root 1 2 R`，保存后重新解析输出。修复前的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: the trailer /Root is '1 0 R' while the object header is '1 2 obj'
+  ```
+
+  改动点比条目多一处：`Reading/PdfDocument.cs:556` 的读取端救援路径同样把世代硬写成 0，而同名救援路径在 `PdfFile.cs` 里一直用的是扫描到的真实世代，两条现在口径一致。读取端这一处没有单独断言——它写出的引用只用于定位目录，`Wisdom.Pdf.PdfDocument` 不暴露 trailer，也没有按 (号, 世代) 严格查对象的调用点，因此改成真实世代不改变任何可观测行为，只是消除同一个硬编码；写出端五处引用构造（`PdfFile.cs:159`、`:577` 与 `PdfFile.Writer.cs:394`、`:444`、`:516`）加上世代回收点 `PdfFile.cs:582` 都在断言覆盖的保存路径上。无新增公共承诺：新文档的目录仍由 `AddObject` 分配、世代为 0，只有源文档目录本身住在非 0 世代时输出才变。
+- 验证方式更正一条：并行批次正把 `DocxWriter.cs` 改到语法不通（`CS1031` 等），共享工作副本在此期间无法编译，因此 `Phase 3`/`Phase 4` 的双目标运行是在一棵与工作副本隔离的临时构建树里完成的——该树取当前受版本控制的文件，仅 `DocxWriter.cs` 退回入库版本、测试入口退回不含并行挂接行的版本。**该副本已恢复可编译，`PD3`/`PD4`/`PD21`/`PD16`/`PD10` 已在共享工作副本里重跑，`net8.0` 与 `net461` 均到末行 `All tests finished.`，隔离树兜底作废。**
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
