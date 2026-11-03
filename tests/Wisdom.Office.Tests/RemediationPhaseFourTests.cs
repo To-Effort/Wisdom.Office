@@ -28,6 +28,7 @@ namespace Wisdom.Office.Tests
             RunRebuiltXrefIncrementalTest();
             RunWatermarkBBoxTest();
             RunFlattenResourceNameTest();
+            RunAppearanceWriteBackTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -395,6 +396,98 @@ namespace Wisdom.Office.Tests
                 if (reference != null && !numbers.Contains(reference.Number)) numbers.Add(reference.Number);
             }
             return numbers.ToArray();
+        }
+
+        /// <summary>
+        /// PD15：外观要同时挂到字段字典和它的每一个控件注释上，可登记改动时只报了字段号，增量保存于是原样写回控件的旧字节；
+        /// 读 <c>/AP</c> 又漏了 <c>Resolve</c>，住在间接对象里的 <c>/AP</c> 会被整块换成内联字典，<c>/R</c> 与状态映射一起丢。
+        /// PD15: an appearance is attached to the field dictionary and to each of its widget annotations, yet only
+        /// the field number was marked modified, so an incremental save re-emitted the widgets' old bytes; and
+        /// reading /AP without Resolve replaced an indirect /AP wholesale, dropping /R along with the state maps.
+        /// </summary>
+        private static void RunAppearanceWriteBackTest()
+        {
+            // 用例一：字段本体与控件分住两个对象，两个都是从原交叉表里读出来的旧对象。
+            // 增量保存必须把控件的新 /AP 一起写出去。
+            // Case one: field and widget live in two objects, both loaded from the original cross-reference,
+            // and the incremental update has to carry the widget's new /AP as well.
+            PdfFile file = PdfFile.Load(BuildSplitFieldSource(false));
+            Require(file.SetFormFieldValue("pd15.value", "Typed"), "the text field must accept a value");
+            file.GenerateFormAppearances();
+
+            PdfReference expected = AppearanceReference(file, file.GetObject<PdfDictionary>(WidgetNumber));
+            Require(expected != null && expected.Number != OldAppearanceNumber,
+                "appearance generation never reached the widget annotation");
+            PdfFile incremental = PdfFile.Load(file.SaveIncrementalToBytes());
+            PdfReference written = AppearanceReference(incremental, incremental.GetObject<PdfDictionary>(WidgetNumber));
+            Require(written != null && written.Number == expected.Number,
+                "the incremental save left the widget's old appearance in the file: /AP /N should be "
+                    + expected.Number + " 0 R but the saved widget carries "
+                    + (written == null ? "no appearance at all" : written.Number.ToString(CultureInfo.InvariantCulture) + " 0 R"));
+
+            // 用例二：控件的 /AP 住在间接对象里，重写只能改那一个字典，不能整块换成内联的新字典。
+            // Case two: the widget's /AP is an indirect dictionary; rewriting it must edit that dictionary,
+            // not swap in a fresh inline one.
+            PdfFile second = PdfFile.Load(BuildSplitFieldSource(true));
+            Require(second.SetFormFieldValue("pd15.value", "Later"), "the second text field must accept a value");
+            second.GenerateFormAppearances();
+            PdfFile back = PdfFile.Load(second.SaveToBytes());
+            PdfDictionary savedAp = back.Resolve(back.GetObject<PdfDictionary>(WidgetNumber).Get("AP")) as PdfDictionary;
+            Require(savedAp != null, "the widget lost its /AP dictionary entirely after regenerating appearances");
+            Require(savedAp.Get("R") != null,
+                "regenerating the appearance threw away the indirect /AP together with its /R entry");
+        }
+
+        /// <summary>样例里控件注释的对象号。The widget annotation object number of the sample file.</summary>
+        private const int WidgetNumber = 6;
+
+        /// <summary>样例里那份旧外观流的对象号。The old appearance stream object number of the sample file.</summary>
+        private const int OldAppearanceNumber = 10;
+
+        /// <summary>
+        /// 拼一个「字段本体 7 号 + 控件注释 6 号」的文本域 PDF。
+        /// 控件与字段都是文件里原有的间接对象，不是本次编辑新建的，改动登记漏没漏才看得出来。
+        /// Assembles a PDF whose text field lives in object 7 and whose widget annotation lives in object 6.
+        /// Both are pre-existing indirect objects rather than ones added by this edit, which is what makes a
+        /// missing modification mark observable.
+        /// </summary>
+        /// <param name="indirectAppearance">控件的 <c>/AP</c> 是否住在间接对象 9 号里。Whether the widget's /AP is the indirect object 9.</param>
+        /// <returns>完整的 PDF 字节。The complete PDF bytes.</returns>
+        private static byte[] BuildSplitFieldSource(bool indirectAppearance)
+        {
+            string content = "BT /Helv 12 Tf 60 700 Td (Body) Tj ET";
+            string oldBody = "q\n1 0 0 1 0 0 cm\nQ\n";
+            string appearance = indirectAppearance
+                ? "/AP 9 0 R"
+                : "/AP << /N " + OldAppearanceNumber + " 0 R >>";
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R /AcroForm 8 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R"
+                    + " /Resources << /Font << /Helv 5 0 R >> >> /Annots [6 0 R] >>",
+                "<< /Length " + content.Length + " >>\nstream\n" + content + "\nendstream",
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+                "<< /Type /Annot /Subtype /Widget /Rect [72 600 260 616] /P 3 0 R /Parent 7 0 R " + appearance + " >>",
+                "<< /FT /Tx /T (pd15.value) /DA (/Helv 12 Tf 0 g) /Kids [6 0 R] >>",
+                "<< /Fields [7 0 R] /DA (/Helv 12 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>",
+                "<< /N " + OldAppearanceNumber + " 0 R /R " + OldAppearanceNumber + " 0 R >>",
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 188 16] /Length " + oldBody.Length
+                    + " >>\nstream\n" + oldBody + "\nendstream",
+            };
+            return AssembleClassicPdf(bodies, 1, null);
+        }
+
+        /// <summary>取出字典上 <c>/AP /N</c> 的外观引用，<c>/AP</c> 是间接对象也一样。Reads the /AP /N appearance reference off a dictionary, following /AP when it is indirect.</summary>
+        /// <param name="file">所在文档。The owning document.</param>
+        /// <param name="holder">持有 /AP 的字典。The dictionary carrying /AP.</param>
+        /// <returns>外观引用；没有时 null。The reference, or null.</returns>
+        private static PdfReference AppearanceReference(PdfFile file, PdfDictionary holder)
+        {
+            if (holder == null) return null;
+            PdfDictionary appearance = file.Resolve(holder.Get("AP")) as PdfDictionary;
+            if (appearance == null) return null;
+            return appearance.Get("N") as PdfReference;
         }
 
         /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
