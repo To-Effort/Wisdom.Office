@@ -29,6 +29,7 @@ namespace Wisdom.Office.Tests
             RunWatermarkBBoxTest();
             RunFlattenResourceNameTest();
             RunAppearanceWriteBackTest();
+            RunNamedCmapTextTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -488,6 +489,69 @@ namespace Wisdom.Office.Tests
             PdfDictionary appearance = file.Resolve(holder.Get("AP")) as PdfDictionary;
             if (appearance == null) return null;
             return appearance.Get("N") as PdfReference;
+        }
+
+        /// <summary>
+        /// PD18：<c>/Encoding</c> 名字从没被读过，于是「码位本身就是 UCS-2」的命名 CMap（部分国产驱动产物）
+        /// 在没有 <c>/ToUnicode</c> 时整页抽出为空。
+        /// PD18: the /Encoding name was never read, so a named CMap whose codes are already UCS-2 units
+        /// (what some region-specific drivers emit) extracted as an empty page once /ToUnicode was absent.
+        /// </summary>
+        private static void RunNamedCmapTextTest()
+        {
+            // 用例一：/UniGB-UCS2-H，两个字节直接就是一个字符。
+            // Case one: with /UniGB...-H... each byte pair is already one character.
+            string extracted = PdfDocument.Load(BuildNamedCmapSource("UniGB-UCS2-H", "4E2D65876D4B8BD5")).ExtractText();
+            Require(extracted.IndexOf("中文测试", StringComparison.Ordinal) >= 0,
+                "a /UniGB-UCS2-H page without /ToUnicode extracted '" + extracted + "' instead of 中文测试");
+
+            // 用例二：UTF-16 命名 CMap 同理，两两大端拼起来就是文本。
+            // Case two: a UTF-16 named CMap is the same story, big-endian pairs spell the text.
+            Require(PdfDocument.Load(BuildNamedCmapSource("UniGB-UTF16-H", "4E2D65876D4B8BD5")).ExtractText()
+                .IndexOf("中文测试", StringComparison.Ordinal) >= 0,
+                "a /UniGB-UTF16-H page without /ToUnicode lost its text");
+
+            // 用例三：正文落单一个字节时，成对的部分仍要抽出来，不能整串作废。
+            // Case three: when the body ends with an odd byte, the paired part still has to come out.
+            string truncated = PdfDocument.Load(BuildNamedCmapSource("UniGB-UCS2-H", "4E2D65")).ExtractText();
+            Require(truncated.IndexOf('中') >= 0,
+                "a truncated /UniGB...-H body lost the paired character, got '" + truncated + "'");
+
+            // 控制用例：Identity 与 UTF-8 的码位不是字符编号，不能当成大端码元伪造出文字。
+            // Control: Identity and UTF-8 codes are not character numbers, so they must not be faked as
+            // big-endian code units.
+            Require(PdfDocument.Load(BuildNamedCmapSource("Identity-H", "4E2D65876D4B8BD5")).ExtractText()
+                .IndexOf("中文测试", StringComparison.Ordinal) < 0,
+                "an /Identity-H page without /ToUnicode was turned into invented text");
+            Require(PdfDocument.Load(BuildNamedCmapSource("UniGB-UTF8-H", "4E2D65876D4B8BD5")).ExtractText()
+                .IndexOf("中文测试", StringComparison.Ordinal) < 0,
+                "a /UniGB...-H... body is variable length; reading it as fixed pairs must not claim 中文测试");
+        }
+
+        /// <summary>
+        /// 拼一页 Type0 字体文档：编码名由参数给定，正文是一段十六进制的双字节串，且刻意不写 <c>/ToUnicode</c>。
+        /// Assembles a one-page document with a Type0 font: the encoding name comes from the argument, the
+        /// body is a hex string of two-byte codes, and /ToUnicode is deliberately left out.
+        /// </summary>
+        /// <param name="encodingName">编码名，如 <c>UniGB-UCS2-H</c>。The encoding name, such as UniGB-UCS2-H.</param>
+        /// <param name="hexBody">十六进制显示串（不含尖括号）。The display string in hex, without the angle brackets.</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildNamedCmapSource(string encodingName, string hexBody)
+        {
+            string content = "BT /F1 12 Tf 50 700 Td <" + hexBody + "> Tj ET";
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+                    + "/Resources << /Font << /F1 5 0 R >> >> >>",
+                "<< /Length " + content.Length + " >>\nstream\n" + content + "\nendstream",
+                "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /" + encodingName
+                    + " /DescendantFonts [6 0 R] >>",
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /STSong-Light "
+                    + "/CIDSystemInfo << /Registry (Adobe) /Ordering (GB18030) /Supplement 5 >> /DW 1000 >>",
+            };
+            return AssembleClassicPdf(bodies, 1, null);
         }
 
         /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
