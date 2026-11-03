@@ -530,4 +530,11 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   第二个用例在此之前不会单独报红（宽高恰好相同，只有原点差 200），所以断言顺序把「锚点落在框外」也立成独立一条，`[0 200 612 992]` 那页的 `Do` 裁掉下半部才真的被测到。
 - `PD11` 的产出字节核对：不旋转且 `MediaBox` 原点为 0 时 `displayWidth=right-left`、`displayHeight=top-bottom`，新旧 `/BBox` 完全相同，绝大多数存量文档的输出一个字节都不变；只有旋转页与抬高原点的页会变化，且变化后才是规范里表单空间该有的样子。§9 不需要新行——水印 API 与文档承诺都没动，教程的旋转页段落描述的正是「阅读方向」这一套坐标。
+- `PD14`（`25d5ee8` + `047893a`）：目标行为「复用探测空闲资源名的逻辑」落地为把 `WatermarkResourceName` 的探测抽成 `PdfFile.Pages.cs` 的 `FreeResourceName(index, category, baseName)`（internal），水印与扁平化同用一个：`FlattenField` 先探测再 `SetPageResource`，`WatermarkResourceName` 只剩一行委托。抽出来而不是各写一份，是因为旧探测顺手兼顾了页面**继承**来的资源字典——第三方 PDF 的 `/Fm0`、`/Fm1` 常常正住在那里，只查页面自己那份会漏掉冲突；`FlattenField` 原先连这一步都没有。红测按条目说的两轮形态做：第一轮放一个已挂进 `/Annots` 的文本域、再放一个故意不挂的（本轮画不出、留在表单里），第二轮把后者的控件补挂进 `/Annots` 再扁平，序号于是又从 1 数起。断言取「页面内容里每个 `Do` 真正解析到的不同对象号必须是 2 个」。修复前的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: two flatten rounds left only 1 appearance(s) reachable from the page: the second round reused the first round's resource name
+  ```
+
+  补挂 `/Annots` 之后要 `SaveToBytes` 再 `Load` 一次才能进第二轮：表单模型是按 `/Annots` 建的，同一份内存里的旧模型不知道控件刚被挂上去，`ResolveWidgetPage` 仍返回 `-1`，第一轮的红测因此先撞在「第二轮没画出任何域」这条控制断言上（`the deferred field must flatten once it is placed on the page, got 0`），加上重开一份才拿到上面那条真红。产出字节只在名字真的撞车时才变（空闲名字照旧是 `/Fm1`），表单字段数不变、页面资源条目只会多不会少。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
