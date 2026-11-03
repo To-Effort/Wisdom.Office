@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using Wisdom.Office.Core;
@@ -25,6 +26,7 @@ namespace Wisdom.Office.Tests
             RunCatalogGenerationTest();
             RunOffsetNumberMismatchTest();
             RunRebuiltXrefIncrementalTest();
+            RunWatermarkBBoxTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -163,6 +165,155 @@ namespace Wisdom.Office.Tests
             Require(text != null && text.Contains("Second"),
                 "the incremental update on a scan-recovered document dropped the untouched objects: "
                     + "second page text reads '" + text + "'");
+        }
+
+        /// <summary>
+        /// PD11：水印表单的 <c>/BBox</c> 必须框住正文真正画到的坐标。用页面 <c>MediaBox</c> 的原点与边界时，
+        /// 旋转页的阅读方向比 <c>MediaBox</c> 宽，非零原点页的正文整段落在框外，两种都在 <c>Do</c> 的裁剪里丢掉。
+        /// PD11: the watermark form's /BBox has to cover the coordinates its body actually draws. Taken from the
+        /// page MediaBox it clips the wider reading direction of a rotated page and the whole body of a page
+        /// whose MediaBox does not start at the origin.
+        /// </summary>
+        private static void RunWatermarkBBoxTest()
+        {
+            // 用例一：612x792 的页转到 90 度后按 792x612 阅读，正文中心摆在 x 约 735 处。
+            // Case one: a 612x792 page turned to 90 reads as 792x612, and the anchor lands near x=735.
+            CheckWatermarkBBox("[0 0 612 792]", 90, 700, 300, 792, 612, "a page rotated to 90");
+            // 用例二：原点非零的竖版页阅读方向仍是 612x792，正文中心摆在 y 约 170 处。
+            // Case two: a portrait page with a raised origin still reads as 612x792, with the anchor near y=170.
+            CheckWatermarkBBox("[0 200 612 992]", 0, 100, 600, 612, 792, "a page with a raised MediaBox origin");
+        }
+
+        /// <summary>给一页加自由摆放的水印，再断言表单 <c>/BBox</c> 罩得住正文的摆放点。Adds a freely placed watermark to one page and asserts its form /BBox covers the drawn anchor.</summary>
+        /// <param name="mediaBox">页面 MediaBox 字面量。The literal page MediaBox.</param>
+        /// <param name="rotate">页面 /Rotate，0 表示不写这个键。The page /Rotate; 0 omits the key.</param>
+        /// <param name="left">水印距阅读方向左边的距离。The watermark distance from the reading-direction left edge.</param>
+        /// <param name="top">水印距阅读方向上边的距离。The watermark distance from the reading-direction top edge.</param>
+        /// <param name="expectWidth">表单应有的宽度。The width the form box has to carry.</param>
+        /// <param name="expectHeight">表单应有的高度。The height the form box has to carry.</param>
+        /// <param name="label">失败信息里的用例名。The case name used in failure messages.</param>
+        private static void CheckWatermarkBBox(string mediaBox, int rotate, double left, double top,
+            double expectWidth, double expectHeight, string label)
+        {
+            PdfFile file = PdfFile.Load(BuildWatermarkSource(mediaBox, rotate));
+            WatermarkOptions options = WatermarkOptions.ForText("WD");
+            options.Placement = WatermarkPlacement.Free;
+            options.Angle = 0;
+            options.AutoFit = false;
+            options.Left = left;
+            options.Top = top;
+            options.Layer = WatermarkLayer.Foreground;
+            file.AddWatermark(options);
+
+            PdfFile reload = PdfFile.Load(file.SaveToBytes());
+            PdfStream form = WatermarkFormStream(reload, 0);
+            Require(form != null, label + ": the saved page carries no watermark form xobject");
+
+            double[] box = BoxNumbers(form);
+            Require(box != null, label + ": the watermark form was written without a /BBox");
+            double[] anchor = FirstCmTranslate(Encoding.ASCII.GetString(reload.DecodeStream(form)));
+            Require(anchor != null, label + ": the watermark form body has no cm to read the anchor from");
+
+            Require(box[2] - box[0] == expectWidth && box[3] - box[1] == expectHeight,
+                label + ": the form /BBox is [" + BoxNum(box[0]) + " " + BoxNum(box[1]) + " " + BoxNum(box[2]) + " "
+                    + BoxNum(box[3]) + "] but the watermark draws in a " + BoxNum(expectWidth) + " x "
+                    + BoxNum(expectHeight) + " reading direction");
+            Require(anchor[0] >= box[0] && anchor[0] <= box[2] && anchor[1] >= box[1] && anchor[1] <= box[3],
+                label + ": the watermark anchor (" + BoxNum(anchor[0]) + ", " + BoxNum(anchor[1])
+                    + ") sits outside the form /BBox [" + BoxNum(box[0]) + " " + BoxNum(box[1]) + " "
+                    + BoxNum(box[2]) + " " + BoxNum(box[3]) + "], so Do clips it away");
+        }
+
+        /// <summary>组装一页带正文与 Type1 字体的经典 PDF，MediaBox 与 /Rotate 由调用方给定。Assembles a one-page classic PDF with body text and a Type1 font, taking the MediaBox and /Rotate from the caller.</summary>
+        /// <param name="mediaBox">页面 MediaBox 字面量。The literal page MediaBox.</param>
+        /// <param name="rotate">页面 /Rotate，0 表示不写这个键。The page /Rotate; 0 omits the key.</param>
+        /// <returns>完整的 PDF 字节。The complete PDF bytes.</returns>
+        private static byte[] BuildWatermarkSource(string mediaBox, int rotate)
+        {
+            string content = "BT /F1 12 Tf 60 700 Td (Body) Tj ET";
+            string rotation = rotate == 0 ? string.Empty : " /Rotate " + rotate;
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox " + mediaBox + rotation
+                    + " /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+                "<< /Length " + content.Length + " >>\nstream\n" + content + "\nendstream",
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            };
+            return AssembleClassicPdf(bodies, 1, null);
+        }
+
+        /// <summary>从页面资源里取出水印表单对象流。Picks the watermark form stream out of the page resources.</summary>
+        /// <param name="file">已重开的文档。The reopened document.</param>
+        /// <param name="index">页面下标。The page index.</param>
+        /// <returns>表单流；找不到时 null。The form stream, or null when absent.</returns>
+        private static PdfStream WatermarkFormStream(PdfFile file, int index)
+        {
+            string outer = WatermarkOuterStream(file, index);
+            if (outer == null) return null;
+            int slash = outer.IndexOf('/');
+            if (slash < 0) return null;
+            int end = slash + 1;
+            while (end < outer.Length && !char.IsWhiteSpace(outer[end])) end++;
+            string name = outer.Substring(slash + 1, end - slash - 1);
+
+            PdfDictionary page = file.GetPageDictionary(index);
+            PdfDictionary resources = file.Resolve(page.Get("Resources")) as PdfDictionary;
+            PdfDictionary xobjects = resources == null ? null : file.Resolve(resources.Get("XObject")) as PdfDictionary;
+            if (xobjects == null) return null;
+            return file.Resolve(xobjects.Get(name)) as PdfStream;
+        }
+
+        /// <summary>读出表单字典里 <c>/BBox</c> 的四个数。Reads the four numbers of the form dictionary's /BBox.</summary>
+        /// <param name="form">水印表单流。The watermark form stream.</param>
+        /// <returns>四个数；缺失或不足四个时 null。The four numbers, or null when absent or short.</returns>
+        private static double[] BoxNumbers(PdfStream form)
+        {
+            PdfArray box = form.Dictionary.Get("BBox") as PdfArray;
+            if (box == null || box.Count < 4) return null;
+            double[] values = new double[4];
+            for (int i = 0; i < 4; i++)
+            {
+                PdfNumber number = i < box.Count ? box[i] as PdfNumber : null;
+                if (number == null) return null;
+                values[i] = number.Value;
+            }
+            return values;
+        }
+
+        /// <summary>取正文里第一条 <c>cm</c> 的平移分量，即水印的摆放点。Reads the translation of the body's first cm, which is where the watermark is anchored.</summary>
+        /// <param name="body">解码后的表单正文。The decoded form body.</param>
+        /// <returns>平移分量；读不到六个数时 null。The translation, or null when six operands cannot be read.</returns>
+        private static double[] FirstCmTranslate(string body)
+        {
+            string[] tokens = body.Split(new char[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 6; i < tokens.Length; i++)
+            {
+                if (tokens[i] != "cm") continue;
+                double[] values = new double[6];
+                bool ok = true;
+                for (int k = 0; k < 6; k++)
+                {
+                    double parsed;
+                    if (!double.TryParse(tokens[i - 6 + k], NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+                    {
+                        ok = false;
+                        break;
+                    }
+                    values[k] = parsed;
+                }
+                if (ok) return new double[] { values[4], values[5] };
+            }
+            return null;
+        }
+
+        /// <summary>把坐标写进失败信息里，最多四位小数。Formats a coordinate for failure messages with up to four decimals.</summary>
+        /// <param name="value">坐标值。The coordinate.</param>
+        /// <returns>不变文化的数字串。The culture-invariant number text.</returns>
+        private static string BoxNum(double value)
+        {
+            return value.ToString("0.####", CultureInfo.InvariantCulture);
         }
 
         /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
