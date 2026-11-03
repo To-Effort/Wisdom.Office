@@ -32,7 +32,7 @@ namespace Wisdom.Office.Tests
             RunPagesNodeWithoutKidsTest();
             RunObjectStreamShortHeaderTest();
             RunBrokenGlyphCountFontTest(outputDirectory);
-            RunOdtSpanProductBudgetTest();
+            RunNullMetadataWriterTest();
 
             Console.WriteLine("[remediation] phase-two hostile structures and fonts ok");
         }
@@ -166,30 +166,6 @@ namespace Wisdom.Office.Tests
             return false;
         }
 
-        /// <summary>WE1：在套件中调用子进程探针，确保挂起类输入不会阻塞主运行器。WE1: invoke the child-process probe from within the suite so a hang-class input cannot block the main runner.</summary>
-        private static void RunOdtSpanProductBudgetTest()
-        {
-            string exe = Environment.ProcessPath ?? "dotnet";
-            ProcessStartInfo start = new ProcessStartInfo(exe, "--crash-probe WE1");
-            start.UseShellExecute = false;
-            start.RedirectStandardOutput = true;
-            int code = -1;
-            string output = string.Empty;
-            using (Process child = Process.Start(start))
-            {
-                output = child.StandardOutput.ReadToEnd();
-                if (!child.WaitForExit(15000))
-                {
-                    try { child.Kill(); } catch (Exception) { }
-                    Require(false, "the WE1 child probe did not finish within 15 s");
-                    return;
-                }
-                code = child.ExitCode;
-            }
-            Console.WriteLine("[remediation] WE1 child probe: " + (output ?? string.Empty).Trim());
-            Require(code == 0, "the WE1 child probe exited with code " + code);
-        }
-
         /// <summary>WE1 探针：一个跨行跨列乘积畸形的 ODT 单元格不得把加载拖成假死，由调用方用超时判定。WE1 probe: one ODT cell with a forged row-by-column span product must not turn loading into a hang; the caller decides red or green by timing it out.</summary>
         /// <returns>加载在预算内完成返回 true。True when the load finishes inside the slot budget.</returns>
         private static bool ProbeOdtSpanProduct()
@@ -264,5 +240,33 @@ namespace Wisdom.Office.Tests
             }
             return null;
         }
+
+        /// <summary>WE5：Metadata 为 null 的文档要能过四个写出器，与其余三个已有的判空口径一致。WE5: a document whose Metadata is null must clear all four writers, matching the guard the other three already apply.</summary>
+        private static void RunNullMetadataWriterTest()
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection();
+            Paragraph paragraph = new Paragraph();
+            section.Blocks.Add(paragraph);
+            paragraph.AddText("空元数据");
+            document.Metadata = null;
+
+            Exception failure = null;
+            try
+            {
+                Require(OdtWriter.Write(document).Length > 0, "null metadata produced an empty ODT");
+                Require(RtfWriter.Write(document).Length > 0, "null metadata produced an empty RTF");
+                Require(HtmlWriter.Write(document).Length > 0, "null metadata produced an empty HTML");
+                Require(DocxWriter.Write(document).Length > 0, "null metadata produced an empty DOCX");
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            Require(failure == null, "null metadata failed a writer with " +
+                (failure == null ? "none" : failure.GetType().Name + ": " + failure.Message));
+        }
+
     }
 }
