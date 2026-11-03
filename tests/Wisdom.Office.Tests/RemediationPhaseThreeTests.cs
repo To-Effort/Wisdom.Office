@@ -24,6 +24,7 @@ namespace Wisdom.Office.Tests
         {
             RunFragmentConcatQuadraticTest();
             RunLineMergeScalingTest();
+            RunDictionaryParseScalingTest();
 
             Console.WriteLine("[remediation] phase-three quadratic hot spots ok");
         }
@@ -113,6 +114,54 @@ namespace Wisdom.Office.Tests
                     + "/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
                 "<< /Length " + streamBody.Length + " >>\nstream\n" + streamBody + "\nendstream",
                 "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            };
+            return AssembleClassicPdf(objects, 1, null);
+        }
+
+        /// <summary>PD21：字典键数翻倍不得让解析成本翻四倍；修复前 2828/14489 ms，修复后 26/39 ms。PD21: doubling the keys of a dictionary must not quadruple parsing; measured 2828/14489 ms before the index and 26/39 ms after.</summary>
+        private static void RunDictionaryParseScalingTest()
+        {
+            const int Small = 20000;
+            const int Large = 40000;
+
+            byte[] smallPdf = BuildWideDictionaryPdf(Small);
+            byte[] largePdf = BuildWideDictionaryPdf(Large);
+
+            Stopwatch watch = Stopwatch.StartNew();
+            int smallPages = PdfDocument.Load(smallPdf).PageCount;
+            watch.Stop();
+            long smallMs = watch.ElapsedMilliseconds;
+
+            watch = Stopwatch.StartNew();
+            int largePages = PdfDocument.Load(largePdf).PageCount;
+            watch.Stop();
+            long largeMs = watch.ElapsedMilliseconds;
+
+            Console.WriteLine("[remediation] PD21 keys=" + Small + "/" + Large
+                + " ms=" + smallMs + "/" + largeMs);
+
+            Require(smallPages == 1 && largePages == 1, Small + " and " + Large
+                + " junk keys should still read one page, got " + smallPages + "/" + largePages);
+            Require(largeMs < smallMs * 3 + 200, "doubling a dictionary from " + Small + " to " + Large
+                + " keys multiplied parsing from " + smallMs + " ms to " + largeMs + " ms");
+        }
+
+        /// <summary>拼一份 Pages 字典里塞满额外键的 PDF，键名不冲突、值为整数。Builds a PDF whose Pages dictionary is padded with distinct integer-valued keys.</summary>
+        /// <param name="keys">塞入的额外键数。The number of padded keys.</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildWideDictionaryPdf(int keys)
+        {
+            StringBuilder pad = new StringBuilder(keys * 12);
+            for (int i = 0; i < keys; i++)
+            {
+                pad.Append("/K").Append(i).Append(' ').Append(i).Append(' ');
+            }
+
+            string[] objects = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 " + pad + ">>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> >>",
             };
             return AssembleClassicPdf(objects, 1, null);
         }
