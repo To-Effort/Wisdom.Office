@@ -23,6 +23,7 @@ namespace Wisdom.Office.Tests
         {
             RunPredictorSingleRowTest();
             RunCatalogGenerationTest();
+            RunOffsetNumberMismatchTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -53,6 +54,70 @@ namespace Wisdom.Office.Tests
             string text = PdfDocument.Load(pdf).ExtractText();
             Require(text != null && text.Contains("Hi"),
                 "a predictor body of exactly one row lost the content stream, got '" + text + "'");
+        }
+
+        /// <summary>
+        /// PD17：交叉表条目指到的对象头写着别的号，这个条目即失效，不得把住在该偏移上的对象当成目标号返回。
+        /// PD17: when the object header at a cross-reference row's offset declares a different number, the row
+        /// is void and the object living at that offset must never be handed back under the requested number.
+        /// </summary>
+        private static void RunOffsetNumberMismatchTest()
+        {
+            string content = "BT /F1 12 Tf 20 700 Td (Hi) Tj ET";
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+                    + "/Resources << /Font << /F1 5 0 R >> >> >>",
+                "<< /Length " + content.Length + " >>\nstream\n" + content + "\nendstream",
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            };
+
+            // 5 号条目改指 3 号对象的头，两条落在同一个偏移上。
+            // Row 5 is redirected to object 3's header, so two rows share one offset.
+            long[] offsets = ObjectOffsets(bodies);
+            long[] forged = new long[bodies.Length];
+            for (int i = 0; i < bodies.Length; i++) forged[i] = offsets[i];
+            forged[4] = offsets[2];
+            byte[] pdf = AssembleClassicPdf(bodies, 1, forged);
+
+            PdfFile file = PdfFile.Load(pdf);
+            PdfObject five = file.GetObject(5);
+            Require(!IsPageDictionary(five),
+                "the xref row for object 5 points at object 3's header and the reader handed that object back: "
+                    + Describe(five));
+
+            string text = PdfDocument.Load(pdf).ExtractText();
+            Require(text != null && text.Contains("Hi"),
+                "reading through the void row lost the page text, got '" + text + "'");
+        }
+
+        /// <summary>判断对象是否是这张 fixture 里的页节点。Tells whether the object is the fixture's page node.</summary>
+        /// <param name="value">待判定的对象。The object to judge.</param>
+        /// <returns>是页节点返回 true。True for the page dictionary.</returns>
+        private static bool IsPageDictionary(PdfObject value)
+        {
+            PdfDictionary dictionary = value as PdfDictionary;
+            if (dictionary == null) return false;
+            return dictionary.Get("Type") != null && dictionary.Get("MediaBox") != null;
+        }
+
+        /// <summary>把对象缩成一句可诊断的描述。Condenses an object into a diagnosable one-liner.</summary>
+        /// <param name="value">待描述的对象。The object to describe.</param>
+        /// <returns>描述文本。The description.</returns>
+        private static string Describe(PdfObject value)
+        {
+            if (value == null) return "null";
+            PdfDictionary dictionary = value as PdfDictionary;
+            if (dictionary == null) return value.GetType().Name;
+            StringBuilder builder = new StringBuilder("PdfDictionary");
+            foreach (KeyValuePair<string, PdfObject> pair in dictionary)
+            {
+                builder.Append(" /").Append(pair.Key).Append('=')
+                    .Append(pair.Value == null ? "null" : pair.Value.GetType().Name);
+            }
+            return builder.ToString();
         }
 
         /// <summary>
