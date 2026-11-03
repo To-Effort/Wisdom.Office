@@ -391,7 +391,7 @@ namespace Wisdom.Pdf
 
             PdfDictionary trailer = new PdfDictionary();
             trailer.SetNumber("Size", maxNumber + 1);
-            trailer.Set("Root", new PdfReference(_catalogNumber, 0));
+            trailer.Set("Root", new PdfReference(_catalogNumber, _catalogGeneration));
             PdfObject info = _trailer == null ? null : _trailer.Get("Info");
             if (info != null) trailer.Set("Info", info);
             if (incremental && _lastXrefOffset > 0) trailer.SetNumber("Prev", _lastXrefOffset);
@@ -441,7 +441,7 @@ namespace Wisdom.Pdf
                 _catalogNumber = AddObject(catalog);
             }
             if (_trailer == null) _trailer = new PdfDictionary();
-            _trailer.Set("Root", new PdfReference(_catalogNumber, 0));
+            _trailer.Set("Root", new PdfReference(_catalogNumber, _catalogGeneration));
             if (_trailer.Get("Info") == null)
             {
                 PdfReference info = GetOrCreateInfoReference();
@@ -513,7 +513,7 @@ namespace Wisdom.Pdf
             trailer.Remove("Prev");
             trailer.Remove("XRefStm");
             trailer.SetNumber("Size", _maxObjectNumber + 1);
-            trailer.Set("Root", new PdfReference(_catalogNumber, 0));
+            trailer.Set("Root", new PdfReference(_catalogNumber, _catalogGeneration));
             return trailer;
         }
 

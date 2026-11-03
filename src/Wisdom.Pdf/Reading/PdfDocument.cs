@@ -553,7 +553,7 @@ namespace Wisdom.Pdf
                     PdfName type = Resolve(dictionary.Get("Type")) as PdfName;
                     if (type != null && type.Value == "Catalog")
                     {
-                        trailer.Set("Root", new PdfReference(keys[i], 0));
+                        trailer.Set("Root", new PdfReference(keys[i], found[keys[i]].Generation));
                         break;
                     }
                 }

@@ -94,6 +94,11 @@ namespace Wisdom.Pdf
         private bool _isNew;
         /// <summary>目录对象号；直接目录会先被提升为间接对象。The catalog object number; a direct catalog is promoted to an indirect object.</summary>
         private int _catalogNumber = -1;
+        /// <summary>
+        /// 目录对象代号；随编号一并保存，写出 trailer 的 /Root 时使用真实代号。
+        /// The catalog generation, kept alongside its number and used when writing the trailer /Root.
+        /// </summary>
+        private int _catalogGeneration;
         /// <summary>缓存的目录字典。The cached catalog dictionary.</summary>
         private PdfDictionary _catalog;
         /// <summary>页面节点缓存，页面操作后失效。Page node cache, invalidated after page edits.</summary>
@@ -151,7 +156,7 @@ namespace Wisdom.Pdf
             int infoNumber = file.AddObject(info);
             file._trailer = new PdfDictionary();
             file._trailer.SetNumber("Size", file._maxObjectNumber + 1);
-            file._trailer.Set("Root", new PdfReference(file._catalogNumber, 0));
+            file._trailer.Set("Root", new PdfReference(file._catalogNumber, file._catalogGeneration));
             file._trailer.Set("Info", new PdfReference(infoNumber, 0));
             return file;
         }
@@ -568,11 +573,13 @@ namespace Wisdom.Pdf
             if (rootReference == null)
             {
                 _catalogNumber = AddObject(catalog);
-                _trailer.Set("Root", new PdfReference(_catalogNumber, 0));
+                _catalogGeneration = 0;
+                _trailer.Set("Root", new PdfReference(_catalogNumber, _catalogGeneration));
             }
             else
             {
                 _catalogNumber = rootReference.Number;
+                _catalogGeneration = rootReference.Generation;
             }
             _catalog = catalog;
 
