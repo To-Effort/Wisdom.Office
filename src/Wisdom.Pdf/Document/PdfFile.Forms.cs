@@ -824,25 +824,38 @@ namespace Wisdom.Pdf
         private void AttachAppearance(PdfFormField field, PdfReference stream, PdfDictionary states)
         {
             List<PdfDictionary> targets = new List<PdfDictionary>();
+            List<int> targetNumbers = new List<int>();
             targets.Add(field.Dictionary);
+            targetNumbers.Add(field.ObjectNumber);
             IReadOnlyList<int> annotations = field.Annotations;
             for (int i = 0; i < annotations.Count; i++)
             {
                 PdfDictionary widget = GetObject<PdfDictionary>(annotations[i]);
-                if (widget != null && !targets.Contains(widget)) targets.Add(widget);
+                if (widget == null || targets.Contains(widget)) continue;
+                targets.Add(widget);
+                targetNumbers.Add(annotations[i]);
             }
 
             for (int i = 0; i < targets.Count; i++)
             {
                 PdfDictionary dictionary = targets[i];
-                PdfDictionary appearance = dictionary.Get("AP") as PdfDictionary;
+                // /AP 自己就常是个间接对象（Acrobat 把状态字典单独存出去）。不 Resolve 直接当成没有，
+                // 会拿一个全新的内联字典把整块换掉，/R、/D 连同已生成的状态映射一起丢。
+                // /AP is frequently an indirect dictionary of its own (Acrobat stores the state map
+                // separately); casting it without Resolve throws the whole map away for a fresh inline one.
+                PdfReference holder = dictionary.Get("AP") as PdfReference;
+                PdfDictionary appearance = (holder == null ? dictionary.Get("AP") : Resolve(holder)) as PdfDictionary;
                 if (appearance == null)
                 {
                     appearance = new PdfDictionary();
                     dictionary.Set("AP", appearance);
                 }
                 appearance.Set("N", states != null ? (PdfObject)states : stream);
-                MarkModified(field.ObjectNumber);
+                MarkModified(targetNumbers[i]);
+                // 状态字典住在另一个对象里时，那一号同样得登记，否则增量保存原样写回旧字节。
+                // The state map lives in its own object, so that number has to be registered too, or an
+                // incremental save re-emits the old bytes and the new /N never reaches the file.
+                if (holder != null) MarkModified(holder.Number);
             }
         }
 
