@@ -288,6 +288,11 @@ second.AddWatermark(stamp);
 second.SaveIncremental("out/report-stamped.pdf");   // 原字节保留，只追加改动对象
 ```
 
+「只追加」有一个前提：这份 PDF 的交叉表必须是完好的。如果 `startxref` 或交叉表已经坏到要由全文扫描救回，
+内存里的条目就不再对应文件里任何一个交叉表区段，追加段也就没有 `/Prev` 可指，写出去只会少掉未改动的页树与
+内容流。这种情况下 `SaveIncremental` / `SaveIncrementalToBytes` 退化为全量重写：文件照样能开、内容照旧不缺，
+但原字节不再逐字保留，挂在原字节上的数字签名也随之作废。
+
 其余页面操作：`PageCount`、`GetPageDictionary`、`GetPageResources`、`GetPageSize`、`GetPageRotation`、
 `SetPageCropBox`、`RemovePage`、`ReorderPages` 处理单篇文档，`Merge`、`AppendPagesFrom`、`InsertPagesFrom`、
 `ExtractPages`、`Split` 跨文档搬页。

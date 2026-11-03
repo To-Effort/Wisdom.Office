@@ -259,7 +259,7 @@ OfficeConverter.WorkbookToPdf(data, "out/wide.pdf", new WorkbookLayoutOptions
 
 提取侧还有一条实测细节会影响你的断言写法：`PdfTextLine.Text` 会把同一行的多个单元格用空格连起来，例如 `序号 巡检项 结果 用时(min)`。按整段原文 `==` 比较会失败，应该用 `Contains` 或者逐片段（`Fragments` 保留各自坐标与字号）判断。
 
-如果目标不是"换个格式重排"，而是**在原文件上动刀且不许版式变**，就不要走 `OfficeConverter`，走 `PdfFile`：它直接读写交叉表，按对象号增删改，`SetPageRotation` / `AddWatermark` / `Merge` / `Split` 之后 `Save` 整量重写或 `SaveIncremental` 只追加改动对象（原字节保留）。水印是 Form XObject，用 `/Rotate` 反向补偿矩阵贴合页面旋转，图层为 `Background` 时挂 `PrependPageContent`、`Foreground` 时挂 `AppendPageContent`，透明度走 `/ExtGState` 的 `CA`+`ca`；只有当页面带 `/StructParents` 时才补 `/Artifact` 标记，避免给没有结构树的 PDF 写出幽灵 MCID。
+如果目标不是"换个格式重排"，而是**在原文件上动刀且不许版式变**，就不要走 `OfficeConverter`，走 `PdfFile`：它直接读写交叉表，按对象号增删改，`SetPageRotation` / `AddWatermark` / `Merge` / `Split` 之后 `Save` 整量重写或 `SaveIncremental` 只追加改动对象（原字节保留）；但"只追加"的前提是交叉表完好——`startxref` 坏到要靠全文扫描救回时，内存条目已不对应文件里的任何一个交叉表区段，追加段没有 `/Prev` 可指，`SaveIncremental` 会退化为全量重写，内容不缺、原字节却不保留。水印是 Form XObject，用 `/Rotate` 反向补偿矩阵贴合页面旋转，图层为 `Background` 时挂 `PrependPageContent`、`Foreground` 时挂 `AppendPageContent`，透明度走 `/ExtGState` 的 `CA`+`ca`；只有当页面带 `/StructParents` 时才补 `/Artifact` 标记，避免给没有结构树的 PDF 写出幽灵 MCID。
 
 填表也在这一层：`HasForm` / `GetForm()` 读字段树（`Fields` 是文档顺序的全部节点，含中间层父域；`GetField("父.子")` 按点号名查），`FillForm(values)` 批量写 `/V` 并统一生成 `/AP /N` 外观（中文按 Identity-H 子集嵌入并带 ToUnicode，所以阅读器显示与文本提取都读得出），`FlattenForm()` 再把外观按控件矩形画进页面内容、清掉控件注释与 `AcroForm`。写值时 `/NeedAppearances` 自动置 `true`、生成完外观复位，"值已改外观还是旧的"这个中间态不会显示错值。单选组的值只记在父域 `/V`，各选项仅同步自己的 `/AS`；密码域、没有 `/AP` 的字段、控件没挂进 `/Annots` 的字段以及签名域与普通按钮都不参与扁平化，值不会被静默丢掉。带 `/XFA` 的混合表单只能整体 `RemoveFormXfa()` 剥离，本库不解析 XFA 模板。
 

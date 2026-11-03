@@ -377,6 +377,8 @@
 | `PD6` | 零字形字体从「保存链路中途越界」改为构造期抛 `InvalidDataException`，保存链路整体降级不再炸 | 内部类型，不新增公共承诺；`docs/Wisdom.Pdf.Tutorial.md` §10 与 `src/Wisdom.Pdf/README.md` 已补「构造期拒绝」 |
 | `WE1` | ODT 畸形跨度乘积从假死/OOM 改为「预算用完停止登记覆盖」，声明的跨度保留 | `README.md` 不可信输入列举、`src/Wisdom.Word/README.md` 写明降级代价（已同步） |
 | `PD16`、`PD20`、`PT4` | 超限与畸形输入从静默产出空结果改为可检测失败 | `docs/Wisdom.Pdf.Tutorial.md`、`docs/Wisdom.Ppt.Tutorial.md` 的容错说明 |
+| `PD8` | 交叉表由全文扫描救回的文档，增量保存从「追加一段」改为全量重写；原字节不再逐字保留 | `docs/Wisdom.Pdf.Tutorial.md` 增量保存段、`src/Wisdom.Pdf/README.md` 已知限制、`docs/Wisdom.Office.功能导读.md` 2.4 的「只追加改动对象」承诺（三处已同步） |
+| `PD17` | 交叉表条目指到别人的对象头时，从「静默把该偏移上的对象当成目标号交回」改为「按条修正后重读，修不回即当作缺失」 | `src/Wisdom.Pdf/README.md` 已知限制（已同步）；`docs/Wisdom.Pdf.Tutorial.md` 的容错说明随 `PD9` 告警通道一并补 |
 | `PD9`、`WE7`、`WE9` | 引入告警集合后，读入失败的返回语义变化 | 两个包的教程与 `articles/Wisdom.Pdf.md`、`articles/Wisdom.Ppt.md` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
 
@@ -510,5 +512,14 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   ```
 
   fixture 把 5 号条目改指 3 号对象的头（两条落同一偏移），断言 `GetObject(5)` 不再吐出页节点，且读取端 `ExtractText()` 仍能拿到页里的 `Hi`——即条目被修好后内容回来了，不是静默变成空白页。`InvalidDataException` 是密封类，异常基类只能用 `Exception`，该类型 internal，不越出程序集。
-- 验证方式再记一条：共享工作副本此刻能编译，但并行批次正在 `ExcelEnhancementTests.cs:197` 加打印标题断言（`Report!$1:$2`），该断言在其功能完成前必红，`--no-build` 的共享副本跑到那里就停。因此 `PD17` 的双目标末行是在 `D:/tmp/hb/verify2` 里取得的——该树取当前受版本控制文件的工作副本内容，只有测试入口 `Program.cs` 与 `ExcelEnhancementTests.cs` 退回入库版本（入库版不含那条挂接），`net8.0` 与 `net461` 均到 `All tests finished.`；共享副本里 `phase-four corrupt output and silent loss ok` 已经打出来，即本条目自身在共享副本也是绿的。等并行批次收尾后仍需一次共享副本整跑。
+- 验证方式再记一条：共享工作副本此刻能编译，但并行批次正在 `ExcelEnhancementTests.cs:197` 加打印标题断言（`Report!$1:$2`），该断言在其功能完成前必红，`--no-build` 的共享副本跑到那里就停。因此 `PD17` 的双目标末行是在 `D:/tmp/hb/verify2` 里取得的——该树取当前受版本控制文件的工作副本内容，只有测试入口 `Program.cs` 与 `ExcelEnhancementTests.cs` 退回入库版本（入库版不含那条挂接），`net8.0` 与 `net461` 均到 `All tests finished.`；共享副本里 `phase-four corrupt output and silent loss ok` 已经打出来，即本条目自身在共享副本也是绿的。**并行批次已收尾，`PD8` 之后共享工作副本整跑过一遍（见下），这条兜底作废。**
+- `PD8`（`587ae3a` + `22f2fbb`）：目标行为「恢复路径要么修正 `_lastXrefOffset`，要么置 `_rewriteRequired`」取后半句——`RebuildXref()` 末尾补 `_rewriteRequired = true`，`SaveIncrementalToBytes()` 已有的分流（`_isNew || _data == null || _pendingEncryption != null || _rewriteRequired` 落到 `WriteFile(false)`）于是自动兜住这条路径，不需要新增判断点；不选「修正偏移」那一半，因为扫描出来的条目本来就散落在文件各处、不存在一个可作为 `/Prev` 目标的基段。修复前的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: the incremental update on a scan-recovered document dropped the untouched objects: second page text reads ''
+  ```
+
+  断言前先立两条控制：扫描救回的文档本身必须 `PageCount == 2`、原文里读得到 `Second`，否则红的是 fixture 而不是增量段。第一版只有 4 个对象，`RemovePage(0)` 之后余下对象全落在 `_changes` 里，追加段自给自足，测试假绿；补成 7 个对象（两条正文流加一个共用字体）后，未改动的 6、7 号必须由重开的阅读器按交叉表找回，才真打出上面这条红。`_rewriteRequired` 的字段注释同时改写：它原先只讲加密两种来源，现在多一条「交叉表来自扫描兜底」。
+- `PD8`、`PD17` 的文档义务按 §9 新增两行落到位：`docs/Wisdom.Pdf.Tutorial.md` 在 `SaveIncremental` 代码块后补「只追加有前提」一段，`src/Wisdom.Pdf/README.md` 已知限制补两条（扫描救回后增量保存退化为全量重写、条目编号错位的作废与按条修正），`docs/Wisdom.Office.功能导读.md` 2.4 节那句「`SaveIncremental` 只追加改动对象（原字节保留）」就地加了同一例外。三处都只写可观测行为，不提标志位与内部方法名，也未出现本地绝对路径或发布步骤。
+- 验证：本条文档改动前后各跑了一次共享工作副本整跑，输出分别落在 `D:/tmp/hb/run_net8.log` 与 `D:/tmp/hb/run_net461.log`，`net8.0` 与 `net461` 均打出 `[remediation] phase-four corrupt output and silent loss ok` 并到末行 `All tests finished.`；构建输出用 `.hb/Debug/<tfm>` 隔离目录，避开并行会话对 `bin/` 里 exe 的文件锁。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
