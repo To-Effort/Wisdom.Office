@@ -503,4 +503,12 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   改动点比条目多一处：`Reading/PdfDocument.cs:556` 的读取端救援路径同样把世代硬写成 0，而同名救援路径在 `PdfFile.cs` 里一直用的是扫描到的真实世代，两条现在口径一致。读取端这一处没有单独断言——它写出的引用只用于定位目录，`Wisdom.Pdf.PdfDocument` 不暴露 trailer，也没有按 (号, 世代) 严格查对象的调用点，因此改成真实世代不改变任何可观测行为，只是消除同一个硬编码；写出端五处引用构造（`PdfFile.cs:159`、`:577` 与 `PdfFile.Writer.cs:394`、`:444`、`:516`）加上世代回收点 `PdfFile.cs:582` 都在断言覆盖的保存路径上。无新增公共承诺：新文档的目录仍由 `AddObject` 分配、世代为 0，只有源文档目录本身住在非 0 世代时输出才变。
 - 验证方式更正一条：并行批次正把 `DocxWriter.cs` 改到语法不通（`CS1031` 等），共享工作副本在此期间无法编译，因此 `Phase 3`/`Phase 4` 的双目标运行是在一棵与工作副本隔离的临时构建树里完成的——该树取当前受版本控制的文件，仅 `DocxWriter.cs` 退回入库版本、测试入口退回不含并行挂接行的版本。**该副本已恢复可编译，`PD3`/`PD4`/`PD21`/`PD16`/`PD10` 已在共享工作副本里重跑，`net8.0` 与 `net461` 均到末行 `All tests finished.`，隔离树兜底作废。**
+- `PD17`（`c174e85` + `490dd31`）：目标行为「比对头部号，不一致即判条目失效并走重建」落地为**按条修正**——`ParseIndirectObjectAt(offset, expectedNumber)` 不符即抛 `PdfObjectHeaderMismatchException`，两个 `LoadObject`（写出端 `PdfFile` 与读取端 `PdfDocument`）catch 到它之后跑一次全文扫描，只用扫到的真头替换**这一条**条目再读一次。不整表重建：`RebuildXref()` 会连 `_trailer` 一起换成文件末尾的 trailer，一条坏条目没有资格触发那种改动；扫描每个文档至多跑一次并留用结果，避免畸形文件按失效次数反复全文扫描。`startxref` 与 `/XRefStm` 两个调用点只知道偏移不知道号，沿用不校验的重载。修复前的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: the xref row for object 5 points at object 3's header and the reader handed that object back: PdfDictionary /Type=PdfName /Parent=PdfReference /MediaBox=PdfArray /Contents=PdfReference /Resources=PdfDictionary
+  ```
+
+  fixture 把 5 号条目改指 3 号对象的头（两条落同一偏移），断言 `GetObject(5)` 不再吐出页节点，且读取端 `ExtractText()` 仍能拿到页里的 `Hi`——即条目被修好后内容回来了，不是静默变成空白页。`InvalidDataException` 是密封类，异常基类只能用 `Exception`，该类型 internal，不越出程序集。
+- 验证方式再记一条：共享工作副本此刻能编译，但并行批次正在 `ExcelEnhancementTests.cs:197` 加打印标题断言（`Report!$1:$2`），该断言在其功能完成前必红，`--no-build` 的共享副本跑到那里就停。因此 `PD17` 的双目标末行是在 `D:/tmp/hb/verify2` 里取得的——该树取当前受版本控制文件的工作副本内容，只有测试入口 `Program.cs` 与 `ExcelEnhancementTests.cs` 退回入库版本（入库版不含那条挂接），`net8.0` 与 `net461` 均到 `All tests finished.`；共享副本里 `phase-four corrupt output and silent loss ok` 已经打出来，即本条目自身在共享副本也是绿的。等并行批次收尾后仍需一次共享副本整跑。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
