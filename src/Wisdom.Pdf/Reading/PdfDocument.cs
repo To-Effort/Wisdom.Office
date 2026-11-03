@@ -38,6 +38,8 @@ namespace Wisdom.Pdf
 
         /// <summary>交叉表：对象号到其存储位置的映射。Cross-reference map from object number to its storage location.</summary>
         private readonly Dictionary<int, XrefEntry> _xref = new Dictionary<int, XrefEntry>();
+        /// <summary>条目编号错位时用过一遍的全文扫描结果，只做一次。The object-header scan run once after a voided row.</summary>
+        private Dictionary<int, XrefEntry> _scannedHeaders;
         /// <summary>已释放（type 0 或 f）的对象号，阻止更早的 /Prev 段把它们复活。
         /// Released object numbers (type 0 or f) so an older /Prev section cannot resurrect them.</summary>
         private readonly HashSet<int> _freeNumbers = new HashSet<int>();
@@ -660,8 +662,27 @@ namespace Wisdom.Pdf
         /// <returns>对象；交叉表无此条目、正在加载中或解析失败时返回 null。Null when unknown, currently loading (a cycle) or unreadable.</returns>
         /// <remarks>失败结果不写入缓存，因此后续访问仍会重试；正在加载中的对象返回 null 而非抛异常，
         /// 使环形页面树只丢失一条边而不会崩溃。Failures are not cached, so later access may retry; a cyclic load yields null instead of an exception.</remarks>
+        /// <remarks>条目偏移上的对象头写着别的号时，先用全文扫描修正这一条再读一次；修不好就当作没有这个对象。
+        /// A row whose header declares another number is first repaired from a full scan and re-read; failing
+        /// that, the object counts as absent.</remarks>
         internal PdfObject LoadObject(int number)
         {
+            bool voided;
+            PdfObject result = LoadObjectOnce(number, out voided);
+            if (result == null && voided && RepairEntryFromScan(number))
+            {
+                result = LoadObjectOnce(number, out voided);
+            }
+            return result;
+        }
+
+        /// <summary>按当前条目读一次对象；条目偏移与对象头编号不符时置 <paramref name="headerVoided"/>。Reads once through the current row, flagging a header-number mismatch.</summary>
+        /// <param name="number">交叉表中的对象号。The object number in the cross-reference.</param>
+        /// <param name="headerVoided">条目是否因编号错位而失效。Whether the row was voided by a mismatched number.</param>
+        /// <returns>对象或 null。The object, or null.</returns>
+        private PdfObject LoadObjectOnce(int number, out bool headerVoided)
+        {
+            headerVoided = false;
             PdfObject cached;
             if (_objects.TryGetValue(number, out cached)) return cached;
             XrefEntry entry;
@@ -677,7 +698,7 @@ namespace Wisdom.Pdf
                     // offset is range-checked first.
                     if (entry.Offset < 0 || entry.Offset > _data.Length) return null;
                     PdfParser parser = new PdfParser(_data, (int)entry.Offset, ResolveReference);
-                    result = parser.ParseIndirectObjectAt(entry.Offset);
+                    result = parser.ParseIndirectObjectAt(entry.Offset, number);
                     if (result != null && _security != null && number != _encryptNumber)
                     {
                         DecryptObjectGraph(result, number, entry.Generation);
@@ -690,6 +711,11 @@ namespace Wisdom.Pdf
                 if (result != null) _objects[number] = result;
                 return result;
             }
+            catch (PdfObjectHeaderMismatchException)
+            {
+                headerVoided = true;
+                return null;
+            }
             catch (Exception)
             {
                 return null;
@@ -698,6 +724,28 @@ namespace Wisdom.Pdf
             {
                 _loading.Remove(number);
             }
+        }
+
+        /// <summary>
+        /// 条目失效时的局部救援：全文扫描找回这个号真正的对象头，只替换这一条条目。
+        /// Local repair for a voided row: scan the file for the number's real object header and replace only
+        /// that one entry.
+        /// </summary>
+        /// <param name="number">对象号。The object number.</param>
+        /// <returns>条目被改到别处返回 true。True when the row now points somewhere else.</returns>
+        /// <remarks>扫描每个文档只做一次并留用结果；整表救援重建会连 trailer 一起换掉，这里只动一条。
+        /// The scan runs at most once per document and is kept; a whole-table rebuild would also swap the
+        /// trailer, so only this row is rewritten.</remarks>
+        private bool RepairEntryFromScan(int number)
+        {
+            if (_scannedHeaders == null) _scannedHeaders = ScanIndirectObjects();
+            XrefEntry scanned;
+            if (!_scannedHeaders.TryGetValue(number, out scanned)) return false;
+            XrefEntry current;
+            if (_xref.TryGetValue(number, out current)
+                && current.Type == scanned.Type && current.Offset == scanned.Offset) return false;
+            _xref[number] = scanned;
+            return true;
         }
 
         /// <summary>

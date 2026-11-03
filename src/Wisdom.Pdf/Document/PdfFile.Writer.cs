@@ -482,6 +482,7 @@ namespace Wisdom.Pdf
         private void CommitWriteState(byte[] bytes, long xrefOffset, List<WrittenObject> written, List<int> removed)
         {
             _data = bytes;
+            _scannedHeaders = null;
             _lastXrefOffset = xrefOffset;
             _isNew = false;
             for (int i = 0; i < written.Count; i++)

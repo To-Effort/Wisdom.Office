@@ -625,13 +625,33 @@ namespace Wisdom.Pdf
         }
 
         /// <summary>
-        /// 跳转到对象偏移处，解析「对象号 代号 obj」头部及其后的对象（含流）。
-        /// Seeks to an object offset and parses the "object-number generation obj" header and the object (including streams) that follows.
+        /// 跳转到对象偏移处解析对象，不校验对象头里的编号。
+        /// Seeks to an object offset and parses it without checking the number in the object header.
         /// </summary>
         /// <param name="offset">对象在文件中的字节偏移，通常来自交叉表。The object's byte offset within the file, usually from the cross-reference table.</param>
         /// <returns>该间接对象承载的值；流对象返回 <see cref="PdfStream"/>（未解码）。The value carried by the indirect object; stream objects return an undecoded <see cref="PdfStream"/>.</returns>
         /// <exception cref="InvalidDataException">偏移越界或头部不符合对象语法时抛出。Thrown when the offset is out of bounds or the header does not match object syntax.</exception>
+        /// <remarks>只用于「知道偏移却不知道对象号」的调用点，例如 <c>startxref</c> 与 <c>/XRefStm</c>。
+        /// For call sites that know the offset but not the object number, such as <c>startxref</c> and <c>/XRefStm</c>.</remarks>
         public PdfObject ParseIndirectObjectAt(long offset)
+        {
+            return ParseIndirectObjectAt(offset, 0);
+        }
+
+        /// <summary>
+        /// 跳转到对象偏移处解析对象，并校验对象头声明的编号。
+        /// Seeks to an object offset, parses it and checks the object number declared by the header.
+        /// </summary>
+        /// <param name="offset">对象在文件中的字节偏移，通常来自交叉表。The object's byte offset within the file, usually from the cross-reference table.</param>
+        /// <param name="expectedNumber">期望的对象号；传 0 表示不校验。The expected object number; 0 skips the check.</param>
+        /// <returns>该间接对象承载的值；流对象返回 <see cref="PdfStream"/>（未解码）。The value carried by the indirect object; stream objects return an undecoded <see cref="PdfStream"/>.</returns>
+        /// <exception cref="PdfObjectHeaderMismatchException">头部编号与 <paramref name="expectedNumber"/> 不符。Thrown when the header declares a different number than <paramref name="expectedNumber"/>.</exception>
+        /// <exception cref="InvalidDataException">偏移越界或头部不符合对象语法时抛出。Thrown when the offset is out of bounds or the header does not match object syntax.</exception>
+        /// <remarks>交叉表条目可以被伪造，也会被全文扫描在图像正文里的伪命中污染；不校验编号就会把住在该偏移上的
+        /// 别的对象当成目标号交给调用方，全程静默。
+        /// A cross-reference row can be forged, or polluted by a scan hit inside image data; without the check
+        /// the reader hands back whatever object lives at that offset under the requested number, silently.</remarks>
+        public PdfObject ParseIndirectObjectAt(long offset, int expectedNumber)
         {
             if (offset < 0 || offset >= _data.Length)
             {
@@ -639,12 +659,16 @@ namespace Wisdom.Pdf
             }
             Position = (int)offset;
             SkipWhitespaceAndComments();
-            ReadInteger();
+            int headerNumber = ReadInteger();
             ReadInteger();
             string keyword = ReadKeyword();
             if (keyword != "obj")
             {
                 throw new InvalidDataException("Expected 'obj' at PDF object offset " + offset.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            if (expectedNumber > 0 && headerNumber != expectedNumber)
+            {
+                throw new PdfObjectHeaderMismatchException(offset, expectedNumber, headerNumber);
             }
             PdfObject value = ParseObject();
             PdfDictionary dictionary = value as PdfDictionary;
@@ -781,6 +805,29 @@ namespace Wisdom.Pdf
                 if (match) return i;
             }
             return -1;
+        }
+    }
+
+    /// <summary>
+    /// 交叉表条目偏移上的对象头声明了别的对象号：该条目失效，调用方据此放弃这条而不是收下别人的对象。
+    /// The object header at a cross-reference row's offset declares a different object number: the row is void,
+    /// so the caller drops it instead of accepting whatever object lives there.
+    /// </summary>
+    /// <remarks><c>InvalidDataException</c> 是密封的，无法派生；这条只在解析器内部与读取端的
+    /// <c>LoadObject</c> 之间用作信号，出不了程序集。
+    /// <c>InvalidDataException</c> is sealed and cannot be derived from; this signal only travels between the
+    /// parser and the reader's <c>LoadObject</c>, never out of the assembly.</remarks>
+    internal sealed class PdfObjectHeaderMismatchException : Exception
+    {
+        /// <summary>登记错位的偏移、期望编号与实际编号。Records the offset, the expected number and the number found.</summary>
+        /// <param name="offset">条目指向的字节偏移。The byte offset the row points at.</param>
+        /// <param name="expectedNumber">调用方期望的对象号。The object number the caller asked for.</param>
+        /// <param name="headerNumber">对象头实际声明的对象号。The object number the header declares.</param>
+        public PdfObjectHeaderMismatchException(long offset, int expectedNumber, int headerNumber)
+            : base("PDF object header at offset " + offset.ToString(CultureInfo.InvariantCulture)
+                + " declares object " + headerNumber.ToString(CultureInfo.InvariantCulture)
+                + " instead of " + expectedNumber.ToString(CultureInfo.InvariantCulture) + ".")
+        {
         }
     }
 }
