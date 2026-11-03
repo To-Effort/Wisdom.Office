@@ -464,3 +464,36 @@ exit=0
 - 文档同步已完成：`README.md` 的「不可信输入」列举了 ODT 表格覆盖登记，`src/Wisdom.Word/README.md` 写明降级代价是超大跨度之后的网格对齐不再精确。
 - `WE1` 的套件内包装已撤除（`4639930`）：`7da0ad6` 入库时连带进了一段在跑测试时 fork 子进程再断言退出码的 `RunOdtSpanProductBudgetTest`，它同时犯了两处错——用 `Environment.ProcessPath`（net461 无此 API，`CS0117` 直接把 net461 编译打断）和把 `ReadToEnd()` 排在 `WaitForExit()` 之前（子进程一假死，主运行器就跟着一起不动，正是 §2 要避免的形态）。挂起类证据只由 `--crash-probe WE1` 加调用方超时产出。
 - `WE5` 条目里引用的 `DocxWriter.cs:1870`、`:1900` 两处判空，在并行批次改写后已漂到 `:2281`、`:2311`；`RtfWriter.cs:232` 与 `HtmlWriter.cs:56` 未动。行号只是指路，结论仍成立。
+
+### 11.3 Phase 3 落地记录（2026-11-03）
+
+断言落在 `tests/Wisdom.Office.Tests/RemediationPhaseThreeTests.cs`，接在 Phase 2 之后。三条修复前的失败原文：
+
+```text
+Test failed: 200000 glyphs on one line took 7622 ms to extract
+Test failed: doubling 20000 lines to 40000 multiplied extraction from 2860 ms to 11376 ms
+Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing from 2828 ms to 14489 ms
+```
+
+修复后同一批断言的实测：`PD3` 116 ms（net8.0）与 153 ms（net461），阈值 1200 ms 留十倍余量；`PD4` 103/203 ms 与 81/183 ms，倍率上限「三倍加 200 ms」；`PD21` 26/39 ms 与 27/39 ms。形状同时守住：两万行仍归并成两万行、四万行仍四万行，四万键字典照旧读出 1 页，`/Kids` 与 `/Count` 没被索引读丢。
+
+提交逐条配对：`57a4c35`+`ea8f115`（`PD3`）、`f2826ca`+`9c39e68`（`PD4`）、`ce05890`+`fedb7f8`（`PD21`）。
+
+两处与规范目标写法的差异，按落地事实登记：
+
+- `PD3` 的目标行为还要求「给单页字元与片段总数设上限，超限按 `PD9` 的告警通道上报而不是静默截断」。上限这一半依赖尚不存在的告警通道，按 §10「`PD5` 与 `PD22`、`PD9` 必须同批设计」并入 `PD9` 批次；本相只消掉二次方本身（`_last.Text += text` 改缓冲累积，取用 `Fragments` 前由提取器 `Flush` 一次成型）。同型的 Word 侧两处（`OdtReader.cs:565`、`RtfReader.cs:954`）累加在公共模型属性 `TextRun.Text` 上，改成缓冲要先决定「公共可写属性由 StringBuilder 支撑」的语义（外部写 `Text` 就得作废缓冲），不是同一次改动的规模，登记为独立条目。
+- `PD4` 的目标行为写的是按基线容差投桶。实际落的是单调游标：片段本就按 Y 升序，一条行的 `Bottom` 一旦越过当前片段，与它和其后任何片段都不可能满足「至少重叠半格」，把它们划出窗口不改变「第一个命中」的结果，归并形状完全守恒，代价是实现更简单。已知残留：若同一竖直窗口内堆满角度互不相同的片段，窗口仍大、扫描仍是窗口内线性，投桶写法留作后续加强。
+
+`PD5` 与 `PD22` 本相未动，理由同上（预算与告警是一件事的两半）。
+
+### 11.4 Phase 4 落地记录（2026-11-03 起）
+
+- `PD16`（`c6d755b` + `cede32d`）：把 `BT /F1 12 Tf 20 700 Td (Hi) Tj ET` 用 Flate 加 `/Predictor 12 /Columns <正文字节数>` 打包，正文恰好等于一整行，滤波字节无从读起。修复前的失败原文：
+
+  ```text
+  Test failed: a predictor body of exactly one row lost the content stream, got ''
+  ```
+
+  断言用的 fixture 需要二进制流正文，而 `AssembleClassicPdf` 全程走 `Encoding.ASCII`，会把 zlib 字节打成 `?`，因此另写一个按字节计偏移的 `AssembleBinaryPdf`。修复后双目标均跑到末行 `All tests finished.`，无新增公共承诺：预测器只在「正文不足滤波一整行」时改为原样交回，其余分支字节不变。
+- 验证方式更正一条：并行批次正把 `DocxWriter.cs` 改到语法不通（`CS1031` 等），共享工作副本在此期间无法编译，因此 `Phase 3`/`Phase 4` 的双目标运行是在一棵与工作副本隔离的临时构建树里完成的——该树取当前受版本控制的文件，仅 `DocxWriter.cs` 退回入库版本、测试入口退回不含并行挂接行的版本。等共享副本可编译后需再跑一遍确认。
+- 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
