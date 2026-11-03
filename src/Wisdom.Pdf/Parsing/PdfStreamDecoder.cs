@@ -200,6 +200,10 @@ namespace Wisdom.Pdf
 
             if (predictor < 10) return data;
             int stride = rowLength + 1;
+            // 正文连「滤波字节 + 一整行」都凑不齐时无从解码，返回空数组会把整条流清零。
+            // When the body cannot even fill a filter byte plus one whole row there is nothing to decode;
+            // returning an empty array would zero out the entire stream.
+            if (data.Length < stride) return data;
             int rowCount = data.Length / stride;
             byte[] result = new byte[rowCount * rowLength];
             byte[] previous = new byte[rowLength];
