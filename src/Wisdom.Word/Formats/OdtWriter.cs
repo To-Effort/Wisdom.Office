@@ -109,6 +109,7 @@ namespace Wisdom.Word
         /// <summary>输出文档元数据部件。Writes the document metadata part.</summary>
         private static string BuildMeta(DocumentMetadata metadata)
         {
+            metadata = metadata ?? new DocumentMetadata();
             StringBuilder xml = new StringBuilder(1024);
             xml.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
             xml.Append("<office:document-meta xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\"")
