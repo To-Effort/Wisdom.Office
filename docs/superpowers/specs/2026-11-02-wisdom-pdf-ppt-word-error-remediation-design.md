@@ -373,6 +373,9 @@
 | --- | --- | --- |
 | `PD12` | `SetPageRotation` 从不规整改为规整（或抛异常），45 度输入的结果变化 | `docs/Wisdom.Pdf.Tutorial.md` 页面旋转段；`README.md:482` 已知限制 |
 | `PD13` | 斜体嵌入子集的 `/Flags` 从 `68`（Symbolic|AllCap）改为 `36`（Symbolic|Italic），产出字节变化 | `docs/Wisdom.Pdf.Tutorial.md` 字体嵌入段无需新增承诺；仅在已知限制里说明粗体只由 `StemV` 表达、规范无 Bold 位 |
+| `PD1` | 声明 `/Type /Pages` 却取不到 `/Kids` 的节点，从抛 `NullReferenceException` 改为零页降级 | `docs/Wisdom.Pdf.Tutorial.md` §10 与 `src/Wisdom.Pdf/README.md` 已补「空容器按零页降级」；与兄弟实现的语义分歧记在 §11.2 |
+| `PD6` | 零字形字体从「保存链路中途越界」改为构造期抛 `InvalidDataException`，保存链路整体降级不再炸 | 内部类型，不新增公共承诺；`docs/Wisdom.Pdf.Tutorial.md` §10 与 `src/Wisdom.Pdf/README.md` 已补「构造期拒绝」 |
+| `WE1` | ODT 畸形跨度乘积从假死/OOM 改为「预算用完停止登记覆盖」，声明的跨度保留 | `README.md` 不可信输入列举、`src/Wisdom.Word/README.md` 写明降级代价（已同步） |
 | `PD16`、`PD20`、`PT4` | 超限与畸形输入从静默产出空结果改为可检测失败 | `docs/Wisdom.Pdf.Tutorial.md`、`docs/Wisdom.Ppt.Tutorial.md` 的容错说明 |
 | `PD9`、`WE7`、`WE9` | 引入告警集合后，读入失败的返回语义变化 | 两个包的教程与 `articles/Wisdom.Pdf.md`、`articles/Wisdom.Ppt.md` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
@@ -420,3 +423,39 @@ Test failed: font descriptor flags: /AAAAAE+Arial-ItalicMT forges the AllCap bit
 - `PD13` 初稿的位表是错的（把 TrueType `fsSelection` 当成了 PDF 标志），已就地改写；**PDF 没有 Bold 位**，粗体由 `StemV` 表达，本集不再追查「Bold 从不置」这条伪缺陷。
 - 形状树兼容性：本库读端只按名字取 `p:nvPr`（`PptxReader.cs:1326-1336` 的占位符定位），从不解析 `p:nvGrpSpPr` 的子元素名，因此 `PT1` 不会打断本库自己的往返；风险只落在外部生产者写下非规范子元素、又指望本库宽容读取的文件上，这类兼容本集按「不承诺」处理（见 §9 的 `PT1` 行）。
 - `PD1` 复核仍然成立：`PdfDocument.cs:855-869` 先以 `/Type /Pages` 判定 `isPages`，`kids` 为 null 时照样进 `kids.Count`，NRE 未被并行批次修掉（兄弟实现 `PdfFile.Pages.cs:554` 的守卫是另一处）。
+
+### 11.2 Phase 2 落地记录（2026-11-03）
+
+`PD1`、`PD2`、`PD6` 的断言落在 `tests/Wisdom.Office.Tests/RemediationPhaseTwoTests.cs`，逐条先红后再绿，分别由 `3568a0c`、`229cd2c`、`e50edb6` 落地。`WE1` 属挂起类，按 §2 不进主运行器。
+
+主运行器里的断言文本（修复前的失败形态见 §3 对应条目）：
+
+```text
+a Pages node without /Kids should yield zero pages, got N
+a /Kids reference to a missing object should yield zero pages, got N
+a short object-stream header dropped the catalog
+a short object-stream header dropped the catalog in the object-level reader
+a font with maxp.numGlyphs erased failed the save path with <Type>: <Message>
+the degraded save produced no file
+```
+
+`WE1` 用同一条命令取两轮证据，只改 `MaxCoveredSlots` 一个常量：
+
+```text
+# 预算置为 int.MaxValue（修复前形态）：120 秒未返回，被 SIGKILL 收走
+exit=137
+
+# 预算 200000（d3c1080）：
+[crash-probe] WE1 loaded a 4096x4096 span cell in 35 ms, rows=1, cells=1, colSpan=4096
+exit=0
+```
+
+双目标复核：net8.0 与 net461 均跑到末行 `All tests finished.`，无未捕获异常早退。
+
+遗留与更正：
+
+- `PD1` 选了「零页」降级，与兄弟实现 `PdfFile.Pages.cs:554`（当作叶子页）不一致，登记为后续统一项；§11.1 末条那条「`PD1` 仍然成立」的复核记录已被 `3568a0c` 取代。
+- `PD7` 与 `E7` 暂缓：两条都动 `DocxWriter.cs`，该文件正被并行批次改写，等其入库后再取红证，避免互相覆盖。
+- ODT 跨度属性前缀：本库读写两端都用 `table:` 前缀读 `number-rows-spanned` / `number-columns-spanned`；真实 ODF 是否该带 `text:` 前缀尚未取证（OASIS 页面取不到），保留为待查项，本集不改代码。
+- `WE1` 的预算按「单表」计数，多张表各自享有一份；极端构造下总量仍可放大，与 `MaxNodes` 的联动留作后续项。
+- 文档同步已完成：`README.md` 的「不可信输入」列举了 ODT 表格覆盖登记，`src/Wisdom.Word/README.md` 写明降级代价是超大跨度之后的网格对齐不再精确。
