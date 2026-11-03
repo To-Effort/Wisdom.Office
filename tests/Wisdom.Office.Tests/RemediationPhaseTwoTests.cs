@@ -1,9 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 using Wisdom.Office;
 using Wisdom.Office.Core;
 using Wisdom.Pdf;
+using Wisdom.Word;
 
 namespace Wisdom.Office.Tests
 {
@@ -28,6 +32,7 @@ namespace Wisdom.Office.Tests
             RunPagesNodeWithoutKidsTest();
             RunObjectStreamShortHeaderTest();
             RunBrokenGlyphCountFontTest(outputDirectory);
+            RunOdtSpanProductBudgetTest();
 
             Console.WriteLine("[remediation] phase-two hostile structures and fonts ok");
         }
@@ -159,6 +164,105 @@ namespace Wisdom.Office.Tests
                 return true;
             }
             return false;
+        }
+
+        /// <summary>WE1：在套件中调用子进程探针，确保挂起类输入不会阻塞主运行器。WE1: invoke the child-process probe from within the suite so a hang-class input cannot block the main runner.</summary>
+        private static void RunOdtSpanProductBudgetTest()
+        {
+            string exe = Environment.ProcessPath ?? "dotnet";
+            ProcessStartInfo start = new ProcessStartInfo(exe, "--crash-probe WE1");
+            start.UseShellExecute = false;
+            start.RedirectStandardOutput = true;
+            int code = -1;
+            string output = string.Empty;
+            using (Process child = Process.Start(start))
+            {
+                output = child.StandardOutput.ReadToEnd();
+                if (!child.WaitForExit(15000))
+                {
+                    try { child.Kill(); } catch (Exception) { }
+                    Require(false, "the WE1 child probe did not finish within 15 s");
+                    return;
+                }
+                code = child.ExitCode;
+            }
+            Console.WriteLine("[remediation] WE1 child probe: " + (output ?? string.Empty).Trim());
+            Require(code == 0, "the WE1 child probe exited with code " + code);
+        }
+
+        /// <summary>WE1 探针：一个跨行跨列乘积畸形的 ODT 单元格不得把加载拖成假死，由调用方用超时判定。WE1 probe: one ODT cell with a forged row-by-column span product must not turn loading into a hang; the caller decides red or green by timing it out.</summary>
+        /// <returns>加载在预算内完成返回 true。True when the load finishes inside the slot budget.</returns>
+        private static bool ProbeOdtSpanProduct()
+        {
+            byte[] odt = BuildOdtWithForgedSpans(1);
+            Stopwatch watch = Stopwatch.StartNew();
+            OfficeDocument document = OdtReader.Load(odt);
+            watch.Stop();
+
+            Table table = FindFirstTable(document);
+            Console.WriteLine("[crash-probe] WE1 loaded a 4096x4096 span cell in " + watch.ElapsedMilliseconds
+                + " ms, rows=" + (table == null ? -1 : table.Rows.Count)
+                + ", cells=" + (table == null || table.Rows.Count == 0 ? -1 : table.Rows[0].Cells.Count)
+                + ", colSpan=" + (table == null || table.Rows.Count == 0 ? -1 : table.Rows[0].Cells[0].ColSpan));
+            if (table == null) return false;
+            if (table.Rows.Count != 1) return false;
+            if (table.Rows[0].Cells.Count != 1) return false;
+            if (table.Rows[0].Cells[0].ColSpan != 4096) return false;
+            return watch.ElapsedMilliseconds < 1500;
+        }
+
+        /// <summary>拼出只有一个表体行、若干 4096×4096 跨度单元格的 ODT 包。Builds an ODT package holding one row of 4096x4096-span cells.</summary>
+        /// <param name="cells">单元格数量。The number of cells.</param>
+        /// <returns>ODT 字节。The ODT bytes.</returns>
+        private static byte[] BuildOdtWithForgedSpans(int cells)
+        {
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; i < cells; i++)
+            {
+                body.Append("<table:table-cell table:number-rows-spanned=\"4096\"")
+                    .Append(" table:number-columns-spanned=\"4096\"><text:p>格")
+                    .Append(i)
+                    .Append("</text:p></table:table-cell>");
+            }
+
+            string content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                "<office:document-content" +
+                " xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\"" +
+                " xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\"" +
+                " xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\">" +
+                "<office:body><office:text><table:table><table:table-row>" + body +
+                "</table:table-row></table:table></office:text></office:body></office:document-content>";
+
+            using (MemoryStream memory = new MemoryStream())
+            {
+                using (ZipArchive archive = new ZipArchive(memory, ZipArchiveMode.Create, true))
+                {
+                    ZipArchiveEntry entry = archive.CreateEntry("content.xml");
+                    using (Stream stream = entry.Open())
+                    {
+                        byte[] bytes = Encoding.UTF8.GetBytes(content);
+                        stream.Write(bytes, 0, bytes.Length);
+                    }
+                }
+                return memory.ToArray();
+            }
+        }
+
+        /// <summary>取统一模型里的第一张表。Returns the first table of the unified model.</summary>
+        /// <param name="document">统一文档。The unified document.</param>
+        /// <returns>表格或 null。The table, or null.</returns>
+        private static Table FindFirstTable(OfficeDocument document)
+        {
+            for (int s = 0; s < document.Sections.Count; s++)
+            {
+                List<Block> blocks = document.Sections[s].Blocks;
+                for (int b = 0; b < blocks.Count; b++)
+                {
+                    Table table = blocks[b] as Table;
+                    if (table != null) return table;
+                }
+            }
+            return null;
         }
     }
 }

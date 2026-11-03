@@ -19,6 +19,16 @@ namespace Wisdom.Office.Tests
     {
         private static int Main(string[] args)
         {
+            // 挂起与栈溢出类输入不进主运行器：一次假死会带走整个套件，末行基线当场作废。
+            // 这类条目只在本机显式请求时单独跑，调用方用超时判定红绿。
+            // Hang-class and overflow-class inputs stay out of the main runner: one freeze takes the whole
+            // suite down and voids the final-line baseline. Such entries run only on explicit request, and
+            // the caller decides red or green by timing them out.
+            if (args != null && args.Length > 1 && args[0] == "--crash-probe")
+            {
+                return RunCrashProbe(args[1]);
+            }
+
             string outputDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "out"));
             Directory.CreateDirectory(outputDirectory);
 
