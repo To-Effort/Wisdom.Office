@@ -296,7 +296,12 @@ namespace Wisdom.Pdf
             PdfDictionary formDictionary = new PdfDictionary();
             formDictionary.SetName("Type", "XObject");
             formDictionary.SetName("Subtype", "Form");
-            formDictionary.Set("BBox", new PdfArray().AddNumber(left).AddNumber(bottom).AddNumber(right).AddNumber(top));
+            // /BBox 框的是表单自己坐标系里的正文，正文按阅读方向从 (0,0) 画到 (displayWidth, displayHeight)；
+            // 套用 MediaBox 的原点与边界会让旋转页右侧与非零原点页下侧被 Do 裁掉。
+            // The BBox clips the form's own space, where the body runs from (0,0) to the reading-direction
+            // size; reusing the MediaBox origin and edges makes Do cut the rotated page's right band and the
+            // lower half of a page whose MediaBox does not start at the origin.
+            formDictionary.Set("BBox", new PdfArray().AddNumber(0).AddNumber(0).AddNumber(displayWidth).AddNumber(displayHeight));
             formDictionary.Set("Resources", content.Resources);
             if (content.AlphaName != null)
             {
