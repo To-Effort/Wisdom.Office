@@ -522,4 +522,12 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   断言前先立两条控制：扫描救回的文档本身必须 `PageCount == 2`、原文里读得到 `Second`，否则红的是 fixture 而不是增量段。第一版只有 4 个对象，`RemovePage(0)` 之后余下对象全落在 `_changes` 里，追加段自给自足，测试假绿；补成 7 个对象（两条正文流加一个共用字体）后，未改动的 6、7 号必须由重开的阅读器按交叉表找回，才真打出上面这条红。`_rewriteRequired` 的字段注释同时改写：它原先只讲加密两种来源，现在多一条「交叉表来自扫描兜底」。
 - `PD8`、`PD17` 的文档义务按 §9 新增两行落到位：`docs/Wisdom.Pdf.Tutorial.md` 在 `SaveIncremental` 代码块后补「只追加有前提」一段，`src/Wisdom.Pdf/README.md` 已知限制补两条（扫描救回后增量保存退化为全量重写、条目编号错位的作废与按条修正），`docs/Wisdom.Office.功能导读.md` 2.4 节那句「`SaveIncremental` 只追加改动对象（原字节保留）」就地加了同一例外。三处都只写可观测行为，不提标志位与内部方法名，也未出现本地绝对路径或发布步骤。
 - 验证：本条文档改动前后各跑了一次共享工作副本整跑，输出分别落在 `D:/tmp/hb/run_net8.log` 与 `D:/tmp/hb/run_net461.log`，`net8.0` 与 `net461` 均打出 `[remediation] phase-four corrupt output and silent loss ok` 并到末行 `All tests finished.`；构建输出用 `.hb/Debug/<tfm>` 隔离目录，避开并行会话对 `bin/` 里 exe 的文件锁。
+- `PD11`（`c237cb2` + `0b460b1`）：目标行为「`/BBox` 用表单空间 `[0 0 displayWidth displayHeight]`」照原样落地，改的就是 `PdfFile.Watermark.cs:299` 这一行——同一方法里 `displayWidth`/`displayHeight` 早已算好（`:273-274`），只是从未被 `/BBox` 用过。红测按条目说的两个用例各加一条居中以外的横排：`Free` 摆放 `AutoFit=false`，一个 90° 旋转的 612×792 页把锚点摆到 x≈735，一个 `[0 200 612 992]` 的原点抬高页把锚点摆到 y≈170，断言两件事——`/BBox` 的宽高必须等于阅读方向的显示宽高，正文第一条 `cm` 的平移分量必须落在 `/BBox` 内（即 `Do` 的裁剪框得住）。第一个用例的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: a page rotated to 90: the form /BBox is [0 0 612 792] but the watermark draws in a 792 x 612 reading direction
+  ```
+
+  第二个用例在此之前不会单独报红（宽高恰好相同，只有原点差 200），所以断言顺序把「锚点落在框外」也立成独立一条，`[0 200 612 992]` 那页的 `Do` 裁掉下半部才真的被测到。
+- `PD11` 的产出字节核对：不旋转且 `MediaBox` 原点为 0 时 `displayWidth=right-left`、`displayHeight=top-bottom`，新旧 `/BBox` 完全相同，绝大多数存量文档的输出一个字节都不变；只有旋转页与抬高原点的页会变化，且变化后才是规范里表单空间该有的样子。§9 不需要新行——水印 API 与文档承诺都没动，教程的旋转页段落描述的正是「阅读方向」这一套坐标。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
