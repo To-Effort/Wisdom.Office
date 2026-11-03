@@ -426,7 +426,7 @@ Test failed: font descriptor flags: /AAAAAE+Arial-ItalicMT forges the AllCap bit
 
 ### 11.2 Phase 2 落地记录（2026-11-03）
 
-`PD1`、`PD2`、`PD6` 的断言落在 `tests/Wisdom.Office.Tests/RemediationPhaseTwoTests.cs`，逐条先红后再绿，分别由 `3568a0c`、`229cd2c`、`e50edb6` 落地。`WE1` 属挂起类，按 §2 不进主运行器。
+`PD1`、`PD2`、`PD6` 的断言落在 `tests/Wisdom.Office.Tests/RemediationPhaseTwoTests.cs`，逐条先红后再绿，分别由 `3568a0c`、`229cd2c`、`e50edb6` 落地。`WE5` 同一文件同一流程，修复与红测分两次提交（`ae7a687`、`4639930`）。`WE1` 属挂起类，按 §2 不进主运行器。
 
 主运行器里的断言文本（修复前的失败形态见 §3 对应条目）：
 
@@ -437,7 +437,10 @@ a short object-stream header dropped the catalog
 a short object-stream header dropped the catalog in the object-level reader
 a font with maxp.numGlyphs erased failed the save path with <Type>: <Message>
 the degraded save produced no file
+null metadata failed a writer with NullReferenceException: Object reference not set to an instance of an object.
 ```
+
+`WE5` 的失败原文就是上面最后一行：四条 `Require(…Length > 0, …)` 一条都没触发，`OdtWriter.Write` 抛出的 `NullReferenceException` 先被测试的 `try` 收进 `failure`，再由末行断言拼出消息。四个写出器只有 ODT 这一支没防：RTF 的 `AppendInfo` 首行 `if (metadata == null) return;`，HTML 与 DOCX 各自 `?? new DocumentMetadata()`，所以修复也按这个已有口径落在 `BuildMeta` 入口一行，不新增公共承诺，§9 表中无需为 `WE5` 加行。
 
 `WE1` 用同一条命令取两轮证据，只改 `MaxCoveredSlots` 一个常量：
 
@@ -459,3 +462,5 @@ exit=0
 - ODT 跨度属性前缀：本库读写两端都用 `table:` 前缀读 `number-rows-spanned` / `number-columns-spanned`；真实 ODF 是否该带 `text:` 前缀尚未取证（OASIS 页面取不到），保留为待查项，本集不改代码。
 - `WE1` 的预算按「单表」计数，多张表各自享有一份；极端构造下总量仍可放大，与 `MaxNodes` 的联动留作后续项。
 - 文档同步已完成：`README.md` 的「不可信输入」列举了 ODT 表格覆盖登记，`src/Wisdom.Word/README.md` 写明降级代价是超大跨度之后的网格对齐不再精确。
+- `WE1` 的套件内包装已撤除（`4639930`）：`7da0ad6` 入库时连带进了一段在跑测试时 fork 子进程再断言退出码的 `RunOdtSpanProductBudgetTest`，它同时犯了两处错——用 `Environment.ProcessPath`（net461 无此 API，`CS0117` 直接把 net461 编译打断）和把 `ReadToEnd()` 排在 `WaitForExit()` 之前（子进程一假死，主运行器就跟着一起不动，正是 §2 要避免的形态）。挂起类证据只由 `--crash-probe WE1` 加调用方超时产出。
+- `WE5` 条目里引用的 `DocxWriter.cs:1870`、`:1900` 两处判空，在并行批次改写后已漂到 `:2281`、`:2311`；`RtfWriter.cs:232` 与 `HtmlWriter.cs:56` 未动。行号只是指路，结论仍成立。
