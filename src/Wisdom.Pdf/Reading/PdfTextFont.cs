@@ -27,10 +27,12 @@ namespace Wisdom.Pdf
     /// PDF font metrics and encoding decoder: translates byte strings from content streams into Unicode
     /// text and provides widths.
     /// </summary>
-    /// <remarks>文本还原优先级为：ToUnicode CMap、内置差异表（单字节）、WinAnsi 回退；两字节 CID 字体若无 ToUnicode 则只能得到空文本，但仍能取得宽度用于排版。
+    /// <remarks>文本还原优先级为：ToUnicode CMap、内置差异表（单字节）、WinAnsi 回退；<c>*-UCS2-*</c> 与
+    /// <c>*-UTF16-*</c> 的码位本身就是字符编号，缺 ToUnicode 也能直接还原；Identity 的码位只是 CID，
+    /// 缺 ToUnicode 时拿不到文字，但仍能取得宽度用于排版。
     /// Text restoration tries, in order, the ToUnicode CMap, the built Differences table (single-byte fonts)
-    /// and the WinAnsi fallback; a two-byte CID font without ToUnicode yields empty text but still provides
-    /// widths for layout.</remarks>
+    /// and the WinAnsi fallback; a *-UCS2-* or *-UTF16-* encoding already stores character numbers, so its
+    /// text survives without ToUnicode, while an Identity encoding keeps only widths for layout.</remarks>
     internal sealed class PdfTextFont
     {
         /// <summary>常用 AGL 字形名到 Unicode 的静态映射表。Static map from common AGL glyph names to Unicode.</summary>
@@ -40,8 +42,8 @@ namespace Wisdom.Pdf
         private readonly PdfDocument _document;
         /// <summary>是否为两字节编码（Type0 / CID 字体）。Whether the encoding is two-byte (Type0 / CID fonts).</summary>
         private readonly bool _twoByte;
-        /// <summary>编码是否近似 Identity（当前与两字节标记同值）。Whether the encoding is Identity-like (currently the same as the two-byte flag).</summary>
-        private readonly bool _identityLike;
+        /// <summary>两字节码位是否本身就是 Unicode 码元（<c>*-UCS2-*</c>、<c>*-UTF16-*</c>）。Whether each two-byte code is already a Unicode code unit (<c>*-UCS2-*</c>, <c>*-UTF16-*</c>).</summary>
+        private readonly bool _codesAreUnicode;
         /// <summary>ToUnicode CMap，解析失败时为 null。The ToUnicode CMap; null when parsing failed.</summary>
         private readonly PdfCMap _toUnicode;
         /// <summary>码位到宽度的表（千分之一 em）。Map from code to width in thousandths of an em.</summary>
@@ -75,7 +77,13 @@ namespace Wisdom.Pdf
             PdfName subtype = Resolve(dictionary.Get("Subtype")) as PdfName;
             string subtypeName = subtype == null ? string.Empty : subtype.Value;
             _twoByte = subtypeName == "Type0" || subtypeName == "CIDFontType0" || subtypeName == "CIDFontType2";
-            _identityLike = _twoByte;
+            // 编码名以前从没读过：`*-UCS2-*`、`*-UTF16-*` 的码位就是字符编号，缺 ToUnicode 也能还原，
+            // Identity 一类的码位只是 CID，不能当字符编号用。
+            // The /Encoding name was never read before: *-UCS2-* and *-UTF16-* codes are character numbers,
+            // recoverable without ToUnicode, whereas Identity codes are CIDs and must not be read as such.
+            PdfName encodingName = Resolve(dictionary.Get("Encoding")) as PdfName;
+            _codesAreUnicode = _twoByte
+                && CodesAreUnicodeUnits(encodingName == null ? string.Empty : encodingName.Value);
 
             PdfObject toUnicodeObject = Resolve(dictionary.Get("ToUnicode"));
             PdfStream toUnicodeStream = toUnicodeObject as PdfStream;
@@ -138,6 +146,20 @@ namespace Wisdom.Pdf
 
         /// <summary>字体是否使用两字节编码，决定字符串读取时的步长。Whether the font uses two-byte encoding, deciding the stride when reading strings.</summary>
         public bool IsTwoByte { get { return _twoByte; } }
+
+        /// <summary>
+        /// 判断编码名里的码位是否本身就是 Unicode 码元：`*-UCS2-*` 与 `*-UTF16-*` 成立，Identity 与 UTF-8 这类不成立。
+        /// Decides whether the encoding name's codes are already Unicode code units: true for `*-UCS2-*` and
+        /// `*-UTF16-*`, false for Identity and variable-length encodings such as UTF-8.
+        /// </summary>
+        /// <param name="name">/Encoding 名。The /Encoding name.</param>
+        /// <returns>码位可直接当字符用时为 true。True when each code can be emitted as a character.</returns>
+        private static bool CodesAreUnicodeUnits(string name)
+        {
+            if (name.Length == 0 || name.IndexOf("Identity", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+            return name.IndexOf("UCS2", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("UTF16", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         /// <summary>
         /// 解析引用对象为其目标值。
@@ -240,24 +262,25 @@ namespace Wisdom.Pdf
                 for (int i = 0; i + 1 < bytes.Length; i += 2)
                 {
                     int code = (bytes[i] << 8) | bytes[i + 1];
-                    AddGlyph(result, code);
+                    AddGlyph(result, code, true);
                 }
-                if ((bytes.Length & 1) != 0) AddGlyph(result, bytes[bytes.Length - 1]);
+                if ((bytes.Length & 1) != 0) AddGlyph(result, bytes[bytes.Length - 1], false);
                 return result;
             }
 
-            for (int i = 0; i < bytes.Length; i++) AddGlyph(result, bytes[i]);
+            for (int i = 0; i < bytes.Length; i++) AddGlyph(result, bytes[i], true);
             return result;
         }
 
         /// <summary>
-        /// 为单个码位生成字元，按 ToUnicode、差异表、WinAnsi 的顺序尝试还原文本。
-        /// Builds one glyph for a code, restoring text by trying ToUnicode, the Differences table and
-        /// WinAnsi in turn.
+        /// 为单个码位生成字元，按 ToUnicode、码位即字符（<c>*-UCS2-*</c>/<c>*-UTF16-*</c>）、差异表、WinAnsi 的顺序还原文本。
+        /// Builds one glyph for a code, restoring text by trying ToUnicode, the code-as-character encodings
+        /// (<c>*-UCS2-*</c>/<c>*-UTF16-*</c>), the Differences table and WinAnsi in turn.
         /// </summary>
         /// <param name="result">输出列表，字元追加到末尾。The output list; the glyph is appended at the end.</param>
         /// <param name="code">码位。The code.</param>
-        private void AddGlyph(List<PdfGlyph> result, int code)
+        /// <param name="paired">该码位是否由完整两字节读出（单字节字体恒为 true）。Whether the code came from a full byte pair (always true for single-byte fonts).</param>
+        private void AddGlyph(List<PdfGlyph> result, int code, bool paired)
         {
             PdfGlyph glyph = new PdfGlyph();
             glyph.Code = code;
@@ -270,7 +293,9 @@ namespace Wisdom.Pdf
             }
             else if (_twoByte)
             {
-                glyph.Text = string.Empty;
+                // 落单的残字节凑不出一个码元，宁可留空也不能伪造字符。
+                // A lone trailing byte cannot form a code unit; an empty text beats an invented character.
+                glyph.Text = _codesAreUnicode && paired ? ((char)code).ToString() : string.Empty;
             }
             else if (_differences.TryGetValue(code, out text))
             {
