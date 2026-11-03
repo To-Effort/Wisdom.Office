@@ -544,4 +544,11 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   ```
 
   第二条用例（`/AP` 住在间接对象里）单独验 `Resolve`：修复前它撞的是「`/R` 一起丢了」，与第一条互不遮盖。产出字节只在两种情形变化：控件与字段分住两个对象且生成过外观（增量段多写控件的新字节，这正是「显示旧文字」的成因）、`/AP` 是间接对象（改为原地编辑，`/R`、`/D` 与状态映射保留）。§9 不需要新行——`SaveIncremental` 与 `GenerateFormAppearances` 的公开承诺本来就是「改动全部落盘」，这次只是让它兑现。
+- `PD18`（`64fb595` + `e688ad2`）：目标行为「按编码名分派」落地为构造期读 `dictionary.Get("Encoding")`，`*-UCS2-*`、`*-UTF16-*` 记进 `_codesAreUnicode`，`AddGlyph` 的两字节分支在缺 `ToUnicode` 时按大端码元直接产出字符；`Decode` 给 `AddGlyph` 多带一个 `paired`，落单的残字节凑不出码元，宁可留空也不伪造。Identity 一族维持「取不到文字」——条目正文自己就写了「改用 `/Identity-H` 时确实无法还原，属既定能力边界」，把 CID 当字符编号吐出一堆假字比空串更坏，`UniGB-UTF8-H` 这类变长编码同样不在本条范围。死字段 `_identityLike` 由 `_codesAreUnicode` 接替，注释里那句「两字节 CID 字体若无 ToUnicode 则只能得到空文本」一并改成按编码名分派。夹具用 `AssembleClassicPdf`，显示串写成十六进制 `<4E2D65876D4B8BD5>`——纯 ASCII，既不依赖源文件编码，也免去 CJK 在 PDF 字面串里的转义。修复前的失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: a /UniGB-UCS2-H page without /ToUnicode extracted '' instead of 中文测试
+  ```
+
+  两条控制断言（`Identity-H`、`UniGB-UTF8-H` 不许出现「中文测试」）修复前就是绿的，它们钉的是这次改动可能越过的界：UTF-16 码元逐个产出、由调用方拼接，因此代理对天然还原成增补平面字符，不需要在读字元时前瞻。产出字节不受影响——本条在读取端，只改 `ExtractText` 与依赖它的渲染取字结果；§9 不需要新行，README 与教程的清单从来没承诺「两字节字体无 ToUnicode 必定抽不出字」，这次是少抽变多抽。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
