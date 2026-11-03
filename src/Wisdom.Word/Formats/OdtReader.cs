@@ -33,6 +33,8 @@ namespace Wisdom.Word
         private const int MaxRepeat = 1024;
         /// <summary>表格列数的安全上限。The safety cap on the number of table columns.</summary>
         private const int MaxColumns = 4096;
+        /// <summary>单表可登记的跨行跨列覆盖槽位上限，用来给「跨度乘积」兜底。The number of covered-grid slots one table may register, the budget for span products.</summary>
+        private const int MaxCoveredSlots = 200000;
         /// <summary>嵌套块的最大解析深度。The maximum parsing depth of nested blocks.</summary>
         private const int MaxBlockDepth = 32;
 
@@ -657,6 +659,8 @@ namespace Wisdom.Word
         {
             /// <summary>被跨行/跨列覆盖的网格槽位。The grid slots covered by row/column spans.</summary>
             public readonly HashSet<long> Covered = new HashSet<long>();
+            /// <summary>已登记的覆盖槽位数，用于给畸形跨度乘积设预算。Registered cover slots, the budget against forged span products.</summary>
+            public int SlotsUsed;
             /// <summary>当前行号。The current row index.</summary>
             public int RowIndex;
             /// <summary>已出现的最大列数。The largest column index seen so far.</summary>
@@ -764,11 +768,17 @@ namespace Wisdom.Word
                         int rowSpan = Clamp(ParseInt(Attr(cellElement, TableNs + "number-rows-spanned"), 1), 1, 4096);
                         cell.ColSpan = colSpan;
                         cell.RowSpan = rowSpan;
-                        for (int dr = 0; dr < rowSpan; dr++)
+                        // 跨度各自夹紧后乘积仍可达一千六百万，一个畸形单元格就能把假死做成 OOM；
+                        // 槽位预算用完就停止登记，声明的跨度照常保留。
+                        // Each span is clamped on its own, yet the product still reaches sixteen million, so a
+                        // single forged cell turns a hang into OOM: once the slot budget is spent, stop
+                        // registering while keeping the declared spans.
+                        for (int dr = 0; dr < rowSpan && grid.SlotsUsed < MaxCoveredSlots; dr++)
                         {
-                            for (int dc = 0; dc < colSpan; dc++)
+                            for (int dc = 0; dc < colSpan && grid.SlotsUsed < MaxCoveredSlots; dc++)
                             {
                                 grid.Covered.Add(Key(grid.RowIndex + dr, column + dc));
+                                grid.SlotsUsed++;
                             }
                         }
                         row.Cells.Add(cell);

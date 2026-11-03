@@ -477,7 +477,7 @@ OfficeConverter.ToWord(document, "document.docx");
 - **纯托管实现**：`ZipArchive` 处理 OOXML 包，LINQ to XML 处理部件，`CompoundFile` 读取 OLE2；PDF 生成器自行输出对象、字体与内容流；PresentationML 与 Markdown 解析器同样手写，不依赖 Markdig。
 - **字体**：PDF 生成会从系统字体目录嵌入 TrueType/TTC 字体，无需安装 Office；Linux/macOS 下可回退到 Noto、Liberation、文泉驿等已注册字体，也可通过 `FontResolver` 注册自定义字体。
 - **报表层**：`Report` 是构建在统一模型之上的轻量 DSL，不是独立排版引擎。
-- **不可信输入优先**：读取端一律按上限分块复制（`OfficePackageLimits.CopyBounded`），不凭部件声明的长度预分配内存；PDF、OOXML、OLE2、字体、Markdown 各有结构类上限，超限中止而不是无界增长，坏输入统一收敛为 `InvalidDataException`。写出端把 XML 1.0 不接受的字符剔除（`OfficeXmlText`），超链接只放行 `http/https/mailto/ftp/ftps/tel/sms` 与相对路径，DOCX 模板填充剥离宏与嵌入对象并清理随之失效的 `r:id`。
+- **不可信输入优先**：读取端一律按上限分块复制（`OfficePackageLimits.CopyBounded`），不凭部件声明的长度预分配内存；PDF、OOXML、OLE2、字体、ODT 表格覆盖登记、Markdown 各有结构类上限，超限即中止或降级而不是无界增长，坏输入统一收敛为 `InvalidDataException`。写出端把 XML 1.0 不接受的字符剔除（`OfficeXmlText`），超链接只放行 `http/https/mailto/ftp/ftps/tel/sms` 与相对路径，DOCX 模板填充剥离宏与嵌入对象并清理随之失效的 `r:id`。
 
 ## 已知限制
 
