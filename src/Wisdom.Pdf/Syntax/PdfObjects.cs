@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Threading;
 
 namespace Wisdom.Pdf
 {
@@ -324,13 +325,19 @@ namespace Wisdom.Pdf
     /// PDF 字典对象，键到对象的映射。
     /// The PDF dictionary object, a mapping from keys to objects.
     /// </summary>
-    /// <remarks>内部以列表按插入顺序保存键值对，因此枚举与写出顺序稳定，检索为线性查找；字典按键区分大小写。
-    /// Key/value pairs are kept in a list in insertion order, so enumeration and writing are stable while
-    /// lookup is linear; keys are matched case-sensitively.</remarks>
+    /// <remarks>内部以列表按插入顺序保存键值对，因此枚举与写出顺序稳定；条目数超过阈值后另建一份键到下标
+    /// 的索引，把检索从线性查找降为常数，小字典仍走线性以省去索引分配。字典按键区分大小写。
+    /// Key/value pairs are kept in a list in insertion order, so enumeration and writing stay stable. Once the
+    /// entry count passes a threshold a key-to-index map is maintained as well, turning lookup constant while
+    /// small dictionaries keep the linear scan and skip the allocation; keys are matched case-sensitively.</remarks>
     public sealed class PdfDictionary : PdfObject, IEnumerable<KeyValuePair<string, PdfObject>>
     {
         /// <summary>按插入顺序存放的键值对。The key/value pairs in insertion order.</summary>
         private readonly List<KeyValuePair<string, PdfObject>> _items = new List<KeyValuePair<string, PdfObject>>();
+        /// <summary>键到 <c>_items</c> 下标的索引，条目够多才建；null 表示未建。Key-to-index map over <c>_items</c>, built only for larger dictionaries; null means not built.</summary>
+        private Dictionary<string, int> _index;
+        /// <summary>开始维护索引的条目数。The entry count at which the index starts being maintained.</summary>
+        private const int IndexThreshold = 24;
 
         /// <summary>键值对个数。The number of key/value pairs.</summary>
         public int Count { get { return _items.Count; } }
@@ -343,6 +350,15 @@ namespace Wisdom.Pdf
         /// <returns>对应的对象；键不存在时返回 null。The matching object, or null when the key is absent.</returns>
         public PdfObject Get(string key)
         {
+            // Volatile 读只为一趟把「已建好的索引」安全地交给别的线程，索引内容对本字典外不再变更。
+            // The volatile read only hands a finished index to other threads; the map itself is owned here.
+            Dictionary<string, int> index = Volatile.Read(ref _index);
+            if (index != null)
+            {
+                int position;
+                return index.TryGetValue(key, out position) ? _items[position].Value : null;
+            }
+
             for (int i = 0; i < _items.Count; i++)
             {
                 if (string.Equals(_items[i].Key, key, StringComparison.Ordinal))
@@ -351,6 +367,20 @@ namespace Wisdom.Pdf
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// 按当前条目重建键到下标的索引。
+        /// Rebuilds the key-to-index map from the current entries.
+        /// </summary>
+        private void BuildIndex()
+        {
+            Dictionary<string, int> index = new Dictionary<string, int>(_items.Count, StringComparer.Ordinal);
+            for (int i = 0; i < _items.Count; i++)
+            {
+                index[_items[i].Key] = i;
+            }
+            Volatile.Write(ref _index, index);
         }
 
         /// <summary>
@@ -374,15 +404,35 @@ namespace Wisdom.Pdf
         /// <returns>当前字典自身，便于链式调用。This dictionary itself, for chaining.</returns>
         public PdfDictionary Set(string key, PdfObject value)
         {
-            for (int i = 0; i < _items.Count; i++)
+            KeyValuePair<string, PdfObject> entry = new KeyValuePair<string, PdfObject>(key, value ?? PdfNull.Instance);
+            Dictionary<string, int> index = _index;
+            if (index != null)
             {
-                if (string.Equals(_items[i].Key, key, StringComparison.Ordinal))
+                int position;
+                if (index.TryGetValue(key, out position))
                 {
-                    _items[i] = new KeyValuePair<string, PdfObject>(key, value ?? PdfNull.Instance);
+                    _items[position] = entry;
                     return this;
                 }
             }
-            _items.Add(new KeyValuePair<string, PdfObject>(key, value ?? PdfNull.Instance));
+            else
+            {
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    if (string.Equals(_items[i].Key, key, StringComparison.Ordinal))
+                    {
+                        _items[i] = entry;
+                        return this;
+                    }
+                }
+                // 越过阈值才建索引：解析大字典时每次追加顺带写入一条，总代价回到线性。
+                // Build the index only past the threshold, so parsing a large dictionary stays linear: each
+                // append records its own entry from then on.
+                if (_items.Count >= IndexThreshold) BuildIndex();
+            }
+
+            _items.Add(entry);
+            if (_index != null) _index[key] = _items.Count - 1;
             return this;
         }
 
@@ -443,13 +493,28 @@ namespace Wisdom.Pdf
         /// <returns>确实删除了条目返回 true，键不存在返回 false。True when an entry was actually removed, false when the key was absent.</returns>
         public bool Remove(string key)
         {
-            for (int i = 0; i < _items.Count; i++)
+            Dictionary<string, int> index = _index;
+            int start = 0;
+            if (index != null)
             {
-                if (string.Equals(_items[i].Key, key, StringComparison.Ordinal))
+                int position;
+                if (!index.TryGetValue(key, out position)) return false;
+                start = position;
+            }
+
+            for (int i = start; i < _items.Count; i++)
+            {
+                if (!string.Equals(_items[i].Key, key, StringComparison.Ordinal)) continue;
+                _items.RemoveAt(i);
+                // 下标整体前移，索引只能重建；字典仍够大才留着，否则退回线性。
+                // Positions shift, so the map is rebuilt—kept only while the dictionary stays large,
+                // otherwise it falls back to the linear scan.
+                if (index != null)
                 {
-                    _items.RemoveAt(i);
-                    return true;
+                    if (_items.Count >= IndexThreshold) BuildIndex();
+                    else Volatile.Write(ref _index, null);
                 }
+                return true;
             }
             return false;
         }
