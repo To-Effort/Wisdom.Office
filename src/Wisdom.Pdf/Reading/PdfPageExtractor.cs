@@ -35,6 +35,8 @@ namespace Wisdom.Pdf
             {
             }
 
+            collector.Flush();
+
             List<PdfTextLine> lines = BuildLines(collector.Fragments);
             List<PdfTable> tables = PdfTableDetector.Detect(collector.Fragments, segments, page.Height);
             page.SetExtraction(lines, tables);
