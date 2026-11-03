@@ -41,7 +41,7 @@ namespace Wisdom.Pdf
         /// <param name="file">字体文件或 TTC 的完整字节。The complete bytes of the font file or TTC.</param>
         /// <param name="faceOffset">该面在文件中的起始偏移。The start offset of this face within the file.</param>
         /// <exception cref="NotSupportedException">遇到 CFF/OTF 或不含 glyf 轮廓的字体时抛出。Thrown for CFF/OTF fonts or fonts lacking glyf outlines.</exception>
-        /// <exception cref="InvalidDataException">sfnt 版本头不受支持时抛出。Thrown when the sfnt version header is unsupported.</exception>
+        /// <exception cref="InvalidDataException">sfnt 版本头不受支持、或 maxp 声明的字形数不为正时抛出。Thrown when the sfnt version header is unsupported, or when maxp declares a non-positive glyph count.</exception>
         internal TrueTypeFace(byte[] file, int faceOffset)
         {
             _file = file;
@@ -104,6 +104,11 @@ namespace Wisdom.Pdf
 
             TableInfo maxp = _tables["maxp"];
             GlyphCount = ReadU16(maxp.Offset + 4);
+            // numGlyphs 读不到（表被截短）时 ReadU16 返回 0，而 0 个字形的字体没法子集化：
+            // 越界要到 BuildSubset 才炸，那时已经落在保存链路上，整个保存失败。
+            // An unreadable numGlyphs yields 0 from ReadU16, and a zero-glyph font cannot be subsetted:
+            // the overrun only surfaces in BuildSubset, by which time the save path has already failed.
+            if (GlyphCount <= 0) throw new InvalidDataException("The TrueType maxp table declares no glyphs.");
 
             TableInfo os2;
             if (_tables.TryGetValue("OS/2", out os2))
@@ -324,7 +329,10 @@ namespace Wisdom.Pdf
         /// It seeds glyph .notdef (id 0) and each requested glyph, expands the composite-glyph component closure, rewrites component references to new ids, rebuilds head/hhea/maxp/hmtx/loca/glyf plus optional tables, and packs a valid sfnt.</remarks>
         public SubsetResult BuildSubset(ICollection<int> requestedGlyphs)
         {
-            bool[] include = new bool[GlyphCount];
+            // 构造期已拒绝零字形，这里再兜一层：.notdef 总要占一位，数组不能按 0 长度分配。
+            // The constructor now rejects a zero glyph count, but keep the floor here as well: glyph
+            // .notdef always needs a slot, so the array must never be sized to zero.
+            bool[] include = new bool[Math.Max(1, GlyphCount)];
             include[0] = true;
             Queue<int> queue = new Queue<int>();
             if (requestedGlyphs != null)
