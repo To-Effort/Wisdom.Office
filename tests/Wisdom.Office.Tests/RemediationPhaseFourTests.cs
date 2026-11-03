@@ -22,6 +22,7 @@ namespace Wisdom.Office.Tests
         private static void RunRemediationPhaseFourTest()
         {
             RunPredictorSingleRowTest();
+            RunCatalogGenerationTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -101,6 +102,89 @@ namespace Wisdom.Office.Tests
                 writeText(offsets[i].ToString("D10") + " 00000 n \n");
             }
             writeText("trailer\n<< /Size " + (bodies.Length + 1) + " /Root 1 0 R >>\nstartxref\n"
+                + xrefAt + "\n%%EOF\n");
+
+            using (MemoryStream memory = new MemoryStream())
+            {
+                for (int i = 0; i < pieces.Count; i++)
+                {
+                    memory.Write(pieces[i], 0, pieces[i].Length);
+                }
+                return memory.ToArray();
+            }
+        }
+
+        /// <summary>
+        /// PD10：目录对象住在非 0 世代时，保存写出的 trailer <c>/Root</c> 必须带上同一个世代，
+        /// 不能只留对象号、把世代硬写成 0。
+        /// PD10: when the catalog lives in a non-zero generation, the trailer /Root written on save must
+        /// carry that same generation instead of hard-coding 0 next to the object number.
+        /// </summary>
+        private static void RunCatalogGenerationTest()
+        {
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+            };
+            int[] generations = new int[] { 2, 0, 0 };
+            byte[] source = AssembleGenerationsPdf(bodies, generations, 1, 2);
+
+            byte[] saved = PdfFile.Load(source).SaveToBytes();
+            string text = Encoding.ASCII.GetString(saved);
+
+            Require(text.Contains("1 2 obj"),
+                "PD10 control failed: the saved file no longer writes the catalog header as '1 2 obj'");
+
+            PdfReference root = PdfFile.Load(saved).Trailer.Get("Root") as PdfReference;
+            Require(root != null, "PD10 control failed: the saved trailer carries no /Root reference");
+            Require(root.Number == 1 && root.Generation == 2,
+                "the trailer /Root is '" + root.Number + " " + root.Generation
+                    + " R' while the object header is '1 2 obj'");
+        }
+
+        /// <summary>
+        /// 拼装逐对象带世代号的经典交叉表 PDF，交叉表与 trailer 使用给定世代。
+        /// Assembles a classic-xref PDF with a per-object generation; the cross-reference rows and the
+        /// trailer /Root reference use the supplied generations.
+        /// </summary>
+        /// <param name="bodies">各对象正文，下标零起。The object bodies, zero-based.</param>
+        /// <param name="generations">与正文逐位对应的世代号。The generation paired with each body.</param>
+        /// <param name="rootNumber">trailer /Root 的对象号。The trailer /Root object number.</param>
+        /// <param name="rootGeneration">trailer /Root 的世代号。The trailer /Root generation.</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] AssembleGenerationsPdf(string[] bodies, int[] generations, int rootNumber, int rootGeneration)
+        {
+            Encoding ascii = Encoding.ASCII;
+            List<byte[]> pieces = new List<byte[]>();
+            List<long> offsets = new List<long>();
+            long position = 0;
+
+            Action<string> writeText = delegate(string text)
+            {
+                byte[] bytes = ascii.GetBytes(text);
+                pieces.Add(bytes);
+                position += bytes.Length;
+            };
+
+            writeText("%PDF-1.7\n");
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                offsets.Add(position);
+                writeText((i + 1) + " " + generations[i] + " obj\n");
+                writeText(bodies[i]);
+                writeText("\nendobj\n");
+            }
+
+            long xrefAt = position;
+            writeText("xref\n0 " + (bodies.Length + 1) + "\n0000000000 65535 f \n");
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                writeText(offsets[i].ToString("D10") + " " + generations[i].ToString("D5") + " n \n");
+            }
+            writeText("trailer\n<< /Size " + (bodies.Length + 1)
+                + " /Root " + rootNumber + " " + rootGeneration + " R >>\nstartxref\n"
                 + xrefAt + "\n%%EOF\n");
 
             using (MemoryStream memory = new MemoryStream())
