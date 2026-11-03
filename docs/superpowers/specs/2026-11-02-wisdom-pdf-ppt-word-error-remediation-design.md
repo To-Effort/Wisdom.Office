@@ -537,4 +537,11 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   ```
 
   补挂 `/Annots` 之后要 `SaveToBytes` 再 `Load` 一次才能进第二轮：表单模型是按 `/Annots` 建的，同一份内存里的旧模型不知道控件刚被挂上去，`ResolveWidgetPage` 仍返回 `-1`，第一轮的红测因此先撞在「第二轮没画出任何域」这条控制断言上（`the deferred field must flatten once it is placed on the page, got 0`），加上重开一份才拿到上面那条真红。产出字节只在名字真的撞车时才变（空闲名字照旧是 `/Fm1`），表单字段数不变、页面资源条目只会多不会少。
+- `PD15`（`4982a31` + `0b6f061`）：`targets` 旁边并记一份 `targetNumbers`，字段本体与每个控件注释各按自己的号 `MarkModified`；`/AP` 先判引用再 `Resolve`，命中间接对象时编辑那一个字典并登记它的号，不再用全新的内联字典整块顶掉。红测的第一版用 `AddObjectReference` 现场搭控件，结果修复前就是绿的——新建对象本来就在 `_changes` 里，增量保存必然把它写出去，少掉的那次标记根本显不出来。改成 `AssembleClassicPdf` 按字节拼样例（控件 6 号、字段 7 号、旧外观流 10 号都是文件里原有的间接对象）才拿到真红，修复前失败原文：
+
+  ```text
+  Unhandled exception. System.InvalidOperationException: Test failed: the incremental save left the widget's old appearance in the file: /AP /N should be 18 0 R but the saved widget carries 10 0 R
+  ```
+
+  第二条用例（`/AP` 住在间接对象里）单独验 `Resolve`：修复前它撞的是「`/R` 一起丢了」，与第一条互不遮盖。产出字节只在两种情形变化：控件与字段分住两个对象且生成过外观（增量段多写控件的新字节，这正是「显示旧文字」的成因）、`/AP` 是间接对象（改为原地编辑，`/R`、`/D` 与状态映射保留）。§9 不需要新行——`SaveIncremental` 与 `GenerateFormAppearances` 的公开承诺本来就是「改动全部落盘」，这次只是让它兑现。
 - 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
