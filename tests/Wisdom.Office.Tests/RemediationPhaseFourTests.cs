@@ -27,6 +27,7 @@ namespace Wisdom.Office.Tests
             RunOffsetNumberMismatchTest();
             RunRebuiltXrefIncrementalTest();
             RunWatermarkBBoxTest();
+            RunFlattenResourceNameTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
@@ -314,6 +315,86 @@ namespace Wisdom.Office.Tests
         private static string BoxNum(double value)
         {
             return value.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// PD14：扁平化给外观流挑资源名时用的是「Fm + 本轮序号」，序号每轮都从 1 起，于是第二轮的 <c>/Fm1</c>
+        /// 直接顶掉第一轮留在页面资源里的那一条，而第一轮追加的 <c>q…/Fm1 Do Q</c> 还在，画出来就成了另一个字段。
+        /// PD14: flattening names each appearance "Fm&lt;serial&gt;" and the serial restarts at one every round, so
+        /// the second round's /Fm1 overwrites the first round's page resource while the content that round
+        /// appended still does /Fm1 Do - and paints the other field's appearance.
+        /// </summary>
+        private static void RunFlattenResourceNameTest()
+        {
+            PdfFile file = PdfFile.Load(BuildWatermarkSource("[0 0 612 792]", 0));
+            PdfReference page = file.GetPageReference(0);
+            PdfArray fields = new PdfArray();
+            PdfArray annots = new PdfArray();
+            fields.Add(AddWidget(file, page, "keep.now", "Tx", 0, Rect(72, 600, 260, 616), annots));
+            // 第二个域故意不挂进 /Annots：这一轮画不出它，它得留到下一轮，序号于是又从 1 数起。
+            // The second field stays out of /Annots on purpose: it cannot be painted this round, so it waits for
+            // the next one and the serial restarts at one there.
+            fields.Add(AddWidget(file, page, "keep.later", "Tx", 0, Rect(72, 560, 260, 576), new PdfArray()));
+
+            PdfDictionary acroForm = new PdfDictionary();
+            acroForm.Set("Fields", fields);
+            acroForm.SetString("DA", "/Helv 12 Tf 0 g");
+            file.GetPageDictionary(0).Set("Annots", annots);
+            file.MarkModified(page.Number);
+            file.Catalog.Set("AcroForm", file.AddObjectReference(acroForm));
+            file.MarkModified(file.CatalogNumber);
+
+            Require(file.SetFormFieldValue("keep.now", "Now"), "the placed field must accept a value");
+            Require(file.SetFormFieldValue("keep.later", "Later"), "the deferred field must accept a value");
+            int firstRoundPainted = file.FlattenForm();
+            Require(firstRoundPainted == 1, "only the placed field may flatten in the first round, got " + firstRoundPainted);
+
+            PdfFile again = PdfFile.Load(file.SaveToBytes());
+            PdfFormField deferred = again.GetForm().GetField("keep.later");
+            Require(deferred != null, "the unplaced field must survive a flatten that could not paint it");
+            PdfDictionary deferredPage = again.GetPageDictionary(0);
+            PdfArray placed = new PdfArray();
+            PdfArray firstRound = again.Resolve(deferredPage.Get("Annots")) as PdfArray;
+            if (firstRound != null)
+            {
+                for (int i = 0; i < firstRound.Count; i++) placed.Add(firstRound[i]);
+            }
+            placed.Add(new PdfReference(deferred.ObjectNumber, 0));
+            deferredPage.Set("Annots", placed);
+            again.MarkModified(again.GetPageReference(0).Number);
+
+            // 补挂之后必须重开一份：表单模型是按 /Annots 建立的，同一份内存里的旧模型还不知道它有了控件。
+            // The document is reopened after the surgery: the form model is built from /Annots, and the one
+            // already in memory has no idea the widget is placed now.
+            PdfFile third = PdfFile.Load(again.SaveToBytes());
+            int secondRound = third.FlattenForm();
+            Require(secondRound == 1, "the deferred field must flatten once it is placed on the page, got " + secondRound);
+            PdfFile back = PdfFile.Load(third.SaveToBytes());
+
+            int[] targets = DistinctAppearanceTargets(back, 0);
+            Require(targets.Length == 2, "two flatten rounds left only " + targets.Length
+                + " appearance(s) reachable from the page: the second round reused the first round's resource name");
+        }
+
+        /// <summary>数页面内容里每个 <c>Do</c> 实际指到的不同对象号。Counts the distinct object numbers the page content's Do operators resolve to.</summary>
+        /// <param name="file">已重开的文档。The reopened document.</param>
+        /// <param name="index">页面下标。The page index.</param>
+        /// <returns>去重后的对象号。The object numbers without duplicates.</returns>
+        private static int[] DistinctAppearanceTargets(PdfFile file, int index)
+        {
+            string content = Encoding.ASCII.GetString(file.GetPageContentBytes(index));
+            string[] tokens = content.Split(new char[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            PdfDictionary page = file.GetPageDictionary(index);
+            PdfDictionary resources = file.Resolve(page.Get("Resources")) as PdfDictionary;
+            PdfDictionary group = resources == null ? null : file.Resolve(resources.Get("XObject")) as PdfDictionary;
+            List<int> numbers = new List<int>();
+            for (int i = 1; i < tokens.Length; i++)
+            {
+                if (tokens[i] != "Do" || tokens[i - 1].Length < 2 || tokens[i - 1][0] != '/') continue;
+                PdfReference reference = group == null ? null : group.Get(tokens[i - 1].Substring(1)) as PdfReference;
+                if (reference != null && !numbers.Contains(reference.Number)) numbers.Add(reference.Number);
+            }
+            return numbers.ToArray();
         }
 
         /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
