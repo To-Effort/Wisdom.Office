@@ -28,6 +28,7 @@ namespace Wisdom.Office.Tests
             RunOdtContentXmlContractTest();
             RunRegexTimeoutAtomicReplaceTest();
             RunOversizedOdtImageIsSkippedTest();
+            RunRtfNonBmpCodeUnitTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -184,6 +185,36 @@ namespace Wisdom.Office.Tests
                 "an oversized embedded picture took the whole document down with it");
             Require(FindFirstImage(document) == null,
                 "an embedded picture past the 64 MB cap was kept in the model");
+        }
+
+        /// <summary>
+        /// WE11：RTF 的 <c>\uN</c> 只接受有符号 16 位。增补平面字符（emoji）在 .NET 里是一对代理项，
+        /// 码元 55357 直接写成正数就越界了；规范写法是减去 65536 的负值，读端本来也按「负值加 65536」还原，
+        /// 所以这条只改输出字节，往返行为不变。
+        /// WE11: RTF's <c>\uN</c> takes a signed 16-bit value. A supplementary-plane character is a surrogate
+        /// pair in .NET, and writing code unit 55357 as a positive number is out of range; the spec form is
+        /// that value minus 65536. The reader already adds 65536 back for negatives, so this changes only the
+        /// emitted bytes and the round trip stays the same.
+        /// </summary>
+        private static void RunRtfNonBmpCodeUnitTest()
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection(PageSetup.A4());
+            section.Blocks.Add(new Paragraph("表情 \U0001F600 与中文"));
+
+            byte[] rtf = WordFormatConverter.ToArray(document, WordDocumentFormat.Rtf);
+            string emitted = Encoding.ASCII.GetString(rtf);
+
+            Require(emitted.IndexOf("\\u55357", StringComparison.Ordinal) < 0,
+                "a surrogate code unit was written as the positive 55357, outside RTF's signed 16-bit range");
+            Require(emitted.IndexOf("\\u-10179", StringComparison.Ordinal) >= 0,
+                "the high surrogate did not come out as the signed value -10179");
+            Require(emitted.IndexOf("\\u-8704", StringComparison.Ordinal) >= 0,
+                "the low surrogate did not come out as the signed value -8704");
+
+            OfficeDocument back = WordFormatConverter.Load(rtf, WordDocumentFormat.Rtf);
+            Require(ContainsText(back, "表情 \U0001F600 与中文"),
+                "the emoji did not survive the RTF round trip: " + emitted);
         }
 
         /// <summary>正文加一个引用图片的 <c>draw:frame</c>。 A body paragraph followed by a <c>draw:frame</c> that references a picture.</summary>

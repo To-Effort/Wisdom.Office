@@ -798,7 +798,16 @@ namespace Wisdom.Word
                             rtf.Append(value);
                             break;
                         }
-                        rtf.Append("\\u").Append(((int)value).ToString(CultureInfo.InvariantCulture)).Append('?');
+                        // RTF 的 \uN 只接受有符号 16 位：码元超过 32767 时必须写成负值（N - 65536），
+                        // 写成 55357 这类正数超出规范范围，严格解析器会读错或拒收。
+                        // 增补平面字符在 .NET 字符串里本来就是一对代理项，逐个写出即可还原。
+                        // RTF's \uN takes a signed 16-bit value: a code unit above 32767 has to be written as
+                        // N - 65536, and a positive 55357 is out of range for strict readers. Supplementary-
+                        // plane characters are surrogate pairs in a .NET string, so writing each unit
+                        // separately reassembles them.
+                        int code = value;
+                        if (code > 32767) code -= 65536;
+                        rtf.Append("\\u").Append(code.ToString(CultureInfo.InvariantCulture)).Append('?');
                         break;
                 }
             }
