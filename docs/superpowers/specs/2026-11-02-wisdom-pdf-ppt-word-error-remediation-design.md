@@ -381,6 +381,7 @@
 | `PD17` | 交叉表条目指到别人的对象头时，从「静默把该偏移上的对象当成目标号交回」改为「按条修正后重读，修不回即当作缺失」 | `src/Wisdom.Pdf/README.md` 已知限制（已同步）；`docs/Wisdom.Pdf.Tutorial.md` 的容错说明已随 `PD9` 一并补（`PD9` 取上抛路由，未建告警通道） |
 | `PD9`、`WE7`、`WE9` | `PD9` 落地上抛路由：解码超限与内存失败不再被页提取吞掉，`ExtractText()` / `GetContentBytes()` 新增可抛 `DecompressionLimitException`（未建告警集合，统一通道留给 `WE7`/`WE9` 那一批） | `docs/Wisdom.Pdf.Tutorial.md` §10、`src/Wisdom.Pdf/README.md`、`articles/Wisdom.Pdf.md` 已补「资源上限不走静默降级」；`docs/Wisdom.Ppt.Tutorial.md` 与 Word 侧待 `WE7`/`WE9` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
+| `PT6` | 空占位符的省略条件从「占位符且无文本」收窄为「本库按版式补出、且到写出时仍没有任何可见效果」；从文件读回的空占位符与调用方自建的空框现在照常写出，往返形状数与层叠次序稳定 | `src/Wisdom.Ppt/README.md`「版式与占位符」补了省略规则与新增的来源标记 `SlideShape.IsGeneratedPlaceholder`（public 读、internal 写）；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节「空框叠在表格上」的说法按新规则重写过 |
 
 ---
 
@@ -570,4 +571,15 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 两趟改造要对齐的旧语义逐条核对过：`FirstOnly` 旧实现命中第一处后不论 `ReplaceRange` 成败都停止，新实现计划里只留一条范围、落地尝试一次，计数同样可能为 0；空运行清理的触发条件由「本段落的累计计数变过」变为「本段落至少落地一处」，并从「段落处理完就清」改为「全部落地完再按段落清一次」（同一段落可能横跨多个分组，用 touched 列表去重）。存量 `WordEnhancementTests` 的跨运行、全词、首处、页眉页脚与表格范围断言全绿，是这次语义对齐的主要证据。
   - §9 不需要新行：`ArgumentException` 本来就是方法文档声明的类型，这次是兑现承诺而非改变契约；两个公共 `Replace` 重载的 `<exception>` 文案补上了「匹配超时」这一触发条件。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（超时那一趟实测各约 2 秒，即 `RegexTimeout` 的设定值）。
+- `PT6`（`52f66bd` + `158b3f2`）：目标行为「只跳过由 `BuildPlaceholders` 自动补且未改动的占位符（加来源标记）」落地为 `SlideShape.IsGeneratedPlaceholder`——public 读、internal 写，来源只能由本库置位，外部伪造不了；`AddSlide(layout)` 补出来的那一份在 `Placeholder(...)` 里带标记，`PptxWriter.IsEmptyPlaceholder` 从「占位符且无文本」收紧为「带标记且没有任何可见效果」。
+  - 「未改动」没有做几何快照去比对 `Left/Top/Width/Height`：一个空框能不能被看见由文本、底色、描边、入场动画四样决定，四样全空时它在页面上画不出任何东西（PDF 侧同理，`PdfRenderer` 的 `DrawSlideText` 在没有非空段落时直接返回），省掉不丢内容；任一样被设过就照常写出。红测因此设的是底色与描边，而不是挪坐标。
+  - 修复前失败原文：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the styled placeholder vanished on save: the slide carries 1 shape(s) instead of 2
+    ```
+
+  - 控制断言钉反方向：只填标题的那一页，先立住模型里确实有两个自动占位符，往返后回读只剩 1 个——「程序生成的稿子不该留一个等用户点进去的空框」这条旧承诺不能被这次改动一起丢掉。夹具走内存流写出再 `PptxReader.Load(bytes)` 回读，不碰磁盘；底色断言复用 `Batch4PptTests.cs` 里的 `RequireHex`。
+  - 产出字节的变化不止红测那一页：**从文件读回的 pptx 里空着的内容占位符过去会被写出器删掉，现在原样保留**（读端不置标记），代价是这类稿子在 PowerPoint 里看得见"单击此处添加"的空框，收益是往返的形状数与层叠次序不再被静默改写。§9 因此补一行，`src/Wisdom.Ppt/README.md`「版式与占位符」写清省略规则，`docs/Wisdom.Ppt.Tutorial.md` 第 3 节那句「直接 `AddTable` 会让这一页多出一个叠在表格上的空框」按新规则重写——空框在 `.pptx` 与 PDF 里都画不出东西，它占的是模型里的一格。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；存量 PPT 套件（`Batch4PptTests`、`PptMarkdownTests`、`WriteOutputTests` 的形状计数与往返断言）全绿，说明收紧后的省略条件没改动正常稿子的输出。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。

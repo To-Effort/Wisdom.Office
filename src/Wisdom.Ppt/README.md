@@ -111,6 +111,8 @@ static TextBoxShape FindContent(Slide slide)
 
 `AddSlide()` 不带参数等价于 `Blank`，全部形状自己定位。占位符的字体不在模型里写死，由写出器套用 `DefaultTitleFormat` / `DefaultTextFormat`。
 
+空占位符的省略只认来源：`AddSlide(SlideLayoutKind)` 自己补出来的那一份，如果到写出时仍然没有任何可见效果（文本为空、没有底色、没有描边、没有入场动画），保存时整体不写出，免得 PowerPoint 在页面上留一个"单击此处添加"的空框。一旦你给它刷了底色或描边，它就照常写出。从文件读回的占位符、以及 `AddTextBox` 一类自己摆的形状都不受这条规则影响——哪怕里面没字，也是页面上的一个形状，必须保留。来源标记是 `SlideShape.IsGeneratedPlaceholder`（只能由本库置位）。
+
 ## 文本、图形、图片与表格
 
 | 形状 | 构造方式 | 说明 |

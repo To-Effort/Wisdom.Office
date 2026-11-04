@@ -127,7 +127,7 @@ Console.WriteLine("[2] 双栏占位符=" + columns.Count + " 个，形状总数=
 
 ## 3. 表格页：占位符是空框，要换成表格
 
-`TitleAndTable` 生成的第二个占位符是**文本框**（`Placeholder = PlaceholderKind.Table`），里面只有一个空段落——模型里没有"表格占位符"这种形状。直接 `AddTable` 会让这一页多出一个叠在表格上的空框，正确做法是借用它的几何位置，再把空框移出形状列表：
+`TitleAndTable` 生成的第二个占位符是**文本框**（`Placeholder = PlaceholderKind.Table`），里面只有一个空段落——模型里没有"表格占位符"这种形状。它没有底色也没有描边，所以既不会在 `.pptx` 里写出（没人动过的自动占位符会被省略），也不会在 PDF 上画出任何东西；但它仍然实实在在占着 `Shapes` 里的一格，形状计数、层叠次序和按类别遍历的代码都得绕开它。正确做法是借用它的几何位置，再把空框移出形状列表：
 
 ```csharp
 Slide detail = presentation.AddSlide(SlideLayoutKind.TitleAndTable);
