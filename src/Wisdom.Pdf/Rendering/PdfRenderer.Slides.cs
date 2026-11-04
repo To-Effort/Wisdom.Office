@@ -28,10 +28,7 @@ namespace Wisdom.Pdf
         {
             if (presentation == null) throw new ArgumentNullException("presentation");
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                RenderPresentation(presentation, stream);
-            }
+            AtomicFileWriter.Write(path, delegate(Stream stream) { RenderPresentation(presentation, stream); });
         }
 
         /// <summary>
@@ -288,7 +285,9 @@ namespace Wisdom.Pdf
         private void DrawSlidePicture(PictureShape picture)
         {
             OfficeImage image = picture.Image;
-            if (image == null || image.Format == OfficeImageFormat.Unknown) return;
+            // 与文本流同理：GIF/BMP/EMF 这类字节能进文档，但 PDF 只能嵌入 PNG 与 JPEG。
+            // As in the text flow: GIF, BMP and EMF bytes survive documents, but PDF can only embed PNG and JPEG.
+            if (image == null || (image.Format != OfficeImageFormat.Png && image.Format != OfficeImageFormat.Jpeg)) return;
             double width = picture.Width;
             double height = picture.Height;
             if (width <= 0 && height <= 0)

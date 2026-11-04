@@ -151,10 +151,9 @@ namespace Wisdom.Word
             {
                 throw new NotSupportedException("旧版 .doc 二进制格式只支持读取，请输出为 .docx/.dotx/.rtf/.html/.odt。");
             }
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Save(document, stream, format);
-            }
+            // 原子写入：目标文件要么保持旧内容，要么是完整的新内容。
+            // Atomic write: the target keeps either its old bytes or the complete new ones.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Save(document, stream, format); });
         }
 
         /// <summary>把文档保存到流中；DOC 为只读格式，写入会抛出异常。Saves a document into a stream; DOC is read-only and writing it throws.</summary>

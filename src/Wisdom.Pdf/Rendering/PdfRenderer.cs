@@ -130,10 +130,10 @@ namespace Wisdom.Pdf
         public void Render(OfficeDocument document, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Render(document, stream);
-            }
+            // 先写同目录临时文件再原子替换：中途失败不会把用户原文件截成 0 字节。
+            // Write a temporary file beside the target and swap it in atomically, so a mid-write failure
+            // never leaves the user's original file truncated to zero bytes.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Render(document, stream); });
         }
 
         /// <summary>
@@ -324,7 +324,9 @@ namespace Wisdom.Pdf
                 if (atom.IsImage)
                 {
                     double imageY = lineTop + Math.Max(0, (line.Height - atom.ImageHeight) / 2);
-                    if (atom.Image.Format != OfficeImageFormat.Unknown)
+                    // PDF 只能栅格化 PNG 与 JPEG，其余矢量/位图格式带过即可，别让整页渲染抛异常。
+                    // PDF only rasterises PNG and JPEG; other formats must pass through instead of failing the page.
+                    if (atom.Image.Format == OfficeImageFormat.Png || atom.Image.Format == OfficeImageFormat.Jpeg)
                     {
                         PdfImage pdfImage = _images.Get(atom.Image);
                         _page.Add(new PdfImageCommand

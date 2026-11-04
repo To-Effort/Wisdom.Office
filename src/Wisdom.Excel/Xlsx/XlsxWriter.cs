@@ -49,10 +49,10 @@ namespace Wisdom.Excel
         public static void Write(OfficeWorkbook workbook, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Write(workbook, stream);
-            }
+            // 先写同目录临时文件再原子替换：中途失败不会把用户原文件截成 0 字节。
+            // Write a temporary file beside the target and swap it in atomically, so a mid-write failure
+            // never leaves the user's original file truncated to zero bytes.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Write(workbook, stream); });
         }
 
         /// <summary>将工作簿写出的字节数组形式（内存 .xlsx 包）。 Writes the workbook as a byte array (an in-memory .xlsx package).</summary>
@@ -108,6 +108,8 @@ namespace Wisdom.Excel
             private readonly char[] _addressBuffer = new char[24];
             /// <summary>索引值到其文本的懒分配缓存。 Lazily filled cache mapping an index value to its text.</summary>
             private string[] _indexTexts = new string[64];
+            /// <summary>索引文本缓存的条目上限。 Entry ceiling of the index text cache.</summary>
+            private const int MaxCachedIndexTexts = 1 << 16;
             /// <summary>每个表的名称与 sheetId 二元组（按表顺序）。 Name and sheetId pair of each sheet, in sheet order.</summary>
             private readonly List<string[]> _sheetNames = new List<string[]>();
             /// <summary>活动表下标（第一个非隐藏表）。 Index of the active sheet (the first non-hidden one).</summary>
@@ -284,7 +286,7 @@ namespace Wisdom.Excel
                 XElement root = new XElement(Xlsx.Main + "workbook",
                     new XAttribute(XNamespace.Xmlns + "r", Xlsx.R.NamespaceName),
                     new XElement(Xlsx.Main + "fileVersion", new XAttribute("appName", "xl")),
-                    new XElement(Xlsx.Main + "workbookPr", new XAttribute("defaultThemeVersion", "164011")),
+                    CreateWorkbookProperties(),
                     new XElement(Xlsx.Main + "bookViews",
                         new XElement(Xlsx.Main + "workbookView",
                             new XAttribute("xWindow", "0"),
@@ -299,7 +301,26 @@ namespace Wisdom.Excel
                 return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
             }
 
-            /// <summary>为设置了打印区域的工作表生成 _xlnm.Print_Area 定义名，并追加工作簿的全局/局部定义名。 Generates _xlnm.Print_Area defined names for worksheets that have a print area, then appends the workbook's global and local defined names.</summary>
+            /// <summary>生成 workbookPr：默认主题版本，并按模型标记写出 date1904。缺失 date1904 会让 1904 工作簿里的日期在重算或再次读出时整体偏移四年。 Generates workbookPr with the default theme version and, when the model says so, date1904. Dropping date1904 shifts every date in a 1904 workbook by four years.</summary>
+            /// <returns>workbookPr 元素。 The workbookPr element.</returns>
+            private XElement CreateWorkbookProperties()
+            {
+                XElement properties = new XElement(Xlsx.Main + "workbookPr",
+                    new XAttribute("defaultThemeVersion", "164011"));
+                if (_workbook.Date1904)
+                {
+                    properties.Add(new XAttribute("date1904", "1"));
+                }
+                return properties;
+            }
+
+            /// <summary>
+            /// 为设置了打印区域的工作表生成 _xlnm.Print_Area 定义名，为设了重复行列的工作表生成
+            /// _xlnm.Print_Titles，最后追加工作簿的全局/局部定义名。
+            /// Generates _xlnm.Print_Area defined names for worksheets that have a print area and
+            /// _xlnm.Print_Titles for worksheets with repeated rows or columns, then appends the workbook's
+            /// global and local defined names.
+            /// </summary>
             /// <returns>definedNames 元素或 null。 The definedNames element or null.</returns>
             private XElement CreateDefinedNames()
             {
@@ -317,6 +338,18 @@ namespace Wisdom.Excel
                         new XAttribute("localSheetId", i.ToString(CultureInfo.InvariantCulture)),
                         reference));
                 }
+                for (int i = 0; i < _workbook.Worksheets.Count; i++)
+                {
+                    Worksheet sheet = _workbook.Worksheets[i];
+                    if (!sheet.HasPrintTitles) continue;
+                    string titles = FormatPrintTitles(sheet, _sheetNames[i][0]);
+                    if (string.IsNullOrEmpty(titles)) continue;
+                    if (container == null) container = new XElement(Xlsx.Main + "definedNames");
+                    container.Add(new XElement(Xlsx.Main + "definedName",
+                        new XAttribute("name", "_xlnm.Print_Titles"),
+                        new XAttribute("localSheetId", i.ToString(CultureInfo.InvariantCulture)),
+                        titles));
+                }
                 for (int i = 0; i < _workbook.DefinedNames.Count; i++)
                 {
                     ExcelDefinedName name = _workbook.DefinedNames[i];
@@ -332,6 +365,37 @@ namespace Wisdom.Excel
                     container.Add(element);
                 }
                 return container;
+            }
+
+            /// <summary>
+            /// 拼装 _xlnm.Print_Titles 的引用文本：行段在前、列段在后，各带表名与 <c>$</c> 锁定，
+            /// 与 Excel 自身写出的形式一致。
+            /// Builds the reference text of a _xlnm.Print_Titles entry: the row part first, then the column
+            /// part, each sheet-qualified and locked, matching what Excel itself writes.
+            /// </summary>
+            /// <param name="sheet">工作表。The worksheet.</param>
+            /// <param name="sheetName">工作表名。The worksheet name.</param>
+            /// <returns>引用文本；无重复行列时为空。The reference text, empty when no titles are set.</returns>
+            private static string FormatPrintTitles(Worksheet sheet, string sheetName)
+            {
+                StringBuilder builder = new StringBuilder();
+                string prefix = QuoteSheetName(sheetName) + "!";
+                if (sheet.PrintTitleFirstRow > 0)
+                {
+                    int lastRow = sheet.PrintTitleLastRow >= sheet.PrintTitleFirstRow
+                        ? sheet.PrintTitleLastRow : sheet.PrintTitleFirstRow;
+                    builder.Append(prefix).Append("$").Append(sheet.PrintTitleFirstRow)
+                        .Append(":$").Append(lastRow);
+                }
+                if (sheet.PrintTitleFirstColumn > 0)
+                {
+                    int lastColumn = sheet.PrintTitleLastColumn >= sheet.PrintTitleFirstColumn
+                        ? sheet.PrintTitleLastColumn : sheet.PrintTitleFirstColumn;
+                    if (builder.Length > 0) builder.Append(',');
+                    builder.Append(prefix).Append('$').Append(CellAddress.ColumnName(sheet.PrintTitleFirstColumn))
+                        .Append(":$").Append(CellAddress.ColumnName(lastColumn));
+                }
+                return builder.ToString();
             }
 
             /// <summary>判断定义名是否合法：首字符为字母、下划线或反斜杠，后续为字母数字或 . _ \，且不是单元格引用。 Checks whether a defined name is legal: it starts with a letter, underscore or backslash, continues with letters, digits or . _ \, and is not a cell reference.</summary>
@@ -1121,17 +1185,28 @@ namespace Wisdom.Excel
                 }
             }
 
-            /// <summary>取小整数的不变文化字符串形式，按值缓存复用，避免同一索引反复分配。 Returns the invariant text of a small index, cached per value so the same index is not allocated repeatedly.</summary>
+            /// <summary>
+            /// 取小整数的不变文化字符串形式，按值缓存复用，避免同一索引反复分配；超出缓存上限的索引直接格式化。
+            /// Returns the invariant text of a small index, cached per value so the same index is not allocated
+            /// repeatedly; indexes past the cache ceiling are formatted directly.
+            /// </summary>
+            /// <remarks>
+            /// 缓存按 2 倍扩容，不设上限时一个异常大的索引会把数组撑到整数值域外（扩容溢出后连数组都建不出来），
+            /// 而这份缓存只服务于热点索引，超出上限本来就不值得留。
+            /// The cache doubles on demand; without a ceiling one absurdly large index grows it past the integer
+            /// range (the resize then overflows) even though the cache only exists to serve hot indexes.
+            /// </remarks>
             /// <param name="value">非负索引。 Non-negative index.</param>
             /// <returns>缓存的字符串文本。 The cached string text.</returns>
             private string IndexText(int value)
             {
-                if (value < 0) return value.ToString(CultureInfo.InvariantCulture);
+                if (value < 0 || value >= MaxCachedIndexTexts) return value.ToString(CultureInfo.InvariantCulture);
                 string[] cache = _indexTexts;
                 if (value >= cache.Length)
                 {
                     int length = cache.Length;
-                    while (length <= value) length *= 2;
+                    while (length <= value && length < MaxCachedIndexTexts) length *= 2;
+                    if (length > MaxCachedIndexTexts) length = MaxCachedIndexTexts;
                     Array.Resize(ref _indexTexts, length);
                     cache = _indexTexts;
                 }
@@ -1303,6 +1378,14 @@ namespace Wisdom.Excel
                 if (value != null)
                 {
                     writer.WriteStartElement("v", main);
+                    if (type == "str")
+                    {
+                        // str 缓存值直接落在这里，不走带 xml:space 的共享字符串表：
+                        // 不带保留标记时，" " 这类纯空白结果会被后续解析器当成元素间的空白丢掉。
+                        // The str cache value is written here instead of through the shared table that carries
+                        // xml:space: without the preserve hint, a " " result is dropped as inter-element whitespace.
+                        writer.WriteAttributeString("xml", "space", null, "preserve");
+                    }
                     writer.WriteString(OfficeXmlText.Strip(text));
                     writer.WriteEndElement();
                 }
@@ -1366,12 +1449,14 @@ namespace Wisdom.Excel
                 }
             }
 
-            /// <summary>将 DateTime 转为 Excel 日期序列号（1900 日期系统，基准 1899-12-30）。 Converts a DateTime into an Excel date serial number (1900 date system, epoch 1899-12-30).</summary>
+            /// <summary>将 DateTime 转为 Excel 日期序列号；工作簿声明 1904 系统时基准取 1904-01-01，否则 1899-12-30。
+            /// Converts a DateTime into an Excel date serial number, using 1904-01-01 as the epoch when the workbook
+            /// declares the 1904 date system and 1899-12-30 otherwise.</summary>
             /// <param name="value">日期时间值。 Date-time value.</param>
             /// <returns>序列号（可含小数部分表示时间）。 The serial number; the fractional part represents the time.</returns>
-            private static double ToSerial(DateTime value)
+            private double ToSerial(DateTime value)
             {
-                DateTime epoch = new DateTime(1899, 12, 30);
+                DateTime epoch = _workbook.Date1904 ? new DateTime(1904, 1, 1) : new DateTime(1899, 12, 30);
                 return (value - epoch).TotalDays;
             }
 
@@ -1434,10 +1519,16 @@ namespace Wisdom.Excel
                 public int RegisterDxf(CellStyle style)
                 {
                     if (style == null) style = new CellStyle();
-                    string key = (style.Bold ? "b" : "-") + (style.Italic ? "i" : "-") + "|"
+                    // 去重键必须覆盖 dxf 实际会写出的每一段：早先少了下划线与四边线，
+                    // 两条只差边框的条件格式会共用同一个 dxfId，后写的边框把先写的覆盖掉。
+                    // The key must cover every section a dxf actually writes: without underline and the four edges,
+                    // two rules differing only in borders shared one dxfId and the later border overwrote the earlier.
+                    string key = (style.Bold ? "b" : "-") + (style.Italic ? "i" : "-") + (style.Underline ? "u" : "-") + "|"
                         + style.FontColor.ToArgbHex() + "|"
                         + (style.FillColor.HasValue ? style.FillColor.Value.ToArgbHex() : "none") + "|"
-                        + (style.NumberFormat ?? string.Empty);
+                        + (style.NumberFormat ?? string.Empty) + "|"
+                        + BorderKey(style.LeftBorder) + BorderKey(style.RightBorder)
+                        + BorderKey(style.TopBorder) + BorderKey(style.BottomBorder);
                     int index;
                     if (_dxfIds.TryGetValue(key, out index)) return index;
                     index = _dxfs.Count;
@@ -1446,20 +1537,42 @@ namespace Wisdom.Excel
                     return index;
                 }
 
-                /// <summary>生成差量样式 dxf 元素：仅写出字体与填充两段。 Builds a dxf element, emitting only the font and fill sections.</summary>
+                /// <summary>
+                /// 生成差量样式 dxf 元素：按 numFmt、font、border、fill 的顺序写出各段。
+                /// Builds a dxf element, emitting the numFmt, font, border and fill sections in that order.
+                /// </summary>
+                /// <remarks>
+                /// 早先只写 font 与 fill：条件格式里的数字格式与边框落盘即丢，读回再写一次就彻底消失。
+                /// Only font and fill used to be written, so a conditional format's number format and borders were
+                /// lost on save and vanished entirely after one read-modify-write cycle.
+                /// </remarks>
                 /// <param name="style">差量样式。 The differential style.</param>
                 /// <returns>dxf 元素。 The dxf element.</returns>
-                public static XElement CreateDxf(CellStyle style)
+                public XElement CreateDxf(CellStyle style)
                 {
                     XElement dxf = new XElement(Xlsx.Main + "dxf");
+                    int formatId = GetFormatId(style.NumberFormat);
+                    if (formatId > 0 && !string.IsNullOrEmpty(style.NumberFormat))
+                    {
+                        dxf.Add(new XElement(Xlsx.Main + "numFmt",
+                            new XAttribute("numFmtId", formatId.ToString(CultureInfo.InvariantCulture)),
+                            new XAttribute("formatCode", style.NumberFormat)));
+                    }
                     XElement font = new XElement(Xlsx.Main + "font");
                     if (style.Bold) font.Add(new XElement(Xlsx.Main + "b", new XAttribute("val", "1")));
                     if (style.Italic) font.Add(new XElement(Xlsx.Main + "i", new XAttribute("val", "1")));
+                    if (style.Underline) font.Add(new XElement(Xlsx.Main + "u"));
                     if (style.FontColor != OfficeColor.Black)
                     {
                         font.Add(new XElement(Xlsx.Main + "color", new XAttribute("rgb", style.FontColor.ToArgbHex())));
                     }
                     if (font.HasElements) dxf.Add(font);
+                    XElement border = new XElement(Xlsx.Main + "border");
+                    AddDxfEdge(border, "left", style.LeftBorder);
+                    AddDxfEdge(border, "right", style.RightBorder);
+                    AddDxfEdge(border, "top", style.TopBorder);
+                    AddDxfEdge(border, "bottom", style.BottomBorder);
+                    if (border.HasElements) dxf.Add(border);
                     if (style.FillColor.HasValue)
                     {
                         dxf.Add(new XElement(Xlsx.Main + "fill",
@@ -1467,6 +1580,17 @@ namespace Wisdom.Excel
                                 new XElement(Xlsx.Main + "bgColor", new XAttribute("rgb", style.FillColor.Value.ToArgbHex())))));
                     }
                     return dxf;
+                }
+
+                /// <summary>把一条非空边线追加为 dxf border 的子元素；无线时不写该边。
+                /// Appends one non-empty border edge as a dxf border child; a missing line writes no edge.</summary>
+                /// <param name="border">dxf 的 border 元素。 The dxf border element.</param>
+                /// <param name="name">边名。 Edge name.</param>
+                /// <param name="line">边线描述。 The border line.</param>
+                private static void AddDxfEdge(XElement border, string name, BorderLine line)
+                {
+                    if (line == null || line.Style == BorderStyle.None) return;
+                    border.Add(BorderEntry.CreateEdge(name, line));
                 }
 
                 /// <summary>按字体/填充/边框/格式/对齐组合键登记样式并返回 cellXfs 索引，重复样式复用同一索引。 Registers a style by its font/fill/border/format/alignment combination key and returns the cellXfs index; duplicate styles reuse the same index.</summary>
@@ -1777,7 +1901,7 @@ namespace Wisdom.Excel
                     /// <param name="name">边元素名（left/right/top/bottom）。 Edge element name (left/right/top/bottom).</param>
                     /// <param name="line">边线描述。 Border line description.</param>
                     /// <returns>边 XML 元素。 The edge XML element.</returns>
-                    private static XElement CreateEdge(string name, BorderLine line)
+                    internal static XElement CreateEdge(string name, BorderLine line)
                     {
                         XElement edge = new XElement(Xlsx.Main + name);
                         if (line == null || line.Style == BorderStyle.None) return edge;

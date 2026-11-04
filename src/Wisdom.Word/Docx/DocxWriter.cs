@@ -67,10 +67,10 @@ namespace Wisdom.Word
         public static void Write(OfficeDocument document, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Write(document, stream);
-            }
+            // 先写同目录临时文件再原子替换：中途失败不会把用户原文件截成 0 字节。
+            // Write a temporary file beside the target and swap it in atomically, so a mid-write failure
+            // never leaves the user's original file truncated to zero bytes.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Write(document, stream); });
         }
 
         /// <summary>
@@ -115,10 +115,7 @@ namespace Wisdom.Word
         public static void WriteTemplate(OfficeDocument document, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                WriteTemplate(document, stream);
-            }
+            AtomicFileWriter.Write(path, delegate(Stream stream) { WriteTemplate(document, stream); });
         }
 
         /// <summary>

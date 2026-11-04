@@ -261,10 +261,10 @@ namespace Wisdom.Office
         public void Save(string path, OfficeFileFormat format)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Save(stream, format);
-            }
+            // 先写同目录临时文件再原子替换：中途失败不会把用户原文件截成 0 字节。
+            // Write a temporary file beside the target and swap it in atomically, so a mid-write failure
+            // never leaves the user's original file truncated to zero bytes.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Save(stream, format); });
         }
 
         /// <summary>以指定格式将内容写入流；这是跨格式转换的核心方法（如 XLSX 转 PDF、DOCX 转 XLSX 场景中的输出环节）。Writes the content to a stream in the given format; the core method for cross-format conversion (e.g. the output step of XLSX-to-PDF or DOCX-to-XLSX).</summary>

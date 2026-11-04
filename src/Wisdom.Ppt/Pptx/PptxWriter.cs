@@ -22,10 +22,10 @@ namespace Wisdom.Ppt
         public static void Write(OfficePresentation presentation, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                Write(presentation, stream);
-            }
+            // 先写同目录临时文件再原子替换：中途失败不会把用户原文件截成 0 字节。
+            // Write a temporary file beside the target and swap it in atomically, so a mid-write failure
+            // never leaves the user's original file truncated to zero bytes.
+            AtomicFileWriter.Write(path, delegate(Stream stream) { Write(presentation, stream); });
         }
 
         /// <summary>将演示文稿写出的字节数组形式（内存 .pptx 包）。 Writes the presentation as a byte array (an in-memory .pptx package).</summary>
@@ -66,10 +66,7 @@ namespace Wisdom.Ppt
         public static void WriteTemplate(OfficePresentation presentation, string path)
         {
             if (path == null) throw new ArgumentNullException("path");
-            using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))
-            {
-                WriteTemplate(presentation, stream);
-            }
+            AtomicFileWriter.Write(path, delegate(Stream stream) { WriteTemplate(presentation, stream); });
         }
 
         /// <summary>将演示文稿写出为 .potx 模板的字节数组。 Writes the presentation as .potx template bytes.</summary>

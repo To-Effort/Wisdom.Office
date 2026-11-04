@@ -5,7 +5,9 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
+using Wisdom.Excel;
 using Wisdom.Office.Core;
+using Wisdom.Ppt;
 using Wisdom.Word;
 
 namespace Wisdom.Office.Tests
@@ -30,6 +32,7 @@ namespace Wisdom.Office.Tests
             RunOversizedOdtImageIsSkippedTest();
             RunRtfNonBmpCodeUnitTest();
             RunWritersTolerateNullModelFieldsTest();
+            RunWritersNeverTruncateTheOriginalTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -264,6 +267,64 @@ namespace Wisdom.Office.Tests
                 Require(bytes != null && bytes.Length > 0,
                     "the " + formats[i] + " writer produced no output for a null model field");
             }
+        }
+
+        /// <summary>
+        /// E7：目标文件必须写完整再替换。过去 `DocxWriter` / `XlsxWriter` / `PptxWriter` 都直接用
+        /// `FileMode.Create` 打开目标，`Write(null, path)` 在参数校验失败之前就把用户原文件截成了 0 字节。
+        /// 现在失败被限制在同目录临时文件上：目标保持原样，也不留 `.tmp` 残骸。
+        /// E7: the target must be complete before it replaces anything. The writers used to open the target
+        /// with FileMode.Create, so Write(null, path) truncated the user's file to zero bytes before the
+        /// argument check even ran; now a failure stays in a sibling temporary file, the target keeps its
+        /// bytes and no .tmp litter is left behind.
+        /// </summary>
+        private static void RunWritersNeverTruncateTheOriginalTest()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "wisdom-atomic-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                RequireFailedWriteKeepsTarget(directory, "docx", delegate(string path) { DocxWriter.Write(null, path); });
+                RequireFailedWriteKeepsTarget(directory, "xlsx", delegate(string path) { XlsxWriter.Write(null, path); });
+                RequireFailedWriteKeepsTarget(directory, "pptx", delegate(string path) { PptxWriter.Write(null, path); });
+            }
+            finally
+            {
+                try { Directory.Delete(directory, true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
+        /// <summary>断言「失败的写入既没有改动目标文件，也没有留下临时文件」。Requires that a failed write neither touched the target nor left a temporary file behind.</summary>
+        /// <param name="directory">夹具目录。The fixture directory.</param>
+        /// <param name="extension">目标扩展名。The target extension.</param>
+        /// <param name="write">触发失败的写入委托。The write delegate that must fail.</param>
+        private static void RequireFailedWriteKeepsTarget(string directory, string extension, Action<string> write)
+        {
+            string path = Path.Combine(directory, "target." + extension);
+            byte[] sentinel = Encoding.UTF8.GetBytes("ORIGINAL-" + extension);
+            File.WriteAllBytes(path, sentinel);
+
+            bool rejected = false;
+            try
+            {
+                write(path);
+            }
+            catch (ArgumentNullException)
+            {
+                rejected = true;
+            }
+            Require(rejected, "the " + extension + " writer accepted a null model instead of rejecting it");
+
+            byte[] after = File.ReadAllBytes(path);
+            Require(BytesEqual(after, sentinel),
+                "a failed " + extension + " write left the original file with " + after.Length
+                + " byte(s) instead of the " + sentinel.Length + " it had");
+
+            string[] leftovers = Directory.GetFiles(directory, "." + Path.GetFileName(path) + ".*.tmp");
+            Require(leftovers.Length == 0,
+                "a failed " + extension + " write left " + leftovers.Length + " temporary file(s) behind");
         }
 
         /// <summary>正文加一个引用图片的 <c>draw:frame</c>。 A body paragraph followed by a <c>draw:frame</c> that references a picture.</summary>
