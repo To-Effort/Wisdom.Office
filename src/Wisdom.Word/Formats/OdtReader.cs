@@ -71,7 +71,12 @@ namespace Wisdom.Word
             if (stream == null) throw new ArgumentNullException("stream");
             if (stream.CanSeek)
             {
-                using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read, true))
+                // 走与 DOCX 相同的入口：.NET Framework 的 ZipArchive 到枚举条目时才把非法条目名报成
+                // ArgumentException，这里在打开时就物化中央目录并统一转成 InvalidDataException。
+                // Use the same entry point as the DOCX readers: on .NET Framework an illegal entry name
+                // surfaces as ArgumentException only when the entries are enumerated, so the central
+                // directory is materialised at open time and the failure becomes an InvalidDataException.
+                using (ZipArchive archive = PackageArchive.OpenForRead(stream, true))
                 {
                     return LoadPackage(archive);
                 }
@@ -85,7 +90,7 @@ namespace Wisdom.Word
                     buffer.Write(chunk, 0, read);
                 }
                 buffer.Position = 0;
-                using (ZipArchive archive = new ZipArchive(buffer, ZipArchiveMode.Read, true))
+                using (ZipArchive archive = PackageArchive.OpenForRead(buffer, true))
                 {
                     return LoadPackage(archive);
                 }
@@ -1500,21 +1505,31 @@ namespace Wisdom.Word
                 return entry == null ? null : OfficePackageLimits.ReadEntryBytes(entry, ref _totalBytes);
             }
 
-            /// <summary>读取一个 base64 内嵌图片，校验大小与数量上限。Reads one base64-embedded image, enforcing the size and count caps.</summary>
+            /// <summary>
+            /// 读取一个 base64 内嵌图片，校验大小与数量上限；超限时跳过该图并返回 null，
+            /// 而不是抛异常中止整篇读取——与 HTML 读端「丢图不丢文档」的口径一致。
+            /// Reads one base64-embedded image, enforcing the size and count caps; an oversized image is
+            /// skipped (null) instead of aborting the whole document, matching the HTML reader's
+            /// "drop the picture, keep the document" behaviour.
+            /// </summary>
             public byte[] ReadBinaryImage(string base64)
             {
                 if (string.IsNullOrEmpty(base64) || _imageCount >= MaxImages) return null;
-                if (base64.Length / 4 * 3 > MaxImageBytes) throw new InvalidDataException("ODT 内嵌图片超过安全上限。");
+                if (base64.Length / 4 * 3 > MaxImageBytes) return null;
                 byte[] data;
                 try { data = Convert.FromBase64String(base64); }
                 catch (FormatException) { return null; }
                 if (data == null || data.Length == 0) return null;
-                if (data.Length > MaxImageBytes) throw new InvalidDataException("ODT 内嵌图片超过安全上限。");
+                if (data.Length > MaxImageBytes) return null;
                 _imageCount++;
                 return data;
             }
 
-            /// <summary>读取包内图片部件；拒绝绝对路径、上级路径与超限大小。Reads an image part from the package, rejecting absolute paths, parent paths and oversized data.</summary>
+            /// <summary>
+            /// 读取包内图片部件；拒绝绝对路径、上级路径，超限时跳过该图而不是中止整篇读取。
+            /// Reads an image part from the package, rejecting absolute and parent paths and skipping an
+            /// oversized part instead of aborting the whole document.
+            /// </summary>
             public byte[] ReadImagePart(string href)
             {
                 if (string.IsNullOrEmpty(href) || _imageCount >= MaxImages) return null;
@@ -1527,7 +1542,7 @@ namespace Wisdom.Word
                 if (path.IndexOf("..", StringComparison.Ordinal) >= 0) return null;
                 byte[] data = Read(path);
                 if (data == null) return null;
-                if (data.Length > MaxImageBytes) throw new InvalidDataException("ODT 内嵌图片超过安全上限。");
+                if (data.Length > MaxImageBytes) return null;
                 _imageCount++;
                 return data;
             }

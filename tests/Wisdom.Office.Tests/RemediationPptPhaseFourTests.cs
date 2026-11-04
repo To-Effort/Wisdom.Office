@@ -21,6 +21,7 @@ namespace Wisdom.Office.Tests
             RunStyledPlaceholderSurvivesTest();
             RunPartialRunFormatStaysInheritedTest();
             RunUndeclaredTableHeaderStaysPlainTest();
+            RunZeroHeightSeparatorSurvivesTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -214,6 +215,64 @@ namespace Wisdom.Office.Tests
                 "the declared header row did not survive the round trip");
             Require(!back[0].Table.Rows[0].IsHeader,
                 "the undeclared table's first row was read back as a header");
+        }
+
+        /// <summary>
+        /// PT7：零宽度或零高度是真实几何，不是「读不到」。水平分隔线的写法就是一条
+        /// <c>&lt;a:ext cx="700pt" cy="0"/&gt;</c>，旧实现把 <c>cy="0"</c> 判成缺失几何，
+        /// 回落到按幻灯片比例推算的默认大框，一根细线于是变成铺满半屏的矩形。
+        /// PT7: a zero width or height is real geometry, not missing data. A horizontal separator is
+        /// written as <c>&lt;a:ext cx="700pt" cy="0"/&gt;</c>; the old implementation read <c>cy="0"</c>
+        /// as absent geometry, fell back to the proportional default box, and turned a hairline into a
+        /// rectangle covering half the slide.
+        /// </summary>
+        private static void RunZeroHeightSeparatorSurvivesTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            AutoShape rule = slide.AddShape(AutoShapeKind.Line, 60, 120, 700, 0, null);
+            rule.Outline = new BorderLine(BorderStyle.Single, 1.0, OfficeColor.Black);
+
+            // 写出端必须照原样落 cx/cy，符号与量级都不能自己改。
+            // The writer must emit cx/cy exactly as asked; neither sign nor magnitude is its business.
+            byte[] written = WriteToBuffer(deck);
+            XElement ext = FirstShapeExtent(written, "ppt/slides/slide1.xml");
+            Require(ext != null && (string)ext.Attribute("cy") == "0",
+                "the writer padded a zero-height shape to cy="
+                + (ext == null ? "<missing a:ext>" : (string)ext.Attribute("cy")));
+
+            OfficePresentation loaded = PptxReader.Load(written);
+            AutoShape back = null;
+            for (int i = 0; i < loaded.Slides[0].Shapes.Count; i++)
+            {
+                AutoShape candidate = loaded.Slides[0].Shapes[i] as AutoShape;
+                if (candidate != null) back = candidate;
+            }
+            Require(back != null, "the separator line did not read back");
+            Require(Math.Abs(back.Height) < 0.5,
+                "a zero-height separator was inflated to " + back.Height + " pt on the way back in");
+            Require(Math.Abs(back.Width - 700) < 0.5,
+                "the separator lost its width on the way back in: " + back.Width);
+        }
+
+        /// <summary>
+        /// 取幻灯片里第一个形状自身的几何 <c>a:ext</c>（其 <c>a:xfrm</c> 挂在 <c>spPr</c> 下），
+        /// 跳过 <c>p:grpSpPr</c> 上那圈整页尺寸的组变换。
+        /// Takes the <c>a:ext</c> of the first shape's own geometry — the <c>a:xfrm</c> under <c>spPr</c> —
+        /// skipping the slide-sized group transform on <c>p:grpSpPr</c>.
+        /// </summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>几何元素或 null。The geometry element, or null.</returns>
+        private static XElement FirstShapeExtent(byte[] archive, string entryName)
+        {
+            foreach (XElement xfrm in ReadSlideXml(archive, entryName).Descendants(A + "xfrm"))
+            {
+                if (xfrm.Parent == null || xfrm.Parent.Name.LocalName != "spPr") continue;
+                XElement ext = xfrm.Element(A + "ext");
+                if (ext != null && ext.Attribute("cx") != null && ext.Attribute("cy") != null) return ext;
+            }
+            return null;
         }
 
         /// <summary>DrawingML 命名空间，测试里手写一份，避免依赖写端的私有常量。 The DrawingML namespace, spelled out here so the test does not lean on a writer private.</summary>

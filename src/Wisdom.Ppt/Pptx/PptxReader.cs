@@ -1250,7 +1250,16 @@ namespace Wisdom.Ppt
                 return ReadBoxFromTransform(Ppt.DrawingChild(spPr, "xfrm"));
             }
 
-            /// <summary>从 xfrm 元素的 off/ext 读取矩形；off/ext 不完整时返回 null。Reads a rectangle from an xfrm element's off/ext children, returning null when they are incomplete.</summary>
+            /// <summary>
+            /// 从 xfrm 元素的 off/ext 读取矩形；off/ext 任一缺失时返回 null。
+            /// 宽或高为 0 是合法几何而不是坏数据——水平分隔线就是 <c>cy="0"</c> 的一条直线，
+            /// 把 0 当成「读不到」会回落到按幻灯片比例推算的默认大框，细线于是变成铺满半屏的矩形。
+            /// 只有负值才判为坏几何。
+            /// Reads a rectangle from an xfrm element's off/ext children, returning null when either is
+            /// absent. A zero width or height is legal geometry, not missing data: a horizontal separator
+            /// is exactly a <c>cy="0"</c> line, and treating zero as "not read" falls back to the
+            /// proportional default box, inflating a hairline into half the slide. Only negatives are bad.
+            /// </summary>
             /// <param name="xfrm">xfrm 元素（命名空间由调用方选定）。The xfrm element (namespace chosen by the caller).</param>
             /// <returns>EMU 矩形或 null。The EMU box or null.</returns>
             private static Box ReadBoxFromTransform(XElement xfrm)
@@ -1259,9 +1268,15 @@ namespace Wisdom.Ppt
                 XElement off = Ppt.DrawingChild(xfrm, "off");
                 XElement ext = Ppt.DrawingChild(xfrm, "ext");
                 if (off == null || ext == null) return null;
-                long cx = ParseLong(Ppt.Attribute(ext, "cx"), 0);
-                long cy = ParseLong(Ppt.Attribute(ext, "cy"), 0);
-                if (cx <= 0 || cy <= 0) return null;
+                string cxText = Ppt.Attribute(ext, "cx");
+                string cyText = Ppt.Attribute(ext, "cy");
+                // 属性缺失说明生产者没给这一维，才该走继承/默认回落；属性在、值为 0 是「确实是 0」。
+                // A missing attribute means the producer gave no such dimension and the fallback applies;
+                // an attribute present with the value zero means "genuinely zero".
+                if (cxText == null || cyText == null) return null;
+                long cx = ParseLong(cxText, 0);
+                long cy = ParseLong(cyText, 0);
+                if (cx < 0 || cy < 0) return null;
                 return new Box(ParseLong(Ppt.Attribute(off, "x"), 0), ParseLong(Ppt.Attribute(off, "y"), 0), cx, cy);
             }
 

@@ -27,6 +27,7 @@ namespace Wisdom.Office.Tests
         {
             RunOdtContentXmlContractTest();
             RunRegexTimeoutAtomicReplaceTest();
+            RunOversizedOdtImageIsSkippedTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -156,6 +157,158 @@ namespace Wisdom.Office.Tests
             Require(count == 1 && one.GetText() == "aX" && two.GetText() == "cb",
                 "FirstOnly under the regex route replaced " + count + " match(es): '" + one.GetText()
                 + "' / '" + two.GetText() + "'");
+        }
+
+        /// <summary>
+        /// WE9：一张超限的内嵌图片不该让整篇 ODT 读失败——正文必须照常读回，丢的只是那张图。
+        /// HTML 读端一直是「丢图不丢文档」，ODT 过去对单张超限图片抛 <see cref="InvalidDataException"/>，
+        /// 把一篇结构完全合法的扫描稿连正文一起废掉。
+        /// WE9: one oversized embedded picture must not fail the whole ODT read — the body must still
+        /// load and only the picture is dropped. The HTML reader has always followed "drop the picture,
+        /// keep the document"; ODT used to throw <see cref="InvalidDataException"/> for a single
+        /// oversized image and throw away a structurally valid scanned document along with it.
+        /// </summary>
+        private static void RunOversizedOdtImageIsSkippedTest()
+        {
+            // 控制：同一份包换成一张正常大小的 GIF，图片必须照常读回，否则红的会是夹具而不是本条。
+            // Control: the same package with a normal-sized GIF must keep its picture, otherwise the
+            // fixture rather than the entry under test is what fails.
+            OfficeDocument small = OdtReader.Load(
+                BuildOdtPackageWithImage("正文可用", "Pictures/small.gif", CreateTestGif(8, 6)));
+            Require(ContainsText(small, "正文可用"), "the control ODT lost its body text");
+            Require(FindFirstImage(small) != null, "the control ODT lost its normal-sized picture");
+
+            OfficeDocument document = OdtReader.Load(
+                BuildOdtPackageWithImage("正文可用", "Pictures/big.gif", null));
+            Require(ContainsText(document, "正文可用"),
+                "an oversized embedded picture took the whole document down with it");
+            Require(FindFirstImage(document) == null,
+                "an embedded picture past the 64 MB cap was kept in the model");
+        }
+
+        /// <summary>正文加一个引用图片的 <c>draw:frame</c>。 A body paragraph followed by a <c>draw:frame</c> that references a picture.</summary>
+        /// <param name="text">正文文本。The body text.</param>
+        /// <param name="href">图片在包内的路径。The in-package path of the picture.</param>
+        /// <returns>content.xml 文本。The content.xml text.</returns>
+        private static string OdtContentWithImage(string text, string href)
+        {
+            return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<office:document-content"
+                + " xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\""
+                + " xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\""
+                + " xmlns:draw=\"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0\""
+                + " xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\""
+                + " xmlns:xlink=\"http://www.w3.org/1999/xlink\">"
+                + "<office:body><office:text><text:p>" + text
+                + "<draw:frame svg:width=\"2cm\" svg:height=\"2cm\">"
+                + "<draw:image xlink:href=\"" + href + "\" xlink:type=\"simple\""
+                + " xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>"
+                + "</draw:frame></text:p></office:text></office:body></office:document-content>";
+        }
+
+        /// <summary>
+        /// 拼一个带图片部件的 ODT 包；<paramref name="image"/> 为 null 时写入一张刚超过 64 MB 上限的图，
+        /// 内容按块流式写入，夹具自身只占一个 64 KB 缓冲。
+        /// Assembles an ODT package with a picture part; a null <paramref name="image"/> writes one just past
+        /// the 64 MB cap, streamed in blocks so the fixture itself holds a single 64 KB buffer.
+        /// </summary>
+        /// <param name="text">正文文本。The body text.</param>
+        /// <param name="href">图片在包内的路径。The in-package path of the picture.</param>
+        /// <param name="image">图片字节，null 表示超限图。The picture bytes; null means the oversized one.</param>
+        /// <returns>ODT 字节。The ODT bytes.</returns>
+        private static byte[] BuildOdtPackageWithImage(string text, string href, byte[] image)
+        {
+            using (MemoryStream buffer = new MemoryStream())
+            {
+                using (ZipArchive archive = new ZipArchive(buffer, ZipArchiveMode.Create, true))
+                {
+                    WriteOdtTextEntry(archive, "mimetype", "application/vnd.oasis.opendocument.text");
+                    WriteOdtTextEntry(archive, "META-INF/manifest.xml",
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                        + "<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\">"
+                        + "<manifest:file-entry manifest:full-path=\"/\" "
+                        + "manifest:media-type=\"application/vnd.oasis.opendocument.text\"/>"
+                        + "</manifest:manifest>");
+                    WriteOdtTextEntry(archive, "content.xml", OdtContentWithImage(text, href));
+
+                    ZipArchiveEntry picture = archive.CreateEntry(href, CompressionLevel.Fastest);
+                    using (Stream target = picture.Open())
+                    {
+                        if (image != null)
+                        {
+                            target.Write(image, 0, image.Length);
+                        }
+                        else
+                        {
+                            byte[] chunk = new byte[65536];
+                            long remaining = 64L * 1024 * 1024 + 64;
+                            while (remaining > 0)
+                            {
+                                int count = (int)Math.Min(chunk.Length, remaining);
+                                target.Write(chunk, 0, count);
+                                remaining -= count;
+                            }
+                        }
+                    }
+                }
+                return buffer.ToArray();
+            }
+        }
+
+        /// <summary>往 ODT 包里写一个 UTF-8 文本条目。 Writes one UTF-8 text entry into an ODT package.</summary>
+        /// <param name="archive">目标压缩包。The target archive.</param>
+        /// <param name="name">条目名。The entry name.</param>
+        /// <param name="value">文本内容。The text content.</param>
+        private static void WriteOdtTextEntry(ZipArchive archive, string name, string value)
+        {
+            ZipArchiveEntry entry = archive.CreateEntry(name, CompressionLevel.Optimal);
+            using (Stream target = entry.Open())
+            using (StreamWriter writer = new StreamWriter(target, new UTF8Encoding(false)))
+            {
+                writer.Write(value);
+            }
+        }
+
+        /// <summary>判断文档的段落文本里是否含指定串（含表格单元格内的段落）。 Reports whether any paragraph text contains the given string, including paragraphs inside table cells.</summary>
+        /// <param name="document">目标文档。The target document.</param>
+        /// <param name="needle">待查找的文本。The text to look for.</param>
+        /// <returns>命中返回 true。True when found.</returns>
+        private static bool ContainsText(OfficeDocument document, string needle)
+        {
+            for (int s = 0; s < document.Sections.Count; s++)
+            {
+                foreach (Block block in document.Sections[s].Blocks)
+                {
+                    if (ContainsText(block, needle)) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>在单个块里查找文本，表格递归进单元格。 Looks for the text inside one block, recursing into table cells.</summary>
+        /// <param name="block">待查块。The block to search.</param>
+        /// <param name="needle">待查找的文本。The text to look for.</param>
+        /// <returns>命中返回 true。True when found.</returns>
+        private static bool ContainsText(Block block, string needle)
+        {
+            Paragraph paragraph = block as Paragraph;
+            if (paragraph != null)
+            {
+                return paragraph.GetText().IndexOf(needle, StringComparison.Ordinal) >= 0;
+            }
+            Table table = block as Table;
+            if (table == null) return false;
+            foreach (TableRow row in table.Rows)
+            {
+                foreach (TableCell cell in row.Cells)
+                {
+                    foreach (Block inner in cell.Blocks)
+                    {
+                        if (ContainsText(inner, needle)) return true;
+                    }
+                }
+            }
+            return false;
         }
 
         /// <summary>一份能读通的 ODT 正文，只带一个段落。A readable ODT body carrying a single paragraph.</summary>
