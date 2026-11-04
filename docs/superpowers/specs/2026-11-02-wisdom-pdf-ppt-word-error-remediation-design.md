@@ -560,4 +560,9 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 刻意不动的一处：`PdfTextFont.cs:88-104` 的 ToUnicode 流解码仍按字体粒度静默降级。单个字体映射失败只让这一支字体抽不出字，页面其余文字照常，正是「部分丢失但整体可读」那一类，要不要上报等统一告警通道一起定。
   - §9 文档同步到位：`docs/Wisdom.Pdf.Tutorial.md` 与 `src/Wisdom.Pdf/README.md` 的「结构损坏静默降级」段落各加一句「资源上限不走这条降级」，`articles/Wisdom.Pdf.md` 的读取上限一节同样补上。三处只写可观测行为（哪两个方法、抛哪一类异常、批量索引该怎么接），不提缓存字段与预算类名，未出现本地绝对路径或发布步骤。`docs/Wisdom.Office.功能导读.md` 那句「`DecompressionLimitException` 与 `InvalidDataException` 分开，好让调用方区分『文件坏了』和『文件太大了』」本来就以上抛为前提，这次是让它第一次真的成立，无需改动。
   - 验证：`net8.0` 与 `net461` 双目标各整跑一遍，均打出 `[remediation] decode-budget PD9 PD5 PD22 ok` 并到末行 `All tests finished.`。
+- `WE2`（`c7426d6` + `7d7f644`）：目标行为「包装为 `InvalidDataException` 并保留内层异常」照原样落地，改的就是 `OdtReader.LoadPackage` 里 `Wml.LoadXml(contentBytes)` 这一行——同一个函数对 `styles.xml`、`meta.xml` 早就 `catch (XmlException)` 按支降级，对缺部件也抛 `InvalidDataException`，只有主部件这一行让解析器类型直接穿出契约。主部件没有降级余地：正文读不出来就没有可重建的对象，整个文档一无所有，只能算坏文件。
+  - 断言把「只有主部件致命」这条界三面钉住：正文合法而 `styles.xml` 坏掉必须照常出文（否则红的是夹具不是本条）；缺 `content.xml` 本来就抛 `InvalidDataException`，用它确认这一族被当成「坏文件」而非「读不出来」；门面 `WordFormatConverter.Load(byte[])` 单独一条，因为条目点名的漏网路径正是按契约兜错的调用方。最后一句钉 `InnerException is XmlException`——换类型不许把行号列号一起换掉。
+  - 夹具现用 `ZipArchive(ZipArchiveMode.Create)` 在内存里拼包（`mimetype` + `META-INF/manifest.xml` + `content.xml`），ODT 侧此前没有拼包工具。`manifest` 必须在：`Detect` 要同时见到 `content.xml` 与 `META-INF/manifest.xml` 才认 ODT，缺了它门面那一路测的就是「格式没认出来」，与 `XmlException` 无关。
+  - §9 不需要新行：`docs/Wisdom.Office.功能导读.md` 那句「格式专属的读取器把损坏统一表达为 `InvalidDataException`」本来就承诺了这件事，这次是让它对 ODT 第一次真的成立；顺带给 `OdtReader` 三个公共 `Load` 重载补 `<exception cref="InvalidDataException">`，把承诺写回方法文档。
+  - 验证：`net8.0` 与 `net461` 双目标均打出 `[remediation] word phase-four contracts ok` 并到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
