@@ -101,14 +101,39 @@ namespace Wisdom.Office.Core
     /// <summary>文本字符格式（字体、字号、粗斜体等），供文本运行与默认样式使用。Character formatting for text (font, size, bold/italic, etc.), used by text runs and default styles.</summary>
     public sealed class TextFormat
     {
+        private string _fontFamily;
+        private string _asciiFontFamily;
+        private string _eastAsiaFontFamily;
+        private double _fontSize;
+        private OfficeColor _color;
+        private bool _fontFamilySet;
+        private bool _fontSizeSet;
+        private bool _colorSet;
+
         /// <summary>统一字体名；未分别指定西文/中文字体时作为回退值。The unified font family; the fallback when no separate Latin/East-Asian font is specified.</summary>
-        public string FontFamily { get; set; }
+        public string FontFamily
+        {
+            get { return _fontFamily; }
+            set { _fontFamily = value; if (!string.IsNullOrEmpty(value)) _fontFamilySet = true; }
+        }
         /// <summary>西文（ASCII）字体名，可为空。The Latin (ASCII) font family; may be empty.</summary>
-        public string AsciiFontFamily { get; set; }
+        public string AsciiFontFamily
+        {
+            get { return _asciiFontFamily; }
+            set { _asciiFontFamily = value; if (!string.IsNullOrEmpty(value)) _fontFamilySet = true; }
+        }
         /// <summary>东亚（中文）字体名，可为空。The East-Asian (Chinese) font family; may be empty.</summary>
-        public string EastAsiaFontFamily { get; set; }
+        public string EastAsiaFontFamily
+        {
+            get { return _eastAsiaFontFamily; }
+            set { _eastAsiaFontFamily = value; if (!string.IsNullOrEmpty(value)) _fontFamilySet = true; }
+        }
         /// <summary>字号，单位为磅。The font size, in points.</summary>
-        public double FontSize { get; set; }
+        public double FontSize
+        {
+            get { return _fontSize; }
+            set { _fontSize = value; if (value > 0.0) _fontSizeSet = true; }
+        }
         /// <summary>是否加粗。Whether the text is bold.</summary>
         public bool Bold { get; set; }
         /// <summary>是否倾斜。Whether the text is italic.</summary>
@@ -118,21 +143,57 @@ namespace Wisdom.Office.Core
         /// <summary>是否带删除线。Whether the text is struck through.</summary>
         public bool Strikeout { get; set; }
         /// <summary>字体颜色。The font color.</summary>
-        public OfficeColor Color { get; set; }
+        public OfficeColor Color
+        {
+            get { return _color; }
+            set { _color = value; _colorSet = true; }
+        }
         /// <summary>是否上标。Whether the text is superscript.</summary>
         public bool Superscript { get; set; }
         /// <summary>是否下标。Whether the text is subscript.</summary>
         public bool Subscript { get; set; }
 
-        /// <summary>默认构造：Arial、11 磅、黑色。Default constructor: Arial, 11 points, black.</summary>
+        /// <summary>
+        /// 字体名是否由调用者或读端真正指定过。无参构造预置的 Arial 不算，读端没在文件里见到的也不算，
+        /// 写端据此决定要不要落下显式字体，让位给文档自己的继承链。
+        /// Whether a font family was actually specified — by the caller or by a reader. The Arial preset of
+        /// the parameterless constructor does not count, and neither does a property the reader never saw in
+        /// the file; writers use this to decide whether to emit an explicit typeface and let the document's
+        /// own inheritance chain speak.
+        /// </summary>
+        public bool HasExplicitFontFamily { get { return _fontFamilySet; } }
+        /// <summary>
+        /// 字号是否由调用者或读端真正指定过，判定同上。
+        /// Whether a font size was actually specified — by the caller or by a reader; same rule as
+        /// <see cref="HasExplicitFontFamily"/>.
+        /// </summary>
+        public bool HasExplicitFontSize { get { return _fontSizeSet; } }
+        /// <summary>
+        /// 颜色是否由调用者或读端真正指定过。无参构造预置的黑色不算。
+        /// Whether a colour was actually specified — by the caller or by a reader. The black preset of the
+        /// parameterless constructor does not count.
+        /// </summary>
+        public bool HasExplicitColor { get { return _colorSet; } }
+
+        /// <summary>
+        /// 默认构造：Arial、11 磅、黑色。这三项是模型内置默认值，不会把
+        /// <see cref="HasExplicitFontFamily"/> 之类标记点亮，写出端因此能把它们视为「未设置」。
+        /// Default constructor: Arial, 11 points, black. These three are the model's built-in defaults; they
+        /// leave the <see cref="HasExplicitFontFamily"/> family of flags dark, so writers can treat them as
+        /// "not set".
+        /// </summary>
         public TextFormat()
         {
-            FontFamily = "Arial";
-            FontSize = 11;
-            Color = OfficeColor.Black;
+            _fontFamily = "Arial";
+            _fontSize = 11;
+            _color = OfficeColor.Black;
         }
 
-        /// <summary>以指定字体与字号创建格式，颜色为黑色。Creates a format with the given font and size, using black.</summary>
+        /// <summary>
+        /// 以指定字体与字号创建格式，颜色为黑色；字体、字号与这份黑色都算显式设置。
+        /// Creates a format with the given font and size, using black; the font, the size and that colour all
+        /// count as explicitly set.
+        /// </summary>
         /// <param name="fontFamily">字体名。The font family.</param>
         /// <param name="fontSize">字号，单位为磅。The font size, in points.</param>
         public TextFormat(string fontFamily, double fontSize)

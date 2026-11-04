@@ -979,22 +979,39 @@ namespace Wisdom.Ppt
                 return new XElement(A + "r", rPr, new XElement(A + "t", text));
             }
 
-            /// <summary>生成字符属性元素（a:rPr 或 a:endParaRPr）：lang、sz、b/i/u/strike、颜色与字体。 Builds a character-properties element (a:rPr or a:endParaRPr): lang, sz, b/i/u/strike, color and fonts.</summary>
+            /// <summary>
+            /// 生成字符属性元素（a:rPr 或 a:endParaRPr）：lang 恒写，字号、加粗等开关、颜色与字体只写显式设过的。
+            /// 模型无参构造预置的 Arial/11 磅/黑色不是意图：把「等于默认值」当成「设过」，一个只加粗的词会被钉成
+            /// 11 磅的 Calibri，母版继承链上 18pt 的正文就此缩掉。
+            /// Builds a character-properties element (a:rPr or a:endParaRPr): lang always, then the size, the
+            /// b/i/u/strike toggles, the colour and the fonts — but only those actually set. The Arial/11pt/black
+            /// the model's parameterless constructor presets is not intent; writing it as if it were pins a
+            /// bold-only word to 11pt Calibri and shrinks the 18pt body it inherited from the master.
+            /// </summary>
             /// <param name="tag">元素标签名。 Element tag.</param>
             /// <param name="format">文本格式。 Text format.</param>
             /// <returns>字符属性元素。 The character-properties element.</returns>
             private static XElement CharProps(string tag, TextFormat format)
             {
                 XElement el = new XElement(A + tag, new XAttribute("lang", "zh-CN"));
-                int size = (int)RoundToInt(format.FontSize * 100.0);
-                if (size > 0) el.Add(new XAttribute("sz", IntStr(size)));
+                if (format.HasExplicitFontSize)
+                {
+                    int size = (int)RoundToInt(format.FontSize * 100.0);
+                    if (size > 0) el.Add(new XAttribute("sz", IntStr(size)));
+                }
                 if (format.Bold) el.Add(new XAttribute("b", "1"));
                 if (format.Italic) el.Add(new XAttribute("i", "1"));
                 if (format.Underline) el.Add(new XAttribute("u", "sng"));
                 if (format.Strikeout) el.Add(new XAttribute("strike", "sngStrike"));
-                el.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", format.Color.ToHex()))));
-                el.Add(new XElement(A + "latin", new XAttribute("typeface", SafeFamily(format.GetAsciiFontFamily()))));
-                el.Add(new XElement(A + "ea", new XAttribute("typeface", SafeFamily(format.GetEastAsiaFontFamily()))));
+                if (format.HasExplicitColor)
+                {
+                    el.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", format.Color.ToHex()))));
+                }
+                if (format.HasExplicitFontFamily)
+                {
+                    el.Add(new XElement(A + "latin", new XAttribute("typeface", SafeFamily(format.GetAsciiFontFamily()))));
+                    el.Add(new XElement(A + "ea", new XAttribute("typeface", SafeFamily(format.GetEastAsiaFontFamily()))));
+                }
                 return el;
             }
 
