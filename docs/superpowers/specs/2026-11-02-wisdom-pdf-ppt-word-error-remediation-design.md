@@ -565,4 +565,9 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 夹具现用 `ZipArchive(ZipArchiveMode.Create)` 在内存里拼包（`mimetype` + `META-INF/manifest.xml` + `content.xml`），ODT 侧此前没有拼包工具。`manifest` 必须在：`Detect` 要同时见到 `content.xml` 与 `META-INF/manifest.xml` 才认 ODT，缺了它门面那一路测的就是「格式没认出来」，与 `XmlException` 无关。
   - §9 不需要新行：`docs/Wisdom.Office.功能导读.md` 那句「格式专属的读取器把损坏统一表达为 `InvalidDataException`」本来就承诺了这件事，这次是让它对 ODT 第一次真的成立；顺带给 `OdtReader` 三个公共 `Load` 重载补 `<exception cref="InvalidDataException">`，把承诺写回方法文档。
   - 验证：`net8.0` 与 `net461` 双目标均打出 `[remediation] word phase-four contracts ok` 并到末行 `All tests finished.`。
+- `WE6`（`3f3a411` + `ea370ee`）：目标行为给了两句——「外层转成已声明的 `ArgumentException` 并说明超时」和「先在副本上完成全部替换再一次性提交」。两句都兑现了，但第二句不照字面做副本：替换是逐处落在 `TextRun.Text` 上的，深拷贝整篇文档等于内存翻倍，而且模型没有现成的 `Clone`。改成**计划/落地两趟**拿到同样的原子性而不加内存——正则是唯一可能中途失败的步骤，只跑在计划趟；落地趟只是给运行赋新文本，不再有能失败的解析。超时因此必然发生在「一个字都没改」的时刻。
+  - 内层异常留在包装里：超时发生在哪一段只能靠 `RegexMatchTimeoutException` 自带的模式与输入定位。
+  - 两趟改造要对齐的旧语义逐条核对过：`FirstOnly` 旧实现命中第一处后不论 `ReplaceRange` 成败都停止，新实现计划里只留一条范围、落地尝试一次，计数同样可能为 0；空运行清理的触发条件由「本段落的累计计数变过」变为「本段落至少落地一处」，并从「段落处理完就清」改为「全部落地完再按段落清一次」（同一段落可能横跨多个分组，用 touched 列表去重）。存量 `WordEnhancementTests` 的跨运行、全词、首处、页眉页脚与表格范围断言全绿，是这次语义对齐的主要证据。
+  - §9 不需要新行：`ArgumentException` 本来就是方法文档声明的类型，这次是兑现承诺而非改变契约；两个公共 `Replace` 重载的 `<exception>` 文案补上了「匹配超时」这一触发条件。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（超时那一趟实测各约 2 秒，即 `RegexTimeout` 的设定值）。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
