@@ -590,7 +590,16 @@ namespace Wisdom.Pdf
             {
                 try
                 {
-                    if (!_fileBytes.TryGetValue(source.FilePath, out data))
+                    // 读缓存必须在锁内：另一个线程正在写这条目时，无锁的 TryGetValue 可能撞上
+                    // Dictionary 内部扩容而读到撕裂状态。文件 I/O 留在锁外，避免持锁读盘。
+                    // The cache lookup has to sit inside the lock: a concurrent writer adding an entry can
+                    // catch the Dictionary mid-resize and hand back a torn state. The file I/O stays
+                    // outside so no disk read happens while the lock is held.
+                    lock (_sync)
+                    {
+                        _fileBytes.TryGetValue(source.FilePath, out data);
+                    }
+                    if (data == null)
                     {
                         data = File.ReadAllBytes(source.FilePath);
                         lock (_sync) _fileBytes[source.FilePath] = data;

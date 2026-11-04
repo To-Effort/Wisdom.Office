@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using Wisdom.Pdf;
 
 namespace Wisdom.Office.Tests
@@ -26,6 +28,7 @@ namespace Wisdom.Office.Tests
 
             RunWatermarkTextBackground(source, sourcePages, outputDirectory);
             RunWatermarkTextTile(source, outputDirectory);
+            RunWatermarkDegenerateTile(source);
             RunWatermarkSelectedPages(source, sourcePages, outputDirectory);
             RunWatermarkRotatedPage(source, outputDirectory);
             RunWatermarkImage(source, sourcePages, outputDirectory);
@@ -81,6 +84,56 @@ namespace Wisdom.Office.Tests
             RequireContains(text, "INTERNAL USE");
             Require(SlotHasWatermark(PdfFile.Load(saved), 0, false), "foreground watermark is not the last content stream");
         }
+
+        /// <summary>
+        /// PD20：步长退化时平铺必须仍然铺开，而不是把 600 次绘制预算花在页面一角。
+        /// 0.01 磅的方块只给出约 0.05 磅的步长，整页要上千格；旧实现让 600 个 tile 全落在左下角
+        /// 一小块里（再小下去 double 转 int 饱和，还全部叠到同一个坐标），水印等于消失。
+        /// PD20: a degenerate step must still tile across the page instead of spending the 600-draw budget
+        /// in one corner. A 0.01 pt block yields a step near 0.05 pt, so the page needs thousands of cells;
+        /// the old implementation put all 600 tiles in a tiny bottom-left strip — or, a step smaller still,
+        /// saturated double-to-int and stacked every tile on one coordinate — and the watermark vanished.
+        /// </summary>
+        /// <param name="source">源 PDF 字节。The source PDF bytes.</param>
+        private static void RunWatermarkDegenerateTile(byte[] source)
+        {
+            PdfFile file = PdfFile.Load(source);
+            WatermarkOptions options = WatermarkOptions.ForText("微距 MICRO");
+            options.Placement = WatermarkPlacement.Tile;
+            options.Angle = 0;
+            options.FontSize = 0.01;
+            // 间距必须显式归零：默认的 60/40 磅间距会把步长兜住，退化根本走不到判据上。
+            // The spacing has to be zeroed explicitly: the 60/40 pt defaults keep the step large enough
+            // that the degenerate path is never reached.
+            options.TileSpacingX = 0;
+            options.TileSpacingY = 0;
+            file.AddWatermark(options);
+
+            PdfFile reload = PdfFile.Load(file.SaveToBytes());
+            string form = WatermarkPair(reload, 0)[1];
+
+            double maxX = double.MinValue;
+            double maxY = double.MinValue;
+            int tiles = 0;
+            foreach (Match match in TileTranslation.Matches(form))
+            {
+                double x = double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+                double y = double.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+                tiles++;
+            }
+
+            Require(tiles > 0, "a degenerate tile step drew no watermark at all");
+            Require(maxX > 200 && maxY > 300,
+                "a 0.01 pt block collapsed the tiling into a corner: " + tiles + " tiles, furthest at "
+                + maxX.ToString("0.0", CultureInfo.InvariantCulture) + " x "
+                + maxY.ToString("0.0", CultureInfo.InvariantCulture) + " (page is 595 x 842)");
+        }
+
+        /// <summary>平铺内容流里每个 tile 的 <c>cm</c> 平移量：角度为 0 时矩阵固定是 <c>1 0 0 1 x y cm</c>。Every tile's <c>cm</c> translation in the tiled content stream: with a zero angle the matrix is always <c>1 0 0 1 x y cm</c>.</summary>
+        private static readonly Regex TileTranslation =
+            new Regex(@"1 0 0 1 (-?[0-9.]+) (-?[0-9.]+) cm", RegexOptions.CultureInvariant);
 
         /// <summary>指定页水印：只作用于给定页码，其余页面保持原样。Selected-page watermark: only the given page indexes are touched, the rest stay clean.</summary>
         /// <param name="source">源 PDF 字节。The source PDF bytes.</param>

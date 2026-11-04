@@ -498,10 +498,32 @@ namespace Wisdom.Pdf
                 if (cornerV[i] > maxV) maxV = cornerV[i];
             }
 
-            int iMin = (int)Math.Floor((minU - blockWidth) / stepU);
-            int iMax = (int)Math.Ceiling((maxU + blockWidth) / stepU);
-            int jMin = (int)Math.Floor((minV - blockHeight) / stepV);
-            int jMax = (int)Math.Ceiling((maxV + blockHeight) / stepV);
+            // 步长下限：请求的步长小到整页要铺上千格时，600 次绘制上限只会把平铺截在页面左下角的一小块，
+            // 水印于是「静默消失」；再小下去 double 转 int 还会饱和成 int.MinValue，全部 tile 叠到同一个
+            // 坐标上。这里把步长抬到「整页正好铺满 MaxTileDraws 格」的尺度——只有请求的步长比预算更小时
+            // 才生效，正常间距的平铺一个字节都不变，而退化的输入从「缩成一团」变成「均匀覆盖整页」。
+            // A lower bound on the step: when the requested step would need thousands of tiles, the
+            // MaxTileDraws cap only paints the bottom-left corner and the watermark silently disappears; a
+            // step any smaller saturates the double-to-int conversion into int.MinValue and stacks every
+            // tile on one coordinate. The step is raised to the scale at which the page holds exactly
+            // MaxTileDraws cells — only when the request is tighter than that budget, so a normally spaced
+            // tiling keeps its bytes, while a degenerate one spreads over the page instead of collapsing.
+            double rangeU = maxU - minU;
+            double rangeV = maxV - minV;
+            if (rangeU > 0 && rangeV > 0)
+            {
+                double budgetStep = Math.Sqrt(rangeU * rangeV / MaxTileDraws);
+                if (budgetStep > 0)
+                {
+                    if (stepU < budgetStep) stepU = budgetStep;
+                    if (stepV < budgetStep) stepV = budgetStep;
+                }
+            }
+
+            int iMin = TileIndex((minU - blockWidth) / stepU, true);
+            int iMax = TileIndex((maxU + blockWidth) / stepU, false);
+            int jMin = TileIndex((minV - blockHeight) / stepV, true);
+            int jMax = TileIndex((maxV + blockHeight) / stepV, false);
 
             int drawn = 0;
             for (int j = jMin; j <= jMax && drawn < MaxTileDraws; j++)
@@ -517,6 +539,29 @@ namespace Wisdom.Pdf
                 }
             }
         }
+
+        /// <summary>
+        /// 把「第几格」的比值转成 int 下标，先夹紧在 ±<see cref="MaxTileIndex"/> 之内再取整。
+        /// 比值超出 int 范围时直接强转会饱和成 <see cref="int.MinValue"/>，索引于是全部挤到同一个坐标；
+        /// 夹紧之后最坏情况只是平铺范围被截断，不会把整张水印叠成一格。NaN 按 0 处理。
+        /// Converts a tile-count ratio into an int index, clamped to ±<see cref="MaxTileIndex"/> before the
+        /// cast. A ratio outside the int range saturates to <see cref="int.MinValue"/>, which collapses every
+        /// index onto one coordinate; clamping at worst truncates the tiled range instead of stacking the
+        /// whole watermark in one cell. NaN maps to zero.
+        /// </summary>
+        /// <param name="ratio">格序号（可为小数）。The tile ratio, possibly fractional.</param>
+        /// <param name="roundDown">true 取 floor，false 取 ceiling。True to floor, false to ceil.</param>
+        /// <returns>夹紧后的下标。The clamped index.</returns>
+        private static int TileIndex(double ratio, bool roundDown)
+        {
+            if (double.IsNaN(ratio)) return 0;
+            if (ratio <= -MaxTileIndex) return -MaxTileIndex;
+            if (ratio >= MaxTileIndex) return MaxTileIndex;
+            return roundDown ? (int)Math.Floor(ratio) : (int)Math.Ceiling(ratio);
+        }
+
+        /// <summary>平铺下标的上限，防止比值越界后平铺范围无意义地铺满 int 全域。Upper bound on a tile index so an out-of-range ratio cannot spread the tiling over the whole int range.</summary>
+        private const int MaxTileIndex = 4096;
 
         /// <summary>
         /// 在给定中心点画出图像与文字两项内容。Draws the image and text items centred at the given point.
