@@ -45,7 +45,7 @@ namespace Wisdom.Word
         /// <param name="replacement">替换文本，null 视为空串。The replacement text; null is treated as empty.</param>
         /// <returns>实际替换次数。The number of replacements made.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="document"/> 或 <paramref name="searchText"/> 为 null。Thrown when <paramref name="document"/> or <paramref name="searchText"/> is null.</exception>
-        /// <exception cref="ArgumentException"><paramref name="searchText"/> 为空或正则表达式非法。Thrown when <paramref name="searchText"/> is empty or the regular expression is invalid.</exception>
+        /// <exception cref="ArgumentException"><paramref name="searchText"/> 为空、正则表达式非法，或正则匹配超时；抛出超时文档未被改动。Thrown when <paramref name="searchText"/> is empty, the regular expression is invalid, or matching times out; on a timeout the document is untouched.</exception>
         public static int Replace(OfficeDocument document, string searchText, string replacement)
         {
             return Replace(document, searchText, replacement, new WordFindReplaceOptions());
@@ -62,7 +62,7 @@ namespace Wisdom.Word
         /// <param name="options">替换选项，null 时使用默认值。The options; defaults are used when null.</param>
         /// <returns>实际替换次数。The number of replacements made.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="document"/> 或 <paramref name="searchText"/> 为 null。Thrown when <paramref name="document"/> or <paramref name="searchText"/> is null.</exception>
-        /// <exception cref="ArgumentException"><paramref name="searchText"/> 为空或正则表达式非法。Thrown when <paramref name="searchText"/> is empty or the regular expression is invalid.</exception>
+        /// <exception cref="ArgumentException"><paramref name="searchText"/> 为空、正则表达式非法，或正则匹配超时；抛出超时文档未被改动。Thrown when <paramref name="searchText"/> is empty, the regular expression is invalid, or matching times out; on a timeout the document is untouched.</exception>
         public static int Replace(OfficeDocument document, string searchText, string replacement, WordFindReplaceOptions options)
         {
             if (document == null) throw new ArgumentNullException("document");
@@ -75,7 +75,60 @@ namespace Wisdom.Word
                 ? new Regex(searchText, options.MatchCase ? RegexOptions.None : RegexOptions.IgnoreCase, RegexTimeout)
                 : null;
 
+            // 找匹配与改文本分成两趟：正则只在计划这一趟跑，所以超时抛出时文档一个字都没被改。
+            // 原先到处是就地改写——第一段已经替换完、下一段才超时，调用方拿到的是改到一半的文档，
+            // 既不知道改了几处，也没有回滚的余地（遍历器没有事务）。
+            // Planning and applying are now two passes: the regex runs only while planning, so a timeout
+            // escapes with not one character changed. The old loop rewrote in place, leaving callers with a
+            // half-replaced document — no count, and nothing to roll back to, because the walker has no
+            // transaction.
+            List<ReplacementPlan> plan;
+            try
+            {
+                plan = BuildPlan(document, searchText, regex, options);
+            }
+            catch (RegexMatchTimeoutException timeout)
+            {
+                throw new ArgumentException("正则匹配超时（" + RegexTimeout.TotalSeconds
+                    + " 秒），文档未被改动。", timeout);
+            }
+
             int count = 0;
+            List<Paragraph> touched = new List<Paragraph>();
+            for (int p = 0; p < plan.Count; p++)
+            {
+                ReplacementPlan entry = plan[p];
+                // 同一组内从后往前改：改掉的长度不会移动前面匹配的下标。
+                // Within one group the offsets run backwards, so a rewritten length never shifts the
+                // indexes of the matches before it.
+                for (int m = entry.Ranges.Count - 1; m >= 0; m--)
+                {
+                    if (WordTextRange.ReplaceRange(entry.Runs, entry.Ranges[m].Index, entry.Ranges[m].Length, replacement))
+                    {
+                        count++;
+                        if (!touched.Contains(entry.Paragraph)) touched.Add(entry.Paragraph);
+                    }
+                }
+            }
+
+            for (int t = 0; t < touched.Count; t++) RemoveEmptyRuns(touched[t]);
+
+            return count;
+        }
+
+        /// <summary>
+        /// 遍历一遍文档，把每处替换记成计划；不改动任何文本，正则匹配只在这趟里发生。
+        /// Walks the document and records every replacement as a plan without changing any text; this is the
+        /// only pass where the regular expression runs.
+        /// </summary>
+        /// <param name="document">目标文档。The target document.</param>
+        /// <param name="searchText">查找文本。The search text.</param>
+        /// <param name="regex">已编译的正则表达式，普通查找时为 null。The compiled regex, or null for plain search.</param>
+        /// <param name="options">替换选项。The options.</param>
+        /// <returns>按遍历顺序排列的替换计划。The replacement plans in walk order.</returns>
+        private static List<ReplacementPlan> BuildPlan(OfficeDocument document, string searchText, Regex regex, WordFindReplaceOptions options)
+        {
+            List<ReplacementPlan> plan = new List<ReplacementPlan>();
             bool firstDone = false;
             WordDocumentWalker.ForEachParagraph(
                 document,
@@ -84,7 +137,6 @@ namespace Wisdom.Word
                 delegate (Paragraph paragraph)
                 {
                     if (firstDone) return;
-                    int before = count;
                     List<List<TextRun>> groups = WordTextRange.GetGroups(paragraph);
                     for (int g = 0; g < groups.Count && !firstDone; g++)
                     {
@@ -95,28 +147,29 @@ namespace Wisdom.Word
                         List<TextMatchRange> matches = FindMatches(text, searchText, regex, options);
                         if (matches.Count == 0) continue;
 
-                        if (options.FirstOnly)
-                        {
-                            if (WordTextRange.ReplaceRange(runs, matches[0].Index, matches[0].Length, replacement))
-                            {
-                                count++;
-                            }
-                            firstDone = true;
-                            continue;
-                        }
-
-                        for (int m = matches.Count - 1; m >= 0; m--)
-                        {
-                            if (WordTextRange.ReplaceRange(runs, matches[m].Index, matches[m].Length, replacement))
-                            {
-                                count++;
-                            }
-                        }
+                        ReplacementPlan entry = new ReplacementPlan();
+                        entry.Paragraph = paragraph;
+                        entry.Runs = runs;
+                        entry.Ranges = matches;
+                        plan.Add(entry);
+                        if (options.FirstOnly) firstDone = true;
                     }
-                    if (count != before) RemoveEmptyRuns(paragraph);
                 });
+            return plan;
+        }
 
-            return count;
+        /// <summary>
+        /// 一处待落地的替换：目标段落、该组运行列表与组内偏移。
+        /// One planned replacement: the target paragraph, that group's runs and the offsets inside the group.
+        /// </summary>
+        private sealed class ReplacementPlan
+        {
+            /// <summary>被改动的段落，用于替换完成后清理空运行。The paragraph being changed, so emptied runs can be cleaned afterwards.</summary>
+            public Paragraph Paragraph;
+            /// <summary>命中所在的运行分组，偏移按这一组的合并文本计算。The run group the offsets belong to.</summary>
+            public List<TextRun> Runs;
+            /// <summary>组内按出现顺序排列的匹配。The matches inside this group, in occurrence order.</summary>
+            public List<TextMatchRange> Ranges;
         }
 
         /// <summary>
