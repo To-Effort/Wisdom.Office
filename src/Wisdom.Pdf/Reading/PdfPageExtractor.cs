@@ -1,9 +1,45 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Wisdom.Office.Core;
 
 namespace Wisdom.Pdf
 {
+    /// <summary>
+    /// 单页提取期间的累计解码字节预算。Cumulative decoded-byte budget for one page extraction.
+    /// </summary>
+    /// <remarks>按流实例记账：同一个 Form 被 <c>Do</c> 五十次只算一份，二十个各 100 KB 的不同 Form 算二十份。
+    /// 深度上限只能挡住自引用，挡不住一层里铺开的扇出，累计预算补的就是这一格。
+    /// Charging is per stream instance, so fifty Do invocations of one form count once while twenty distinct
+    /// 100 KB forms count twenty times. The recursion depth ceiling only stops self-referential Forms; the
+    /// cumulative budget is what bounds the fan-out spread across one level.</remarks>
+    internal sealed class PdfDecodeBudget
+    {
+        /// <summary>已计过账的流。Streams already charged.</summary>
+        private readonly HashSet<PdfStream> _charged = new HashSet<PdfStream>();
+        /// <summary>累计登记的解码字节数。The decoded bytes recorded so far.</summary>
+        private long _used;
+
+        /// <summary>
+        /// 登记一条流的解码字节数，同一条流重复解码不重复计费；累计越界即抛上限异常。
+        /// Records a stream's decoded size without charging the same stream twice, and throws the limit
+        /// exception once the running total breaches the ceiling.
+        /// </summary>
+        /// <param name="stream">刚解码完的流。The stream that was just decoded.</param>
+        /// <param name="bytes">本次解码出的字节数。The number of bytes that decode produced.</param>
+        /// <exception cref="DecompressionLimitException">累计解码量超过 <see cref="PdfReadLimits.MaxDecodedStreamBytes"/> 时抛出。Thrown when the cumulative decoded size exceeds <see cref="PdfReadLimits.MaxDecodedStreamBytes"/>.</exception>
+        public void Charge(PdfStream stream, long bytes)
+        {
+            if (stream == null || !_charged.Add(stream)) return;
+            _used += bytes;
+            if (_used > PdfReadLimits.MaxDecodedStreamBytes)
+            {
+                throw new DecompressionLimitException("单页累计解码内容超过安全上限("
+                    + PdfReadLimits.MaxDecodedStreamBytes + " 字节)。");
+            }
+        }
+    }
+
     /// <summary>
     /// 页面内容提取器：驱动内容流解释器收集文本片段与矢量线段，再组装为文本行和表格。
     /// Page content extractor: drives the content stream interpreter to collect text fragments and vector
@@ -17,19 +53,30 @@ namespace Wisdom.Pdf
         /// </summary>
         /// <param name="page">目标页面。The target page.</param>
         /// <remarks>内容流语法损坏时吞掉异常，返回已收集到的部分结果，保证读取不因单页失败而中断；
+        /// 上限与内存类失败（解压炸弹、缓存预算、分配失败）原样上抛，不再伪装成「这页没有文字」。
         /// 字体字典到度量对象的缓存按字典引用共享，避免同一字体重复解析。
         /// Corrupted content stream syntax swallows the exception and keeps the partial results, so one bad
-        /// page cannot abort the read; the font dictionary-to-metrics cache is shared per dictionary
-        /// reference to avoid reparsing the same font.</remarks>
+        /// page cannot abort the read; limit and memory failures (decompression bombs, decode budgets,
+        /// allocation failure) propagate instead of masquerading as "this page has no text". The
+        /// font dictionary-to-metrics cache is shared per dictionary reference to avoid reparsing the same font.</remarks>
         public static void Extract(PdfPage page)
         {
             List<PdfVectorSegment> segments = new List<PdfVectorSegment>();
             PdfFragmentCollector collector = new PdfFragmentCollector(page.Height);
             Dictionary<PdfDictionary, PdfTextFont> fonts = new Dictionary<PdfDictionary, PdfTextFont>();
-            PdfContentInterpreter interpreter = new PdfContentInterpreter(page.Document, page.Height, collector, segments, fonts);
+            PdfDecodeBudget budget = new PdfDecodeBudget();
+            PdfContentInterpreter interpreter = new PdfContentInterpreter(page.Document, page.Height, collector, segments, fonts, budget);
             try
             {
                 interpreter.Run(page.GetContentBytes(), page.Resources, null, 0);
+            }
+            catch (DecompressionLimitException)
+            {
+                throw;
+            }
+            catch (OutOfMemoryException)
+            {
+                throw;
             }
             catch (Exception)
             {

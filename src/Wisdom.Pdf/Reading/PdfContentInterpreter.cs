@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Wisdom.Office.Core;
 
 namespace Wisdom.Pdf
 {
@@ -186,8 +187,12 @@ namespace Wisdom.Pdf
     /// PDF content-stream interpreter: implements the text- and path-related graphics-state operators, emitting text fragments and vector segments.
     /// </summary>
     /// <remarks>这是一个只求几何正确的简化解释器：颜色、线型、裁剪与变换外的效果均被忽略，
-    /// 单条算符执行失败只吞掉异常继续下一条，因此对损坏的内容流具备容错性。
-    /// This is a simplified interpreter concerned only with geometric correctness: color, line style, clipping and effects beyond transforms are ignored, and a failure in one operator only swallows the exception and continues, so it tolerates corrupted content streams.</remarks>
+    /// 单条算符执行失败只吞掉异常继续下一条，因此对损坏的内容流具备容错性；
+    /// 上限与内存类失败（解压超限、单页累计解码预算）不在此列，原样上抛。
+    /// This is a simplified interpreter concerned only with geometric correctness: color, line style, clipping
+    /// and effects beyond transforms are ignored, and a failure in one operator only swallows the exception and
+    /// continues, so it tolerates corrupted content streams. Limit and memory failures (a stream over the
+    /// decode cap, the page's cumulative decode budget) are excluded and propagate.</remarks>
     internal sealed class PdfContentInterpreter
     {
         /// <summary>q/Q 之间保存的图形状态快照。A graphics-state snapshot saved between q/Q.</summary>
@@ -221,6 +226,8 @@ namespace Wisdom.Pdf
         private readonly List<PdfVectorSegment> _segments;
         /// <summary>字体字典到度量对象的共享缓存。A shared cache from font dictionaries to metric objects.</summary>
         private readonly Dictionary<PdfDictionary, PdfTextFont> _fonts;
+        /// <summary>单页累计解码字节预算，跨嵌套 Form 共用一份。The page's cumulative decoded-byte budget, shared through nested Forms.</summary>
+        private readonly PdfDecodeBudget _budget;
         /// <summary>q/Q 状态栈。The q/Q graphics-state stack.</summary>
         private readonly Stack<GraphicsState> _stack = new Stack<GraphicsState>();
         /// <summary>当前尚未绘出的路径。The current path not yet painted.</summary>
@@ -268,14 +275,16 @@ namespace Wisdom.Pdf
         /// <param name="collector">文本片段输出收集器。The text-fragment output collector.</param>
         /// <param name="segments">矢量线段输出列表。The vector-segment output list.</param>
         /// <param name="fonts">字体字典到度量对象的共享缓存，跨页面与 Form 复用。The shared font-dictionary-to-metric cache, reused across pages and Forms.</param>
+        /// <param name="budget">单页累计解码字节预算，嵌套 Form 沿用同一个实例。The page's cumulative decoded-byte budget; nested Forms keep the same instance.</param>
         public PdfContentInterpreter(PdfDocument document, double pageHeight, PdfFragmentCollector collector,
-            List<PdfVectorSegment> segments, Dictionary<PdfDictionary, PdfTextFont> fonts)
+            List<PdfVectorSegment> segments, Dictionary<PdfDictionary, PdfTextFont> fonts, PdfDecodeBudget budget)
         {
             _document = document;
             _pageHeight = pageHeight;
             _collector = collector;
             _segments = segments;
             _fonts = fonts;
+            _budget = budget;
         }
 
         /// <summary>
@@ -339,6 +348,14 @@ namespace Wisdom.Pdf
                 try
                 {
                     Execute(op, operands, depth);
+                }
+                catch (DecompressionLimitException)
+                {
+                    throw;
+                }
+                catch (OutOfMemoryException)
+                {
+                    throw;
                 }
                 catch (Exception)
                 {
@@ -642,10 +659,24 @@ namespace Wisdom.Pdf
             {
                 content = _document.DecodeStream(form);
             }
+            catch (DecompressionLimitException)
+            {
+                throw;
+            }
+            catch (OutOfMemoryException)
+            {
+                throw;
+            }
             catch (Exception)
             {
                 return;
             }
+            // 深度上限挡不住一层铺开的扇出：二十个各 100 KB 的不同表单合起来 2 MB，单看每一个都合法。
+            // 记账按流实例，同一个表单被 Do 多少次都只算一份。
+            // A depth ceiling cannot bound the fan-out spread over one level: twenty distinct 100 KB forms
+            // make 2 MB while each of them looks legal. Charging is per stream instance, so however many
+            // times one form is invoked it still counts once.
+            _budget.Charge(form, content.LongLength);
 
             double[] matrix = Identity();
             PdfArray formMatrix = _document.Resolve(form.Dictionary.Get("Matrix")) as PdfArray;
@@ -662,7 +693,7 @@ namespace Wisdom.Pdf
             PdfDictionary formResources = _document.Resolve(form.Dictionary.Get("Resources")) as PdfDictionary;
             if (formResources == null) formResources = _resources;
             double[] formCtm = Multiply(matrix, _ctm);
-            PdfContentInterpreter interpreter = new PdfContentInterpreter(_document, _pageHeight, _collector, _segments, _fonts);
+            PdfContentInterpreter interpreter = new PdfContentInterpreter(_document, _pageHeight, _collector, _segments, _fonts, _budget);
             interpreter.Run(content, formResources, formCtm, depth + 1);
         }
 

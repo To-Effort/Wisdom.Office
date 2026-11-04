@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Wisdom.Office.Core;
 
 namespace Wisdom.Pdf
 {
@@ -78,6 +79,12 @@ namespace Wisdom.Pdf
         /// Returns the decoded bytes of all content streams of this page.
         /// </summary>
         /// <returns>合并后的内容流；Contents 为数组时各段以换行分隔拼接，无内容时返回空数组。The merged content stream; when Contents is an array the segments are joined with newline separators, and an empty array is returned when there is no content.</returns>
+        /// <remarks>数组里每多一个引用就多一份正文，逐份解码都合法，聚合出来的体积却按引用份数翻倍；
+        /// 因此聚合出口共用单流上限，超限即抛，不再按份数无限堆进内存。
+        /// Every extra array reference adds another body: each individual decode is legal while the aggregate
+        /// grows with the reference count, so the aggregation exit shares the single-stream ceiling and throws
+        /// instead of piling copies into memory.</remarks>
+        /// <exception cref="DecompressionLimitException">各段解码后合计超过 <see cref="PdfReadLimits.MaxDecodedStreamBytes"/> 时抛出。Thrown when the segments together exceed <see cref="PdfReadLimits.MaxDecodedStreamBytes"/>.</exception>
         public byte[] GetContentBytes()
         {
             PdfObject contents = _document.Resolve(_dictionary.Get("Contents"));
@@ -94,6 +101,11 @@ namespace Wisdom.Pdf
                     PdfStream item = _document.Resolve(array[i]) as PdfStream;
                     if (item == null) continue;
                     byte[] data = _document.DecodeStream(item);
+                    if (memory.Length + data.LongLength > PdfReadLimits.MaxDecodedStreamBytes)
+                    {
+                        throw new DecompressionLimitException("页内容流合计解码后超过安全上限("
+                            + PdfReadLimits.MaxDecodedStreamBytes + " 字节)。");
+                    }
                     memory.Write(data, 0, data.Length);
                     memory.WriteByte(10);
                 }

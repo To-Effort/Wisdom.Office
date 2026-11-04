@@ -50,6 +50,18 @@ namespace Wisdom.Pdf
         private readonly Dictionary<int, PdfObject> _objects = new Dictionary<int, PdfObject>();
         /// <summary>正在加载中的对象号，用于阻断循环引用导致的无限递归。Object numbers currently being loaded; breaks reference cycles.</summary>
         private readonly HashSet<int> _loading = new HashSet<int>();
+        /// <summary>
+        /// 已解码流正文的缓存，按流实例归属。Decoded stream bodies, keyed by stream instance.
+        /// </summary>
+        private readonly Dictionary<PdfStream, byte[]> _decodedStreams = new Dictionary<PdfStream, byte[]>();
+        /// <summary>缓存里留存的解码字节总量。The decoded bytes still held by that cache.</summary>
+        private long _decodedBytesRetained;
+        /// <summary>
+        /// 缓存留存的解码字节上限，超过即整体作废重解，防止「读完一本书就把全书正文都留在内存里」。
+        /// Ceiling on the bytes the cache may retain; past it the cache is dropped rather than growing, so
+        /// reading a whole document cannot leave every body resident in memory.
+        /// </summary>
+        private const long MaxRetainedDecodedBytes = 64L * 1024 * 1024;
         /// <summary>按文档顺序收集的页面列表。Pages collected in document order.</summary>
         private readonly List<PdfPage> _pages = new List<PdfPage>();
         /// <summary>完整的 PDF 文件字节。The complete PDF file bytes.</summary>
@@ -861,13 +873,42 @@ namespace Wisdom.Pdf
         }
 
         /// <summary>
-        /// 按过滤器链解码流内容。Decode a stream body through its filter chain.
+        /// 按过滤器链解码流内容，结果按流实例缓存。
+        /// Decodes a stream body through its filter chain, caching the result per stream instance.
         /// </summary>
         /// <param name="stream">待解码的流。The stream to decode.</param>
-        /// <returns>解码后的字节。The decoded bytes.</returns>
+        /// <returns>解码后的字节；同一条流每次拿到的都是同一个数组，调用方只读不得改写。The decoded bytes; every call for the same stream returns that same array, so callers must read but never rewrite it.</returns>
+        /// <remarks>重复解码以前完全没有约束：<c>/Contents</c> 引用同一个流五十次、同一个 Form 被 <c>Do</c>
+        /// 两千次、对象流里每取一个对象都要重新 inflate 整条流，总量只由引用次数决定。缓存把这三条路径
+        /// 一并收敛成「每条流最多解一次」；解压在锁外进行，两个线程同时未命中各解各的，返回内容相同。
+        /// Nothing bounded repeated decoding before: fifty /Contents references to one stream, two thousand
+        /// Do invocations of one form, or one object lookup per re-inflated object stream, all scaled only by
+        /// the reference count. The cache collapses those routes to at most one decode per stream; inflating
+        /// happens outside the lock, so two concurrent misses each decode and return equal content.
+        /// </remarks>
+        /// <exception cref="DecompressionLimitException">解码后体积超过 <see cref="PdfReadLimits.MaxDecodedStreamBytes"/> 时抛出。Thrown when the decoded size exceeds <see cref="PdfReadLimits.MaxDecodedStreamBytes"/>.</exception>
         internal byte[] DecodeStream(PdfStream stream)
         {
-            return PdfStreamDecoder.Decode(stream, Resolve);
+            if (stream == null) return PdfStreamDecoder.Decode(stream, Resolve);
+
+            byte[] cached;
+            lock (_decodedStreams)
+            {
+                if (_decodedStreams.TryGetValue(stream, out cached)) return cached;
+            }
+
+            byte[] data = PdfStreamDecoder.Decode(stream, Resolve);
+            lock (_decodedStreams)
+            {
+                if (_decodedBytesRetained + data.LongLength > MaxRetainedDecodedBytes)
+                {
+                    _decodedStreams.Clear();
+                    _decodedBytesRetained = 0;
+                }
+                _decodedStreams[stream] = data;
+                _decodedBytesRetained += data.LongLength;
+            }
+            return data;
         }
 
         /// <summary>
