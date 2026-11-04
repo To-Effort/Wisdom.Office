@@ -35,6 +35,7 @@ namespace Wisdom.Word
         private const string CustomPropertiesRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties";
         private const string StylesRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
         private const string SettingsRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
+        private const string NumberingRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
         private const string ImageRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
         private const string HeaderRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
         private const string FooterRelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
@@ -47,6 +48,7 @@ namespace Wisdom.Word
         private const string ContentTypeTemplate = "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml";
         private const string ContentTypeStyles = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
         private const string ContentTypeSettings = "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
+        private const string ContentTypeNumbering = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
         private const string ContentTypeHeader = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
         private const string ContentTypeFooter = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
         private const string ContentTypeCoreProperties = "application/vnd.openxmlformats-package.core-properties+xml";
@@ -164,6 +166,38 @@ namespace Wisdom.Word
         }
 
         /// <summary>
+        /// 从段落标记文本还原出的编号形状：编号格式、lvlText 模板与起始值，决定 abstractNum 里第 0 级的写法。
+        /// A numbering shape recovered from a paragraph's marker text: the format, the lvlText template and the
+        /// start value, which together define level 0 of an abstractNum.
+        /// </summary>
+        private sealed class NumberingShape
+        {
+            /// <summary>w:numFmt 值（decimal、lowerLetter、lowerRoman、bullet 等）。The w:numFmt value (decimal, lowerLetter, lowerRoman, bullet, ...).</summary>
+            public string Format;
+            /// <summary>w:lvlText 模板，数字位置以 %1 表示，如 "%1."。The w:lvlText template with %1 standing for the number, e.g. "%1.".</summary>
+            public string LevelText;
+            /// <summary>起始序号（w:start），由标记里的数字反推。The start number (w:start), recovered from the marker.</summary>
+            public int Start = 1;
+            /// <summary>是否为项目符号（项目符号没有起始值，lvlText 就是符号本身）。Whether this is a bullet (bullets have no start value and the lvlText is the symbol itself).</summary>
+            public bool Bullet;
+        }
+
+        /// <summary>
+        /// 一条编号序列：numId 指向可复用的 abstractNumId，一段连续的列表占一个 numId，从而各自从起始值重新计数。
+        /// One numbering sequence: a numId pointing at a reusable abstractNumId. Every contiguous list run gets its
+        /// own numId so each run counts from its own start value.
+        /// </summary>
+        private sealed class NumberingDefinition
+        {
+            /// <summary>编号序列 ID（w:num/@w:numId）。The numbering id (w:num/@w:numId).</summary>
+            public int NumId;
+            /// <summary>指向的抽象编号定义 ID。The abstract numbering definition it points at.</summary>
+            public int AbstractNumId;
+            /// <summary>本序列的编号形状。The numbering shape of this sequence.</summary>
+            public NumberingShape Shape;
+        }
+
+        /// <summary>
         /// 单个 XML 部件（正文/页眉/页脚）的写出上下文：累积该部件的关系条目，
         /// 并为图片提供按部件去重的关系 ID 分配。
         /// Writing context for one XML part (body, header or footer): accumulates the part's relationship
@@ -192,6 +226,10 @@ namespace Wisdom.Word
             public string PartPath { get; private set; }
             /// <summary>本部件累积的关系条目列表。The relationship entries accumulated for this part.</summary>
             public List<RelationshipEntry> Relationships { get; private set; } = new List<RelationshipEntry>();
+            /// <summary>组装阶段算好的部件字节。Part bytes produced during the assembly phase.</summary>
+            public byte[] PartBytes;
+            /// <summary>组装阶段算好的关系部件字节，null 表示本部件没有关系。Relationship part bytes, null when the part has no relationships.</summary>
+            public byte[] RelationshipsBytes;
             /// <summary>所属的写出状态，用于查询全局媒体信息。The owning writer state, used to look up global media information.</summary>
             public WriterState Owner;
 
@@ -319,6 +357,20 @@ namespace Wisdom.Word
             private string _stylesRelationshipId;
             /// <summary>settings.xml 的关系 ID（构建时分配）。The relationship id of settings.xml, allocated while building.</summary>
             private string _settingsRelationshipId;
+            /// <summary>编号形状（格式 + 模板 + 起始值）到 abstractNumId 的映射；形状相同的列表复用同一 abstractNum。Map from a numbering shape (format, template and start value) to its abstractNumId; lists of the same shape share one abstractNum.</summary>
+            private readonly Dictionary<string, int> _abstractNumbersByShape = new Dictionary<string, int>(StringComparer.Ordinal);
+            /// <summary>本次写出分配出的编号序列，按 numId 顺序写入 numbering.xml。The numbering sequences allocated by this write, emitted into numbering.xml in numId order.</summary>
+            private readonly List<NumberingDefinition> _numberingDefinitions = new List<NumberingDefinition>();
+            /// <summary>下一个可用的 numId（从 1 开始）。The next numId to allocate, starting at 1.</summary>
+            private int _nextNumId = 1;
+            /// <summary>下一个可用的 abstractNumId（从 0 开始）。The next abstractNumId to allocate, starting at 0.</summary>
+            private int _nextAbstractNumberId;
+            /// <summary>当前是否处于一段连续的列表段落中。Whether the writer is inside a contiguous run of list paragraphs.</summary>
+            private bool _listRunOpen;
+            /// <summary>当前列表段的编号形状键。The shape key of the active list run.</summary>
+            private string _activeListShape;
+            /// <summary>当前列表段所在的部件；跨部件（正文到页眉）必须重新起号。The part owning the active list run; crossing parts (body to header) must restart the numbering.</summary>
+            private PartContext _activeListPart;
 
             /// <summary>主文档部件的内容类型（.docx 或 .dotx）。The content type of the main document part (.docx or .dotx).</summary>
             private readonly string _mainContentType;
@@ -388,12 +440,21 @@ namespace Wisdom.Word
                 {
                     Section section = _document.Sections[i];
                     SectionParts parts = _sections[i];
+                    // sectPr 只能挂在本节自己的末段上：早先直接取 body 的最后一个元素，空节（Blocks 为空）
+                    // 会把分节符塞进上一节末段的 pPr，轻则空节的页面设置丢失，重则同一段落下出现两个 sectPr
+                    // （pPr 只允许一个 sectPr，Word 会判文件损坏）。
+                    // A section's sectPr may only attach to that section's own last paragraph: the old code took
+                    // the body's last element, so an empty section pushed its break into the previous section's
+                    // final paragraph — losing the empty section's page setup and, when two empty sections lined
+                    // up, writing two sectPr under one pPr (only one is allowed, and Word flags the file as corrupt).
+                    int bodyBefore = _body.Elements().Count();
                     WriteBlocks(_body, section.Blocks, _documentPart, parts.ContentWidth);
+                    bool wroteBlocks = _body.Elements().Count() > bodyBefore;
 
                     XElement sectionProperties = CreateSectionProperties(section, parts);
                     if (i < _document.Sections.Count - 1)
                     {
-                        XElement last = _body.Elements().LastOrDefault();
+                        XElement last = wroteBlocks ? _body.Elements().LastOrDefault() : null;
                         if (last != null && last.Name == w + "p")
                         {
                             XElement properties = last.Element(w + "pPr");
@@ -424,6 +485,28 @@ namespace Wisdom.Word
                 {
                     _body.Add(CreateSectionProperties(new Section(), new SectionParts()));
                 }
+
+                // 页眉页脚的正文必须在 numbering 定稿之前组装：页眉里的列表同样会登记编号定义，
+                // 若等到写包时才生成，numbering.xml、它的关系与内容类型都已按"没有编号"定稿，
+                // 页眉里的 w:numPr 会指向不存在的序列（Word 打开即提示修复）。
+                // Header/footer content has to be assembled before numbering is finalised: a list inside a header
+                // registers numbering definitions too, and generating it during the zip write would leave
+                // numbering.xml, its relationship and its content-type already settled as "no numbering", so the
+                // w:numPr in the header would reference a sequence that does not exist (Word reports a repair).
+                for (int i = 0; i < _sections.Count; i++)
+                {
+                    SectionParts parts = _sections[i];
+                    if (parts.Header != null) BuildHeaderFooterPart(parts.Header, true);
+                    if (parts.Footer != null) BuildHeaderFooterPart(parts.Footer, false);
+                }
+
+                // numbering.xml 只有写出过编号段落时才存在，关系也必须同步缺席，否则 Word 会报包结构损坏。
+                // numbering.xml only exists when numbered paragraphs were written, and the relationship has to be
+                // absent with it; an orphan relationship makes Word report a broken package.
+                if (_numberingDefinitions.Count > 0)
+                {
+                    _documentPart.AddRelationship(NumberingRelationshipType, "numbering.xml");
+                }
             }
 
             /// <summary>
@@ -453,8 +536,10 @@ namespace Wisdom.Word
                 for (int s = 0; s < document.Sections.Count; s++)
                 {
                     CollectImages(document.Sections[s].Blocks, ordered);
-                    CollectImages(document.Sections[s].Header.Blocks, ordered);
-                    CollectImages(document.Sections[s].Footer.Blocks, ordered);
+                    // Section.Header / Footer 有公开 setter，宿主可以置空；这里先判空再取块。
+                    // Section.Header and Section.Footer expose public setters, so either can be null here.
+                    if (document.Sections[s].Header != null) CollectImages(document.Sections[s].Header.Blocks, ordered);
+                    if (document.Sections[s].Footer != null) CollectImages(document.Sections[s].Footer.Blocks, ordered);
                 }
 
                 int index = 0;
@@ -594,6 +679,10 @@ namespace Wisdom.Word
                 WriteEntry(archive, "word/document.xml", Wml.SerializeXml(documentXml));
                 WriteEntry(archive, "word/styles.xml", Wml.SerializeXml(CreateStylesXml()));
                 WriteEntry(archive, "word/settings.xml", Wml.SerializeXml(CreateSettingsXml()));
+                if (_numberingDefinitions.Count > 0)
+                {
+                    WriteEntry(archive, "word/numbering.xml", Wml.SerializeXml(CreateNumberingXml()));
+                }
                 WriteEntry(archive, "word/_rels/document.xml.rels", Wml.SerializeXml(CreateRelationshipsXml(_documentPart.Relationships)));
 
                 for (int i = 0; i < _document.Sections.Count; i++)
@@ -601,11 +690,11 @@ namespace Wisdom.Word
                     SectionParts parts = _sections[i];
                     if (parts.Header != null)
                     {
-                        WriteHeaderFooterPart(archive, parts.Header, true);
+                        WriteStoredHeaderFooter(archive, parts.Header);
                     }
                     if (parts.Footer != null)
                     {
-                        WriteHeaderFooterPart(archive, parts.Footer, false);
+                        WriteStoredHeaderFooter(archive, parts.Footer);
                     }
                 }
 
@@ -626,16 +715,15 @@ namespace Wisdom.Word
             }
 
             /// <summary>
-            /// 写出单个页眉或页脚部件（w:hdr / w:ftr 根元素）：定位其所属节以取正确块内容与宽度，
-            /// 写出 XML 并在存在图片关系时补写对应的 .rels 部件。
-            /// Writes a single header or footer part (w:hdr / w:ftr root): locates the owning section to take
-            /// the right blocks and width, writes the XML and adds the matching .rels part when image
-            /// relationships exist.
+            /// 组装单个页眉或页脚部件（w:hdr / w:ftr 根元素）：定位其所属节以取正确块内容与宽度，
+            /// 生成部件 XML 与存在图片关系时的关系 XML，字节暂存留给写包阶段落盘。
+            /// Assembles one header or footer part (w:hdr / w:ftr root): locates the owning section to take the
+            /// right blocks and width, builds the part XML plus the relationship XML when image relationships
+            /// exist, and stashes the bytes for the zip-writing phase.
             /// </summary>
-            /// <param name="archive">目标 ZIP 包。The target ZIP package.</param>
             /// <param name="context">页眉/页脚部件上下文。The header/footer part context.</param>
             /// <param name="header">true 为页眉，false 为页脚。True for a header, false for a footer.</param>
-            private void WriteHeaderFooterPart(ZipArchive archive, PartContext context, bool header)
+            private void BuildHeaderFooterPart(PartContext context, bool header)
             {
                 XNamespace w = WordNamespace;
                 XNamespace r = OfficeRelationshipNamespace;
@@ -651,12 +739,7 @@ namespace Wisdom.Word
                     new XAttribute(XNamespace.Xmlns + "a", a),
                     new XAttribute(XNamespace.Xmlns + "pic", pic));
                 double width = 468;
-                if (_document.Sections.Count > 0)
-                {
-                    PageSetup setup = _document.Sections[0].PageSetup;
-                    width = Math.Max(36, setup.Width - setup.MarginLeft - setup.MarginRight);
-                }
-                List<Block> blocks = header ? _document.Sections[0].Header.Blocks : _document.Sections[0].Footer.Blocks;
+                List<Block> blocks = null;
                 for (int i = 0; i < _document.Sections.Count; i++)
                 {
                     SectionParts parts = _sections[i];
@@ -668,15 +751,39 @@ namespace Wisdom.Word
                         break;
                     }
                 }
+                if (blocks == null && _document.Sections.Count > 0)
+                {
+                    Section first = _document.Sections[0];
+                    PageSetup setup = first.PageSetup;
+                    width = Math.Max(36, setup.Width - setup.MarginLeft - setup.MarginRight);
+                    blocks = header
+                        ? (first.Header == null ? null : first.Header.Blocks)
+                        : (first.Footer == null ? null : first.Footer.Blocks);
+                }
                 WriteBlocks(root, blocks, context, width);
 
                 XDocument xml = new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
-                WriteEntry(archive, context.PartPath, Wml.SerializeXml(xml));
+                context.PartBytes = Wml.SerializeXml(xml);
                 if (context.Relationships.Count > 0)
                 {
-                    string directory = "word";
                     string file = context.PartPath.Substring(context.PartPath.LastIndexOf('/') + 1);
-                    WriteEntry(archive, directory + "/_rels/" + file + ".rels", Wml.SerializeXml(CreateRelationshipsXml(context.Relationships)));
+                    context.RelationshipsBytes = Wml.SerializeXml(CreateRelationshipsXml(context.Relationships));
+                }
+            }
+
+            /// <summary>
+            /// 把组装阶段暂存的页眉/页脚字节落盘，并写出其关系部件（若有）。
+            /// Flushes the header/footer bytes stashed during assembly, plus the relationship part when present.
+            /// </summary>
+            /// <param name="archive">目标 ZIP 包。The target ZIP package.</param>
+            /// <param name="context">页眉/页脚部件上下文。The header/footer part context.</param>
+            private void WriteStoredHeaderFooter(ZipArchive archive, PartContext context)
+            {
+                WriteEntry(archive, context.PartPath, context.PartBytes);
+                if (context.RelationshipsBytes != null)
+                {
+                    string file = context.PartPath.Substring(context.PartPath.LastIndexOf('/') + 1);
+                    WriteEntry(archive, "word/_rels/" + file + ".rels", context.RelationshipsBytes);
                 }
             }
 
@@ -705,36 +812,57 @@ namespace Wisdom.Word
             /// <param name="blocks">块列表，可为 null。The block list, may be null.</param>
             /// <param name="context">当前部件写出上下文。The current part writing context.</param>
             /// <param name="contentWidth">可用于表格列宽分配的内容宽度（磅）。The content width in points available for table column sizing.</param>
+            /// <summary>
+            /// 顺序写出块级元素。相邻两张表之间必须插一个空段落：OOXML 里直接相连的 w:tbl 会被 Word 合并成
+            /// 一张表（第二张表的行会被塞进第一张表的列数里），读回来时行列都错了。
+            /// Writes the block elements in order. Two adjacent tables need an empty paragraph between them:
+            /// back-to-back w:tbl elements are merged into a single table by Word, so the second table's rows end
+            /// up inside the first table's column count and both tables read back wrong.
+            /// </summary>
             private void WriteBlocks(XElement parent, List<Block> blocks, PartContext context, double contentWidth)
             {
                 if (blocks == null) return;
+                XNamespace w = WordNamespace;
+                bool lastWasTable = false;
                 for (int i = 0; i < blocks.Count; i++)
                 {
                     Paragraph paragraph = blocks[i] as Paragraph;
                     if (paragraph != null)
                     {
                         parent.Add(CreateParagraph(paragraph, context));
+                        lastWasTable = false;
                         continue;
                     }
                     Table table = blocks[i] as Table;
                     if (table != null)
                     {
+                        if (lastWasTable) parent.Add(new XElement(w + "p"));
+                        // 表格会打断列表：表内段落即使带标记也自成一段序列，表后段落重新起号。
+                        // A table interrupts the list: even marked paragraphs inside it form their own runs, and
+                        // the paragraphs after the table restart the numbering.
+                        _listRunOpen = false;
                         parent.Add(CreateTable(table, context, contentWidth));
+                        _listRunOpen = false;
+                        lastWasTable = true;
                         continue;
                     }
                     if (blocks[i] is PageBreak)
                     {
                         parent.Add(CreatePageBreakParagraph());
+                        lastWasTable = false;
                     }
+                    // 表格与分页符会打断列表：下一段列表必须重新起号，不能接着上一段计数。
+                    // Tables and page breaks interrupt a list, so the next list paragraph must restart its count.
+                    _listRunOpen = false;
                 }
             }
 
             /// <summary>
-            /// 生成段落元素 w:p：写出段落属性（标题样式、间距、缩进、对齐）、书签包裹、
-            /// 列表标记（以文本近似呈现）以及各行内内容（文本/域/图片）。
-            /// Builds the w:p paragraph element: paragraph properties (heading style, spacing, indents,
-            /// alignment), a bookmark wrapper, the list marker rendered as approximate text and every inline
-            /// (text, field or image).
+            /// 生成段落元素 w:p：写出段落属性（标题样式、间距、缩进、对齐、编号引用）、书签包裹、
+            /// 以及各行内内容（文本/域/图片）；无法映射到 numbering.xml 的列表标记才写成近似文本。
+            /// Builds the w:p paragraph element: paragraph properties (heading style, spacing, indents, alignment,
+            /// numbering reference), a bookmark wrapper and every inline (text, field or image); only list markers
+            /// that cannot be mapped onto numbering.xml are written as approximate text.
             /// </summary>
             /// <param name="paragraph">段落模型。The paragraph model.</param>
             /// <param name="context">当前部件写出上下文。The current part writing context.</param>
@@ -744,6 +872,7 @@ namespace Wisdom.Word
                 XNamespace w = WordNamespace;
                 XElement element = new XElement(w + "p");
                 XElement properties = new XElement(w + "pPr");
+                NumberingDefinition numbering = AssignNumbering(paragraph, context);
 
                 if (paragraph.HeadingLevel > 0)
                 {
@@ -751,6 +880,14 @@ namespace Wisdom.Word
                 }
                 if (paragraph.KeepWithNext) properties.Add(new XElement(w + "keepNext"));
                 if (paragraph.PageBreakBefore) properties.Add(new XElement(w + "pageBreakBefore"));
+                // numPr 在 pPr 里必须排在 spacing/ind/jc 之前，否则 Word 判为无效顺序。
+                // numPr has to precede spacing/ind/jc inside pPr, otherwise Word rejects the child order.
+                if (numbering != null)
+                {
+                    properties.Add(new XElement(w + "numPr",
+                        new XElement(w + "ilvl", new XAttribute(w + "val", "0")),
+                        new XElement(w + "numId", new XAttribute(w + "val", numbering.NumId.ToString(CultureInfo.InvariantCulture)))));
+                }
                 if (paragraph.SpaceBefore > 0 || paragraph.SpaceAfter > 0 || Math.Abs(paragraph.LineSpacing - 1.0) > 0.001)
                 {
                     XElement spacing = new XElement(w + "spacing");
@@ -760,18 +897,30 @@ namespace Wisdom.Word
                         spacing.Add(new XAttribute(w + "after", ToTwips(paragraph.SpaceAfter)));
                     if (Math.Abs(paragraph.LineSpacing - 1.0) > 0.001)
                     {
-                        spacing.Add(new XAttribute(w + "line", ((int)Math.Round(240 * Math.Max(0.1, paragraph.LineSpacing))).ToString(CultureInfo.InvariantCulture)));
+                        spacing.Add(new XAttribute(w + "line", ClampToInt(240 * Math.Max(0.1, paragraph.LineSpacing), 24, 2147483000).ToString(CultureInfo.InvariantCulture)));
                         spacing.Add(new XAttribute(w + "lineRule", "auto"));
                     }
                     properties.Add(spacing);
                 }
-                if (paragraph.LeftIndent != 0 || paragraph.RightIndent != 0 || paragraph.FirstLineIndent != 0)
+                double leftIndent = paragraph.LeftIndent;
+                double firstLineIndent = paragraph.FirstLineIndent;
+                if (numbering != null && leftIndent == 0 && firstLineIndent == 0)
+                {
+                    // 编号段落没有显式缩进时补一套标准悬挂缩进：Word 从 numbering.xml 拿到同样的缩进，
+                    // 而我们自己的读取端与 PDF/HTML 渲染只看段落属性，补上后三处显示一致。
+                    // A numbered paragraph without explicit indents gets the standard hanging indent: Word takes the
+                    // same indent from numbering.xml, while our reader and the PDF/HTML renderers only look at
+                    // paragraph properties, so writing it keeps all three views consistent.
+                    leftIndent = 36;
+                    firstLineIndent = -18;
+                }
+                if (leftIndent != 0 || paragraph.RightIndent != 0 || firstLineIndent != 0)
                 {
                     XElement indent = new XElement(w + "ind");
-                    if (paragraph.LeftIndent != 0) indent.Add(new XAttribute(w + "left", ToTwips(paragraph.LeftIndent)));
+                    if (leftIndent != 0) indent.Add(new XAttribute(w + "left", ToTwips(leftIndent)));
                     if (paragraph.RightIndent != 0) indent.Add(new XAttribute(w + "right", ToTwips(paragraph.RightIndent)));
-                    if (paragraph.FirstLineIndent > 0) indent.Add(new XAttribute(w + "firstLine", ToTwips(paragraph.FirstLineIndent)));
-                    else if (paragraph.FirstLineIndent < 0) indent.Add(new XAttribute(w + "hanging", ToTwips(-paragraph.FirstLineIndent)));
+                    if (firstLineIndent > 0) indent.Add(new XAttribute(w + "firstLine", ToTwips(firstLineIndent)));
+                    else if (firstLineIndent < 0) indent.Add(new XAttribute(w + "hanging", ToTwips(-firstLineIndent)));
                     properties.Add(indent);
                 }
                 switch (paragraph.Alignment)
@@ -813,7 +962,10 @@ namespace Wisdom.Word
                         new XAttribute(w + "name", paragraph.BookmarkName)));
                 }
 
-                if (!string.IsNullOrEmpty(paragraph.ListMarker))
+                // 能还原成 numbering.xml 的标记交给 Word 自己编号（numPr），只有无法映射的标记才退回把标记写成正文。
+                // Markers that map onto numbering.xml are left for Word to number through numPr; only markers that
+                // cannot be mapped fall back to writing the marker as literal text.
+                if (numbering == null && !string.IsNullOrEmpty(paragraph.ListMarker))
                 {
                     TextFormat markerFormat = new TextFormat();
                     for (int i = 0; i < paragraph.Inlines.Count; i++)
@@ -838,6 +990,334 @@ namespace Wisdom.Word
                         new XAttribute(w + "id", bookmarkId.ToString(CultureInfo.InvariantCulture))));
                 }
                 return element;
+            }
+
+            /// <summary>
+            /// 为带列表标记的段落分配编号引用：连续且形状相同的标记共用一条 numId 序列，
+            /// 形状不同、列表被打断或换到另一个部件时新建一条序列（各自从标记里的起始值重新计数）。
+            /// Assigns a numbering reference to a paragraph with a list marker: contiguous markers of the same shape
+            /// share one numId sequence, while a different shape, an interrupted run or another part starts a new
+            /// sequence that counts again from the start value recovered from the marker.
+            /// </summary>
+            /// <param name="paragraph">目标段落。The paragraph.</param>
+            /// <param name="context">当前部件写出上下文。The writing context of the current part.</param>
+            /// <returns>分配的编号序列；标记无法映射到 numbering.xml 时返回 null。The assigned sequence; null when the marker cannot be mapped onto numbering.xml.</returns>
+            private NumberingDefinition AssignNumbering(Paragraph paragraph, PartContext context)
+            {
+                NumberingShape shape;
+                string key;
+                if (!TryCreateNumberingShape(paragraph, out shape, out key))
+                {
+                    _listRunOpen = false;
+                    return null;
+                }
+                if (_listRunOpen && _activeListPart == context
+                    && string.Equals(_activeListShape, key, StringComparison.Ordinal))
+                {
+                    return _numberingDefinitions[_numberingDefinitions.Count - 1];
+                }
+
+                int abstractNumId;
+                if (!_abstractNumbersByShape.TryGetValue(key, out abstractNumId))
+                {
+                    abstractNumId = _nextAbstractNumberId++;
+                    _abstractNumbersByShape[key] = abstractNumId;
+                }
+                NumberingDefinition definition = new NumberingDefinition();
+                definition.NumId = _nextNumId++;
+                definition.AbstractNumId = abstractNumId;
+                definition.Shape = shape;
+                _numberingDefinitions.Add(definition);
+                _listRunOpen = true;
+                _activeListShape = key;
+                _activeListPart = context;
+                return definition;
+            }
+
+            /// <summary>
+            /// 从标记文本还原编号形状：项目符号、十进制（含补零）、字母或罗马数字，连同前后缀组成 lvlText 模板。
+            /// 多级标记（如 "1.1"）与无法复现的写法返回 false，由调用方退回把标记写成正文文本。
+            /// Recovers a numbering shape from the marker text: a bullet, decimal (including zero-padded), letter or
+            /// Roman number, with its prefix and suffix forming the lvlText template. Multilevel markers such as
+            /// "1.1" and shapes that cannot be reproduced return false so the caller writes the marker as text.
+            /// </summary>
+            /// <param name="paragraph">目标段落。The paragraph.</param>
+            /// <param name="shape">还原出的编号形状。The recovered numbering shape.</param>
+            /// <param name="key">形状键，相同键复用同一 abstractNum。The shape key; equal keys share one abstractNum.</param>
+            /// <returns>可映射返回 true。True when the marker can be mapped.</returns>
+            private static bool TryCreateNumberingShape(Paragraph paragraph, out NumberingShape shape, out string key)
+            {
+                shape = null;
+                key = null;
+                string marker = paragraph.ListMarker;
+                if (string.IsNullOrEmpty(marker)) return false;
+                string trimmed = marker.Trim();
+                if (trimmed.Length == 0 || trimmed.IndexOf('%') >= 0) return false;
+
+                int start = 0;
+                while (start < trimmed.Length && !IsNumberTokenStart(trimmed[start])) start++;
+                if (start >= trimmed.Length)
+                {
+                    if (!IsBulletMarker(trimmed)) return false;
+                    shape = new NumberingShape();
+                    shape.Bullet = true;
+                    shape.Format = "bullet";
+                    shape.LevelText = trimmed;
+                    key = BuildNumberingShapeKey(shape);
+                    return true;
+                }
+
+                string prefix = trimmed.Substring(0, start);
+                int end = start;
+                if (IsAsciiDigit(trimmed[start]))
+                {
+                    while (end < trimmed.Length && IsAsciiDigit(trimmed[end])) end++;
+                }
+                else
+                {
+                    while (end < trimmed.Length && IsAsciiLetter(trimmed[end])) end++;
+                }
+                string token = trimmed.Substring(start, end - start);
+                string suffix = trimmed.Substring(end);
+                // 后缀里再出现数字或字母说明这是多级编号（"1.1"、"1.a"），单一 ilvl=0 的编号复现不了。
+                // A digit or letter after the token means a multilevel marker ("1.1", "1.a"), which a single
+                // ilvl=0 sequence cannot reproduce.
+                for (int i = 0; i < suffix.Length; i++)
+                {
+                    if (IsNumberTokenStart(suffix[i])) return false;
+                }
+
+                int value;
+                string format;
+                if (IsAsciiDigit(token[0]))
+                {
+                    if (!int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out value) || value <= 0)
+                    {
+                        return false;
+                    }
+                    if (token.Length == 1)
+                    {
+                        format = "decimal";
+                    }
+                    else if (token.Length == 2 && token[0] == '0')
+                    {
+                        format = "decimalZero";
+                    }
+                    else
+                    {
+                        return false;
+                    }
+                }
+                else if (token.Length == 1)
+                {
+                    format = char.IsUpper(token[0]) ? "upperLetter" : "lowerLetter";
+                    value = char.ToLowerInvariant(token[0]) - 'a' + 1;
+                }
+                else if (TryParseRomanNumeral(token, out value))
+                {
+                    format = char.IsUpper(token[0]) ? "upperRoman" : "lowerRoman";
+                }
+                else
+                {
+                    return false;
+                }
+
+                shape = new NumberingShape();
+                shape.Format = format;
+                shape.LevelText = prefix + "%1" + suffix;
+                shape.Start = value;
+                key = BuildNumberingShapeKey(shape);
+                return true;
+            }
+
+            /// <summary>把编号形状压成可比较的字典键（格式、lvlText、起始值三元组）。Flattens a numbering shape into a comparable dictionary key (format, lvlText and start value).</summary>
+            /// <param name="shape">编号形状。The numbering shape.</param>
+            /// <returns>形状键。The shape key.</returns>
+            private static string BuildNumberingShapeKey(NumberingShape shape)
+            {
+                return shape.Format + "\u0001" + shape.LevelText + "\u0001"
+                    + shape.Start.ToString(CultureInfo.InvariantCulture);
+            }
+
+            /// <summary>字符能否作为一个序号的开头（ASCII 数字或字母）。Whether the character can start a sequence number (an ASCII digit or letter).</summary>
+            /// <param name="value">待判断字符。The character to test.</param>
+            /// <returns>是返回 true。True when it can.</returns>
+            private static bool IsNumberTokenStart(char value)
+            {
+                return IsAsciiDigit(value) || IsAsciiLetter(value);
+            }
+
+            /// <summary>是否为 ASCII 数字 0-9。Whether the character is an ASCII digit 0-9.</summary>
+            /// <param name="value">待判断字符。The character to test.</param>
+            /// <returns>是返回 true。True when it is.</returns>
+            private static bool IsAsciiDigit(char value)
+            {
+                return value >= '0' && value <= '9';
+            }
+
+            /// <summary>是否为 ASCII 字母 a-z/A-Z。Whether the character is an ASCII letter a-z or A-Z.</summary>
+            /// <param name="value">待判断字符。The character to test.</param>
+            /// <returns>是返回 true。True when it is.</returns>
+            private static bool IsAsciiLetter(char value)
+            {
+                return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
+            }
+
+            /// <summary>标记是否完全由标点/符号组成，从而可以当作项目符号的 lvlText。Whether the marker consists only of punctuation or symbols and can serve as a bullet lvlText.</summary>
+            /// <param name="marker">去掉首尾空白的标记。The marker with surrounding whitespace removed.</param>
+            /// <returns>是返回 true。True when it can.</returns>
+            private static bool IsBulletMarker(string marker)
+            {
+                for (int i = 0; i < marker.Length; i++)
+                {
+                    if (!char.IsPunctuation(marker[i]) && !char.IsSymbol(marker[i])) return false;
+                }
+                return true;
+            }
+
+            /// <summary>按罗马数字语法解析序号，并要求重新写出的文本与原标记一致（"IIII" 之类不可复现的写法被拒绝）。Parses a Roman numeral and requires the canonical rendering to match the marker, rejecting shapes like "IIII" that cannot be reproduced.</summary>
+            /// <param name="token">标记里的序号文本。The number text inside the marker.</param>
+            /// <param name="value">解析出的序号。The parsed number.</param>
+            /// <returns>解析成功返回 true。True when the token is a canonical Roman numeral.</returns>
+            private static bool TryParseRomanNumeral(string token, out int value)
+            {
+                value = 0;
+                string upper = token.ToUpperInvariant();
+                for (int i = 0; i < upper.Length; i++)
+                {
+                    int current = RomanDigitValue(upper[i]);
+                    if (current == 0) return false;
+                    int next = i + 1 < upper.Length ? RomanDigitValue(upper[i + 1]) : 0;
+                    value += current < next ? -current : current;
+                }
+                if (value <= 0 || value > 3999) return false;
+                return string.Equals(ToRomanText(value), upper, StringComparison.Ordinal);
+            }
+
+            /// <summary>单个罗马数字字符对应的数值，非罗马数字返回 0。The value of one Roman digit character; 0 for non-Roman characters.</summary>
+            /// <param name="value">罗马数字字符。The Roman digit character.</param>
+            /// <returns>数值。The digit value.</returns>
+            private static int RomanDigitValue(char value)
+            {
+                switch (value)
+                {
+                    case 'I': return 1;
+                    case 'V': return 5;
+                    case 'X': return 10;
+                    case 'L': return 50;
+                    case 'C': return 100;
+                    case 'D': return 500;
+                    case 'M': return 1000;
+                    default: return 0;
+                }
+            }
+
+            /// <summary>把 1-3999 写成规范的大写罗马数字，用于校验标记能否复现。Renders 1-3999 as a canonical upper-case Roman numeral so the marker can be verified as reproducible.</summary>
+            /// <param name="value">序号。The number.</param>
+            /// <returns>罗马数字文本。The Roman numeral text.</returns>
+            private static string ToRomanText(int value)
+            {
+                int[] values = { 1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1 };
+                string[] symbols = { "M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I" };
+                System.Text.StringBuilder builder = new System.Text.StringBuilder();
+                int remaining = value;
+                for (int i = 0; i < values.Length; i++)
+                {
+                    while (remaining >= values[i])
+                    {
+                        builder.Append(symbols[i]);
+                        remaining -= values[i];
+                    }
+                }
+                return builder.ToString();
+            }
+
+            /// <summary>
+            /// 生成 numbering.xml：每个编号形状一个 abstractNum（9 级，第 0 级按形状定义，深层级按缩进递增），
+            /// 每段连续列表一个 num 指向对应 abstractNum。abstractNum 必须全部排在 num 之前。
+            /// Builds numbering.xml: one abstractNum per numbering shape (nine levels, level 0 following the shape
+            /// and deeper levels stepping the indent) and one num per contiguous list run pointing at it. Every
+            /// abstractNum has to precede the num elements.
+            /// </summary>
+            /// <returns>numbering.xml 文档。The numbering.xml document.</returns>
+            private XDocument CreateNumberingXml()
+            {
+                XNamespace w = WordNamespace;
+                XElement root = new XElement(w + "numbering",
+                    new XAttribute(XNamespace.Xmlns + "w", w));
+                Dictionary<int, NumberingShape> shapes = new Dictionary<int, NumberingShape>();
+                List<int> abstractIds = new List<int>();
+                for (int i = 0; i < _numberingDefinitions.Count; i++)
+                {
+                    NumberingDefinition definition = _numberingDefinitions[i];
+                    if (shapes.ContainsKey(definition.AbstractNumId)) continue;
+                    shapes[definition.AbstractNumId] = definition.Shape;
+                    abstractIds.Add(definition.AbstractNumId);
+                }
+                abstractIds.Sort();
+                for (int i = 0; i < abstractIds.Count; i++)
+                {
+                    root.Add(CreateAbstractNumbering(abstractIds[i], shapes[abstractIds[i]]));
+                }
+                for (int i = 0; i < _numberingDefinitions.Count; i++)
+                {
+                    NumberingDefinition definition = _numberingDefinitions[i];
+                    XElement num = new XElement(w + "num",
+                        new XAttribute(w + "numId", definition.NumId.ToString(CultureInfo.InvariantCulture)),
+                        new XElement(w + "abstractNumId",
+                            new XAttribute(w + "val", definition.AbstractNumId.ToString(CultureInfo.InvariantCulture))));
+                    // Word 的计数器实际记在 abstractNum 上：同一个 abstractNum 被第二个 numId 复用时，
+                    // 不写 w:startOverride 就会接着上一段列表继续排（打断后重新起号变成 4、5）。
+                    // Word keeps the counter on the abstractNum, so when a second numId reuses the same
+                    // abstractNum the sequence continues unless w:startOverride restarts it — otherwise a
+                    // list resumed after an interruption would carry on at 4, 5 instead of starting again.
+                    if (!definition.Shape.Bullet)
+                    {
+                        num.Add(new XElement(w + "lvlOverride",
+                            new XAttribute(w + "ilvl", "0"),
+                            new XElement(w + "startOverride",
+                                new XAttribute(w + "val", definition.Shape.Start.ToString(CultureInfo.InvariantCulture)))));
+                    }
+                    root.Add(num);
+                }
+                return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
+            }
+
+            /// <summary>
+            /// 生成一个 abstractNum：9 个 w:lvl，每级写出起始值、格式、lvlText、对齐与逐级递增的悬挂缩进。
+            /// Builds one abstractNum: nine w:lvl entries, each with its start value, format, lvlText, alignment
+            /// and a hanging indent that steps out with the level.
+            /// </summary>
+            /// <param name="abstractNumId">抽象编号定义 ID。The abstract numbering definition id.</param>
+            /// <param name="shape">本抽象定义的编号形状。The numbering shape of this definition.</param>
+            /// <returns>w:abstractNum 元素。The w:abstractNum element.</returns>
+            private static XElement CreateAbstractNumbering(int abstractNumId, NumberingShape shape)
+            {
+                XNamespace w = WordNamespace;
+                XElement abstractNum = new XElement(w + "abstractNum",
+                    new XAttribute(w + "abstractNumId", abstractNumId.ToString(CultureInfo.InvariantCulture)),
+                    new XElement(w + "multiLevelType", new XAttribute(w + "val", "hybridMultilevel")));
+                for (int level = 0; level < 9; level++)
+                {
+                    string index = (level + 1).ToString(CultureInfo.InvariantCulture);
+                    XElement lvl = new XElement(w + "lvl", new XAttribute(w + "ilvl", level.ToString(CultureInfo.InvariantCulture)));
+                    if (!shape.Bullet)
+                    {
+                        lvl.Add(new XElement(w + "start",
+                            new XAttribute(w + "val", (level == 0 ? shape.Start : 1).ToString(CultureInfo.InvariantCulture))));
+                    }
+                    lvl.Add(new XElement(w + "numFmt", new XAttribute(w + "val", shape.Format)));
+                    string levelText = level == 0 || shape.Bullet
+                        ? shape.LevelText
+                        : shape.LevelText.Replace("%1", "%" + index);
+                    lvl.Add(new XElement(w + "lvlText", new XAttribute(w + "val", levelText)));
+                    lvl.Add(new XElement(w + "lvlJc", new XAttribute(w + "val", "left")));
+                    lvl.Add(new XElement(w + "pPr", new XElement(w + "ind",
+                        new XAttribute(w + "left", (720 * (level + 1)).ToString(CultureInfo.InvariantCulture)),
+                        new XAttribute(w + "hanging", "360"))));
+                    abstractNum.Add(lvl);
+                }
+                return abstractNum;
             }
 
             /// <summary>段落内是否已有该名称的显式书签起点。Determines whether the paragraph already holds an explicit start marker of the name.</summary>
@@ -870,7 +1350,7 @@ namespace Wisdom.Word
                 if (revision != null && revision.Type == RevisionType.Delete)
                 {
                     TextRun deletedText = inline as TextRun;
-                    if (deletedText != null && deletedText.Text.Length > 0)
+                    if (deletedText != null && !string.IsNullOrEmpty(deletedText.Text))
                     {
                         XElement deletedRun = CreateDeletedRun(deletedText.Text, deletedText.Format);
                         XElement deletedLink = string.IsNullOrEmpty(deletedText.Link) ? null : CreateHyperlink(deletedText.Link, deletedRun, context);
@@ -911,7 +1391,10 @@ namespace Wisdom.Word
                 TextRun text = inline as TextRun;
                 if (text != null)
                 {
-                    if (text.Text.Length == 0) return;
+                    // TextRun.Text 是公开可写属性，宿主可以置空；这里按空串处理而不是解引用。
+                    // TextRun.Text exposes a public setter, so a host can null it; treat that as empty
+                    // text instead of dereferencing it.
+                    if (string.IsNullOrEmpty(text.Text)) return;
                     XElement run = CreateRun(text.Text, text.Format, context);
                     XElement hyperlink = string.IsNullOrEmpty(text.Link) ? null : CreateHyperlink(text.Link, run, context);
                     content = hyperlink ?? run;
@@ -1096,6 +1579,7 @@ namespace Wisdom.Word
             private XElement CreateRun(string text, TextFormat format, PartContext context)
             {
                 XNamespace w = WordNamespace;
+                text = text ?? string.Empty;
                 XElement run = new XElement(w + "r");
                 if (format != null) run.Add(CreateRunProperties(format));
                 string normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
@@ -1170,19 +1654,40 @@ namespace Wisdom.Word
 
             /// <summary>
             /// 生成运行属性 w:rPr：中西文字体四件套（ascii/hAnsi/eastAsia/cs）、加粗倾斜删除线、
-            /// 颜色、半磅字号、下划线与上下标。
+            /// 颜色、半磅字号、下划线与上下标。字体、字号、颜色与文档默认值相同时一律省略，让样式链生效。
             /// Builds the run properties w:rPr: the four East-Asian/Latin font slots (ascii/hAnsi/eastAsia/cs),
-            /// bold/italic/strike-through, colour, half-point size, underline and super/subscript.
+            /// bold/italic/strike-through, colour, half-point size, underline and super/subscript. Font, size and
+            /// colour equal to the document default are omitted so the style chain can still apply.
             /// </summary>
+            /// <remarks>
+            /// 每个 TextRun 都由 <c>new TextFormat()</c> 起步（Arial、11 磅、黑色），早先无条件写出 rFonts/sz/color，
+            /// 运行级属性优先级高于段落样式，标题段因此被压回正文的 11 磅黑色 Arial——标题样式里的字号和
+            /// 1F3A5F 颜色全部失效。docDefaults 已经写了同样的默认字体与字号，所以与默认值一致的覆盖可以直接省略。
+            /// Every TextRun starts from <c>new TextFormat()</c> (Arial, 11pt, black), and the old code always wrote
+            /// rFonts/sz/color. Run-level properties beat paragraph styles, so headings were flattened back to
+            /// 11pt black Arial — the heading style's size and 1F3A5F colour never applied. docDefaults already
+            /// carries the same default font and size, so overrides equal to the default are safe to omit.
+            /// </remarks>
             /// <param name="format">文字格式。The text format.</param>
             /// <returns>w:rPr 元素。The w:rPr element.</returns>
             private XElement CreateRunProperties(TextFormat format)
             {
                 XNamespace w = WordNamespace;
                 XElement properties = new XElement(w + "rPr");
+                TextFormat defaults = _document != null && _document.DefaultTextFormat != null
+                    ? _document.DefaultTextFormat
+                    : new TextFormat();
+                double defaultSize = defaults.FontSize > 0 ? defaults.FontSize : 11;
                 string asciiFont = format.GetAsciiFontFamily();
                 string eastAsiaFont = format.GetEastAsiaFontFamily();
-                if (!string.IsNullOrEmpty(asciiFont) || !string.IsNullOrEmpty(eastAsiaFont))
+                string defaultFont = string.IsNullOrEmpty(defaults.FontFamily) ? "Calibri" : defaults.FontFamily;
+                string defaultAscii = defaults.GetAsciiFontFamily();
+                if (string.IsNullOrEmpty(defaultAscii)) defaultAscii = defaultFont;
+                string defaultEastAsia = defaults.GetEastAsiaFontFamily();
+                if (string.IsNullOrEmpty(defaultEastAsia)) defaultEastAsia = defaultFont;
+                if ((!string.IsNullOrEmpty(asciiFont) || !string.IsNullOrEmpty(eastAsiaFont))
+                    && (!string.Equals(asciiFont, defaultAscii, StringComparison.Ordinal)
+                        || !string.Equals(eastAsiaFont, defaultEastAsia, StringComparison.Ordinal)))
                 {
                     string latin = string.IsNullOrEmpty(asciiFont) ? eastAsiaFont : asciiFont;
                     string cjk = string.IsNullOrEmpty(eastAsiaFont) ? asciiFont : eastAsiaFont;
@@ -1195,10 +1700,15 @@ namespace Wisdom.Word
                 if (format.Bold) properties.Add(new XElement(w + "b"));
                 if (format.Italic) properties.Add(new XElement(w + "i"));
                 if (format.Strikeout) properties.Add(new XElement(w + "strike"));
-                properties.Add(new XElement(w + "color", new XAttribute(w + "val", format.Color.ToHex())));
-                if (format.FontSize > 0)
+                string colorHex = format.Color.ToHex();
+                string defaultColorHex = defaults.Color.ToHex();
+                if (!string.Equals(colorHex, defaultColorHex, StringComparison.OrdinalIgnoreCase))
                 {
-                    string halfPoints = ((int)Math.Round(format.FontSize * 2)).ToString(CultureInfo.InvariantCulture);
+                    properties.Add(new XElement(w + "color", new XAttribute(w + "val", colorHex)));
+                }
+                if (format.FontSize > 0 && Math.Abs(format.FontSize - defaultSize) > 0.001)
+                {
+                    string halfPoints = ClampToInt(format.FontSize * 2, 2, 32767).ToString(CultureInfo.InvariantCulture);
                     properties.Add(new XElement(w + "sz", new XAttribute(w + "val", halfPoints)));
                     properties.Add(new XElement(w + "szCs", new XAttribute(w + "val", halfPoints)));
                 }
@@ -1303,13 +1813,17 @@ namespace Wisdom.Word
                         new XAttribute(w + "w", ToTwips(tableWidth)),
                         new XAttribute(w + "type", "dxa")));
                 }
+                // 表格对齐的元素名是 w:jc（CT_JcTable），不是 w:tblJc——后者不在 ECMA-376 词汇表里，
+                // Word 会忽略它（表格仍然左对齐），严格校验器还会判为非法。
+                // The table-alignment element is w:jc (CT_JcTable), not w:tblJc — the latter is not in the ECMA-376
+                // vocabulary, so Word ignores it (the table stays left-aligned) and a strict validator flags it.
                 if (table.Alignment == TableAlignment.Center)
                 {
-                    properties.Add(new XElement(w + "tblJc", new XAttribute(w + "val", "center")));
+                    properties.Add(new XElement(w + "jc", new XAttribute(w + "val", "center")));
                 }
                 else if (table.Alignment == TableAlignment.Right)
                 {
-                    properties.Add(new XElement(w + "tblJc", new XAttribute(w + "val", "right")));
+                    properties.Add(new XElement(w + "jc", new XAttribute(w + "val", "right")));
                 }
                 properties.Add(CreateTableBorders(table.Borders));
                 properties.Add(new XElement(w + "tblLayout",
@@ -1540,7 +2054,7 @@ namespace Wisdom.Word
                     default: value = "single"; break;
                 }
                 element.Add(new XAttribute(w + "val", value));
-                element.Add(new XAttribute(w + "sz", Math.Max(2, (int)Math.Round(border.Width * 8)).ToString(CultureInfo.InvariantCulture)));
+                element.Add(new XAttribute(w + "sz", ClampToInt(border.Width * 8, 2, 255).ToString(CultureInfo.InvariantCulture)));
                 element.Add(new XAttribute(w + "space", "0"));
                 element.Add(new XAttribute(w + "color", border.Color.ToHex()));
                 return element;
@@ -1624,7 +2138,15 @@ namespace Wisdom.Word
                             new XAttribute(w + "hAnsi", asciiFont),
                             new XAttribute(w + "eastAsia", eastAsiaFont),
                             new XAttribute(w + "cs", asciiFont)),
-                        new XElement(w + "sz", new XAttribute(w + "val", ((int)Math.Round(size * 2)).ToString(CultureInfo.InvariantCulture)))));
+                        // 运行级颜色在与文档默认色一致时会被省略，所以默认色必须在这里落地，否则非黑默认色
+                        // 的文档省略后按 Word 的 auto（黑）渲染。黑色等同 auto，无需写出。
+                        // A run-level colour equal to the document default is now omitted, so the default has to
+                        // land here — otherwise a document whose default colour is not black would render black
+                        // after the omission. Black equals Word's auto, so it needs no element.
+                        !string.Equals(defaults.Color.ToHex(), OfficeColor.Black.ToHex(), StringComparison.OrdinalIgnoreCase)
+                            ? new XElement(w + "color", new XAttribute(w + "val", defaults.Color.ToHex()))
+                            : null,
+                        new XElement(w + "sz", new XAttribute(w + "val", ClampToInt(size * 2, 2, 32767).ToString(CultureInfo.InvariantCulture)))));
 
                 XElement root = new XElement(w + "styles",
                     new XAttribute(XNamespace.Xmlns + "w", w),
@@ -1654,8 +2176,8 @@ namespace Wisdom.Word
                         new XElement(w + "rPr",
                             new XElement(w + "b"),
                             new XElement(w + "color", new XAttribute(w + "val", "1F3A5F")),
-                            new XElement(w + "sz", new XAttribute(w + "val", ((int)Math.Round(headingSizes[level - 1] * 2)).ToString(CultureInfo.InvariantCulture))),
-                            new XElement(w + "szCs", new XAttribute(w + "val", ((int)Math.Round(headingSizes[level - 1] * 2)).ToString(CultureInfo.InvariantCulture))))));
+                            new XElement(w + "sz", new XAttribute(w + "val", ClampToInt(headingSizes[level - 1] * 2, 2, 32767).ToString(CultureInfo.InvariantCulture))),
+                            new XElement(w + "szCs", new XAttribute(w + "val", ClampToInt(headingSizes[level - 1] * 2, 2, 32767).ToString(CultureInfo.InvariantCulture))))));
                 }
                 return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
             }
@@ -1704,6 +2226,10 @@ namespace Wisdom.Word
                 AddOverride(root, "/word/document.xml", _mainContentType);
                 AddOverride(root, "/word/styles.xml", ContentTypeStyles);
                 AddOverride(root, "/word/settings.xml", ContentTypeSettings);
+                if (_numberingDefinitions.Count > 0)
+                {
+                    AddOverride(root, "/word/numbering.xml", ContentTypeNumbering);
+                }
                 for (int i = 0; i < _sections.Count; i++)
                 {
                     SectionParts parts = _sections[i];
@@ -1951,9 +2477,30 @@ namespace Wisdom.Word
                 return utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
             }
 
+            /// <summary>
+            /// 把任意浮点量（可能来自被污染的模型值或 HTML 内联样式）取整并夹到指定区间，
+            /// NaN / 无穷 / 越界一律落到边界，避免 (int) 转换回绕成负数后写出非法属性。
+            /// Rounds an arbitrary double — which may come from a poisoned model value or an HTML inline style —
+            /// and clamps it into the range. NaN, infinity and out-of-range values land on a boundary instead of
+            /// the (int) cast wrapping around and emitting a negative attribute Word rejects.
+            /// </summary>
+            /// <param name="value">待取整的值。The value to round.</param>
+            /// <param name="minimum">区间下界。The lower bound.</param>
+            /// <param name="maximum">区间上界。The upper bound.</param>
+            /// <returns>区间内的整数。The integer inside the range.</returns>
+            private static int ClampToInt(double value, int minimum, int maximum)
+            {
+                if (double.IsNaN(value) || double.IsInfinity(value)) return minimum;
+                double rounded = Math.Round(value);
+                if (rounded <= minimum) return minimum;
+                if (rounded >= maximum) return maximum;
+                return (int)rounded;
+            }
+
             private static string ToTwips(double points)
             {
-                return ((int)Math.Round(points * UnitConverter.TwipsPerPoint)).ToString(CultureInfo.InvariantCulture);
+                return ClampToInt(points * UnitConverter.TwipsPerPoint, -2147483000, 2147483000)
+                    .ToString(CultureInfo.InvariantCulture);
             }
         }
     }

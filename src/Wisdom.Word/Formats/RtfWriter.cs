@@ -143,14 +143,19 @@ namespace Wisdom.Word
                         if (run != null)
                         {
                             state.AddFont(SelectFont(run.Format, run.Text));
-                            state.AddColor(run.Format.Color);
+                            // TextRun.Format 是公开可写属性，宿主可以置空；SelectFont 已经按可空处理，
+                            // 颜色收集这一行也必须同口径，否则同一篇文档在 RTF 上崩、在 HTML 上正常。
+                            // TextRun.Format has a public setter, so a host can null it; SelectFont already
+                            // tolerates that, and the colour collection has to follow the same rule, or the
+                            // same document dies in RTF while HTML writes it fine.
+                            if (run.Format != null) state.AddColor(run.Format.Color);
                             continue;
                         }
                         FieldRun field = paragraph.Inlines[r] as FieldRun;
                         if (field != null)
                         {
                             state.AddFont(SelectFont(field.Format, field.DisplayText));
-                            state.AddColor(field.Format.Color);
+                            if (field.Format != null) state.AddColor(field.Format.Color);
                         }
                     }
                     continue;
@@ -481,6 +486,7 @@ namespace Wisdom.Word
         private static void WriteRunGroup(StringBuilder rtf, string text, TextFormat format, WriterState state)
         {
             format = format ?? new TextFormat();
+            text = text ?? string.Empty;
             rtf.Append('{');
             AppendRunProperties(rtf, format, text, state);
             AppendEscapedText(rtf, text);
@@ -736,18 +742,23 @@ namespace Wisdom.Word
             }
             if (columnCount <= 0) columnCount = 1;
 
+            // Table.Borders 是公开可写属性，置空表示「整表没有边框」；这里把它归一成一份空边框，
+            // 而不是在四个三元表达式里各解引用一次。
+            // Table.Borders exposes a public setter, and null means "no borders at all"; normalise it to an
+            // empty set here instead of dereferencing it four times across the ternary chains.
+            TableBorders tableBorders = table.Borders ?? new TableBorders();
             BorderLine top = row != startRow ? null
                 : cell.Borders != null && cell.Borders.Top != null ? cell.Borders.Top
-                : (startRow == 0 ? table.Borders.Top : table.Borders.InsideHorizontal);
+                : (startRow == 0 ? tableBorders.Top : tableBorders.InsideHorizontal);
             BorderLine bottom = row != endRow ? null
                 : cell.Borders != null && cell.Borders.Bottom != null ? cell.Borders.Bottom
-                : (endRow >= rowCount - 1 ? table.Borders.Bottom : table.Borders.InsideHorizontal);
+                : (endRow >= rowCount - 1 ? tableBorders.Bottom : tableBorders.InsideHorizontal);
             BorderLine left = column != startColumn ? null
                 : cell.Borders != null && cell.Borders.Left != null ? cell.Borders.Left
-                : (startColumn == 1 ? table.Borders.Left : table.Borders.InsideVertical);
+                : (startColumn == 1 ? tableBorders.Left : tableBorders.InsideVertical);
             BorderLine right = column != endColumn ? null
                 : cell.Borders != null && cell.Borders.Right != null ? cell.Borders.Right
-                : (endColumn >= columnCount ? table.Borders.Right : table.Borders.InsideVertical);
+                : (endColumn >= columnCount ? tableBorders.Right : tableBorders.InsideVertical);
             AppendBorder(props, "clbrdrt", top);
             AppendBorder(props, "clbrdrb", bottom);
             AppendBorder(props, "clbrdrl", left);

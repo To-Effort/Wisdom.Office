@@ -738,23 +738,26 @@ namespace Wisdom.Word
             if (columnCount <= 0) columnCount = 1;
             int endRow = row + rowSpan - 1;
             int endColumn = column + colSpan - 1;
+            // Table.Borders 可被置空，语义是「整表无边框」；归一成一份空边框再取边。
+            // Table.Borders can be null, meaning "no borders at all"; normalise it before picking an edge.
+            TableBorders tableBorders = table.Borders ?? new TableBorders();
             if (edge == 0)
             {
                 return cell.Borders != null && cell.Borders.Top != null ? cell.Borders.Top
-                    : (row == 0 ? table.Borders.Top : table.Borders.InsideHorizontal);
+                    : (row == 0 ? tableBorders.Top : tableBorders.InsideHorizontal);
             }
             if (edge == 1)
             {
                 return cell.Borders != null && cell.Borders.Bottom != null ? cell.Borders.Bottom
-                    : (endRow >= rowCount - 1 ? table.Borders.Bottom : table.Borders.InsideHorizontal);
+                    : (endRow >= rowCount - 1 ? tableBorders.Bottom : tableBorders.InsideHorizontal);
             }
             if (edge == 2)
             {
                 return cell.Borders != null && cell.Borders.Left != null ? cell.Borders.Left
-                    : (column == 0 ? table.Borders.Left : table.Borders.InsideVertical);
+                    : (column == 0 ? tableBorders.Left : tableBorders.InsideVertical);
             }
             return cell.Borders != null && cell.Borders.Right != null ? cell.Borders.Right
-                : (endColumn >= columnCount - 1 ? table.Borders.Right : table.Borders.InsideVertical);
+                : (endColumn >= columnCount - 1 ? tableBorders.Right : tableBorders.InsideVertical);
         }
 
         // ---------------------------------------------------------------- styles.xml

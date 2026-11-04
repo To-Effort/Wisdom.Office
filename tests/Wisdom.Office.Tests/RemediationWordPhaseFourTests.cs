@@ -29,6 +29,7 @@ namespace Wisdom.Office.Tests
             RunRegexTimeoutAtomicReplaceTest();
             RunOversizedOdtImageIsSkippedTest();
             RunRtfNonBmpCodeUnitTest();
+            RunWritersTolerateNullModelFieldsTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -215,6 +216,54 @@ namespace Wisdom.Office.Tests
             OfficeDocument back = WordFormatConverter.Load(rtf, WordDocumentFormat.Rtf);
             Require(ContainsText(back, "表情 \U0001F600 与中文"),
                 "the emoji did not survive the RTF round trip: " + emitted);
+        }
+
+        /// <summary>
+        /// WE10：模型上的 `TextRun.Text`、`TextRun.Format` 与 `Table.Borders` 都是公开可写属性，
+        /// 宿主把它们置空之后，四个写出器必须给出同一结果——照常出文，而不是 DOCX/RTF 崩、HTML/ODT 正常。
+        /// WE10: `TextRun.Text`, `TextRun.Format` and `Table.Borders` all expose public setters. Once a host
+        /// nulls them, all four writers must agree: produce a document, instead of DOCX/RTF throwing while
+        /// HTML/ODT keep working.
+        /// </summary>
+        private static void RunWritersTolerateNullModelFieldsTest()
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection(PageSetup.A4());
+
+            Paragraph paragraph = new Paragraph();
+            TextRun emptyText = new TextRun("x");
+            emptyText.Text = null;
+            paragraph.Inlines.Add(emptyText);
+            TextRun noFormat = new TextRun("只留文本");
+            noFormat.Format = null;
+            paragraph.Inlines.Add(noFormat);
+            section.Blocks.Add(paragraph);
+
+            Table table = new Table();
+            table.Columns.Add(new TableColumn(120));
+            table.AddRow("无边框表格");
+            table.Borders = null;
+            section.Blocks.Add(table);
+
+            WordDocumentFormat[] formats = new WordDocumentFormat[]
+            {
+                WordDocumentFormat.Docx, WordDocumentFormat.Rtf, WordDocumentFormat.Html, WordDocumentFormat.Odt
+            };
+            for (int i = 0; i < formats.Length; i++)
+            {
+                byte[] bytes = null;
+                try
+                {
+                    bytes = WordFormatConverter.ToArray(document, formats[i]);
+                }
+                catch (Exception exception)
+                {
+                    Require(false, "the " + formats[i] + " writer failed on a null model field: "
+                        + exception.GetType().Name + ": " + exception.Message);
+                }
+                Require(bytes != null && bytes.Length > 0,
+                    "the " + formats[i] + " writer produced no output for a null model field");
+            }
         }
 
         /// <summary>正文加一个引用图片的 <c>draw:frame</c>。 A body paragraph followed by a <c>draw:frame</c> that references a picture.</summary>

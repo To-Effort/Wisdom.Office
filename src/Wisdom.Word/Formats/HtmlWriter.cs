@@ -315,7 +315,11 @@ namespace Wisdom.Word
             ImageRun image = inline as ImageRun;
             if (image != null && image.Image != null)
             {
-                if (image.Image.Format != OfficeImageFormat.Png && image.Image.Format != OfficeImageFormat.Jpeg) return;
+                // data: URI 只放浏览器能画的位图：GIF/BMP 过去被一并丢掉，而 EMF/WMF 内联进网页也只是坏图。
+                // The data: URI carries only bitmaps a browser can paint: GIF and BMP used to be dropped as well,
+                // while inlining EMF or WMF into a web page would only produce a broken image.
+                if (image.Image.Format != OfficeImageFormat.Png && image.Image.Format != OfficeImageFormat.Jpeg
+                    && image.Image.Format != OfficeImageFormat.Gif && image.Image.Format != OfficeImageFormat.Bmp) return;
                 double width = image.Width > 0 ? image.Width : image.Image.DefaultWidthPoints;
                 double height = image.Height > 0 ? image.Height : image.Image.DefaultHeightPoints;
                 builder.Append("<img alt=\"\" src=\"data:").Append(image.Image.ContentType).Append(";base64,")
@@ -450,14 +454,18 @@ namespace Wisdom.Word
                 columnCount = Math.Max(columnCount, table.Rows[i].Cells.Count);
             }
             if (columnCount == 0) columnCount = 1;
+            // Table.Borders 可被置空，语义是「整表无边框」；归一成一份空边框，避免四处解引用。
+            // Table.Borders can be null, meaning "no borders at all"; normalise it once instead of
+            // dereferencing it in four places.
+            TableBorders tableBorders = table.Borders ?? new TableBorders();
             BorderLine top = cell.Borders != null && cell.Borders.Top != null ? cell.Borders.Top
-                : (row == 0 ? table.Borders.Top : table.Borders.InsideHorizontal);
+                : (row == 0 ? tableBorders.Top : tableBorders.InsideHorizontal);
             BorderLine bottom = cell.Borders != null && cell.Borders.Bottom != null ? cell.Borders.Bottom
-                : (row + Math.Max(1, cell.RowSpan) >= rowCount ? table.Borders.Bottom : table.Borders.InsideHorizontal);
+                : (row + Math.Max(1, cell.RowSpan) >= rowCount ? tableBorders.Bottom : tableBorders.InsideHorizontal);
             BorderLine left = cell.Borders != null && cell.Borders.Left != null ? cell.Borders.Left
-                : (column == 0 ? table.Borders.Left : table.Borders.InsideVertical);
+                : (column == 0 ? tableBorders.Left : tableBorders.InsideVertical);
             BorderLine right = cell.Borders != null && cell.Borders.Right != null ? cell.Borders.Right
-                : (column + Math.Max(1, cell.ColSpan) >= columnCount ? table.Borders.Right : table.Borders.InsideVertical);
+                : (column + Math.Max(1, cell.ColSpan) >= columnCount ? tableBorders.Right : tableBorders.InsideVertical);
             AppendBorderCss(builder, "border-top", top);
             AppendBorderCss(builder, "border-bottom", bottom);
             AppendBorderCss(builder, "border-left", left);
