@@ -67,11 +67,13 @@ section.Blocks.Add(table);
 | `HeaderFooter` | `Blocks`、`IsEnabled`、`AddParagraph()` |
 | `Paragraph` | `Inlines`、`Alignment`、`SpaceBefore/After`、`LineSpacing`、缩进、`HeadingLevel`、`KeepWithNext`、`PageBreakBefore`、`ListMarker`、`AddText()`、`AddImage()`、`AddLineBreak()`、`GetText()` |
 | `TextRun` / `FieldRun` / `ImageRun` | 文本、超链接 `Link`、域（`PAGE`、`NUMPAGES` 等）、行内图片 |
-| `TextFormat` | `FontFamily`、`AsciiFontFamily`、`EastAsiaFontFamily`、`FontSize`、`Bold/Italic/Underline/Strikeout`、`Color`、上下标、`Heading(level)` |
+| `TextFormat` | `FontFamily`、`AsciiFontFamily`、`EastAsiaFontFamily`、`FontSize`、`Bold/Italic/Underline/Strikeout`、`Color`、上下标、`Heading(level)`、`HasExplicitFontFamily`/`HasExplicitFontSize`/`HasExplicitColor` |
 | `Table` / `TableRow` / `TableCell` | 列宽、行 `IsHeader`/`Height`、单元格 `ColSpan`/`RowSpan`/`BackgroundColor`/`VerticalAlignment`/`Borders`、`CellPadding`、`Autofit`、`Alignment` |
 | `TableBorders` / `TableCellBorders` / `BorderLine` | `Thin()`、`None()`、`BorderStyle` 枚举 |
 | `OfficeColor` | `FromHtml("#00B050")`、`FromArgb`、`ToHex`、`TryParse`、预置色 |
 | `OfficeImage` | `FromFile()`、`Data`、`Format`、`PixelWidth/Height`、`DefaultWidthPoints` |
+
+`new TextFormat()` 预置的 Arial、11 磅、黑色是模型内置默认值，不是调用者的意图；`HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor` 三个只读标记只在真正赋过值时点亮（`new TextFormat("Arial", 10)` 这类显式构造三项皆算设过）。写出器按它们决定某一项落不落盘，好让没设过的属性仍由文档自己的继承链决定——PPT 侧的 `a:rPr` 就靠这条不再给一个只加粗的词补上显式字号与字体。标记随 `Clone()` 一起复制。
 
 页码域的写法（Word 输出真实 `fldSimple`，PDF 输出实际页码）：
 

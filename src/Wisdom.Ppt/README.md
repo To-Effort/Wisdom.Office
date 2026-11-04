@@ -144,6 +144,8 @@ table.Table.AddRow("华南", "384", "30%");
 `AutoShapeKind` 支持 `Rectangle`、`RoundedRectangle`、`Ellipse`、`Triangle`、`Diamond`、`Pentagon`、`Hexagon`、`RightArrow`、`Chevron`、`Line`，逐个映射到 PresentationML 的 `prstGeom`。
 `SlideTransitionKind` 支持 `None`、`Fade`、`Push`、`Wipe`、`Split`，配合 `TransitionDuration`（秒）。
 
+文本运行只写你**显式设过**的字符属性。`new TextFormat()` 预置的 Arial、11 磅、黑色是模型内置默认值，不算意图：一个只设了 `Bold = true` 的 run 写出的是 `<a:rPr b="1"/>`，字号、字体、颜色都留给版式与母版的继承链，不会被钉成 11 磅的 Calibri。`TextFormat` 上的 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor` 三个只读标记就是这条判定，赋过值才点亮；`new TextFormat("Calibri", 18)` 这类显式构造则三项都算设过。整段没有任何格式的文本沿用演示文稿的默认字体（`DefaultTextFormat` / `DefaultTitleFormat`，未显式设置时取主题主/次字体）。
+
 ## 入场动画、自动换页与主题深改
 
 每个 `SlideShape` 都可以挂一个入场动画；写出器据此生成 `p:timing` 主序列（PowerPoint 原生动画节点），读回时按 `presetClass="entr"` 的行为节点还原类别、延迟与时长：

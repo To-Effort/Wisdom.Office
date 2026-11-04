@@ -382,6 +382,7 @@
 | `PD9`、`WE7`、`WE9` | `PD9` 落地上抛路由：解码超限与内存失败不再被页提取吞掉，`ExtractText()` / `GetContentBytes()` 新增可抛 `DecompressionLimitException`（未建告警集合，统一通道留给 `WE7`/`WE9` 那一批） | `docs/Wisdom.Pdf.Tutorial.md` §10、`src/Wisdom.Pdf/README.md`、`articles/Wisdom.Pdf.md` 已补「资源上限不走静默降级」；`docs/Wisdom.Ppt.Tutorial.md` 与 Word 侧待 `WE7`/`WE9` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
 | `PT6` | 空占位符的省略条件从「占位符且无文本」收窄为「本库按版式补出、且到写出时仍没有任何可见效果」；从文件读回的空占位符与调用方自建的空框现在照常写出，往返形状数与层叠次序稳定 | `src/Wisdom.Ppt/README.md`「版式与占位符」补了省略规则与新增的来源标记 `SlideShape.IsGeneratedPlaceholder`（public 读、internal 写）；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节「空框叠在表格上」的说法按新规则重写过 |
+| `PT5` | 输出 `a:rPr` 的形状改变：字号、颜色、字体三项只在**显式设过**时才写，只加粗的 run 从 `sz="1100"` + `a:solidFill` + `a:latin`/`a:ea` 缩成只剩 `b="1"`；这类稿子二次写出（Load+Save）的字节随之变化，渲染改由版式与母版继承决定 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」写明这条规则与 `TextFormat` 新增的三个只读标记；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「只想改字号，保存后连字体一起被换了」 |
 
 ---
 
@@ -582,4 +583,17 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 控制断言钉反方向：只填标题的那一页，先立住模型里确实有两个自动占位符，往返后回读只剩 1 个——「程序生成的稿子不该留一个等用户点进去的空框」这条旧承诺不能被这次改动一起丢掉。夹具走内存流写出再 `PptxReader.Load(bytes)` 回读，不碰磁盘；底色断言复用 `Batch4PptTests.cs` 里的 `RequireHex`。
   - 产出字节的变化不止红测那一页：**从文件读回的 pptx 里空着的内容占位符过去会被写出器删掉，现在原样保留**（读端不置标记），代价是这类稿子在 PowerPoint 里看得见"单击此处添加"的空框，收益是往返的形状数与层叠次序不再被静默改写。§9 因此补一行，`src/Wisdom.Ppt/README.md`「版式与占位符」写清省略规则，`docs/Wisdom.Ppt.Tutorial.md` 第 3 节那句「直接 `AddTable` 会让这一页多出一个叠在表格上的空框」按新规则重写——空框在 `.pptx` 与 PDF 里都画不出东西，它占的是模型里的一格。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；存量 PPT 套件（`Batch4PptTests`、`PptMarkdownTests`、`WriteOutputTests` 的形状计数与往返断言）全绿，说明收紧后的省略条件没改动正常稿子的输出。
+- `PT5`（`d3dbe35` + `7e0f7db`）：目标行为「`TextFormat` 表达『未设置』，只写真正设置过的属性」落地为三个只读标记 + 写端三处门控，而不是把公共属性改成可空。
+  - 为什么不走可空字段：`TextFormat.FontSize` 是 `public double`、`Color` 是 `public OfficeColor`（结构体），被 Word / Excel / Pdf 三条链路同时消费，把类型改成可空是一次跨包 BREAKING，且要动的 `DocxWriter.cs` 正被另一路会话改写；本次只在类内加 `private` 状态与三个 `public bool` 只读属性，两条构造器与全部属性签名字面未变，读取方拿到的 `FontSize` 仍是 11、`Color` 仍是黑，行为差异只在「写不写得出这个属性」。标记的可见性与 `PT6` 同源：public 读，写权由赋值本身掌握。
+  - 无参构造器改成直接写 backing field（`_fontFamily = "Arial"` 等），预置的 Arial/11 磅/黑色因此不点亮标记——这正是「构造器预置默认值击败 `??`」那一类缺陷在 PPT 侧的最后一个入口；两参构造 `TextFormat(fontFamily, fontSize)` 按它自己文档承诺的「字体、字号、黑色」三项全算显式，`HasExplicitFontFamily` 只认非空字体名，`HasExplicitFontSize` 只认正字号。`Clone()` 走 `MemberwiseClone`，标记随格式一起复制。
+  - 写端只留 `lang` 是恒写的：`CharProps` 里 `sz` 受 `HasExplicitFontSize` 门控、`a:solidFill` 受 `HasExplicitColor`、`a:latin`/`a:ea` 受 `HasExplicitFontFamily`（两者同进同出，只设东亚字体时西文仍按 `GetAsciiFontFamily()` 的回退写，与修复前一致）。`ResolveFormat`/`IsGenericDefault` 原样保留：整段没设过任何属性的 run 仍走「取基础格式」那条路，`_bodyFormat`/`_titleFormat` 由 `new TextFormat("Calibri", 18/40)` 造出、三项俱为显式，普通稿子的输出因此不变——变化只落在「设了一处、其余留空」的 run 上，`Batch4PptTests` 的主题字体断言（`typeface="微软雅黑"`、`typeface="Consolas"`）与 `DefaultTextFormat` 优先断言全绿就是这条边界未被推开的证据。
+  - 修复前失败原文（`net8.0` 与 `net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a run that never set a size was pinned to the model default: sz=1100
+       at Wisdom.Office.Tests.Program.RunPartialRunFormatStaysInheritedTest() ... RemediationPptPhaseFourTests.cs:line 107
+    ```
+
+  - 夹具走内存流，`a:rPr` 直接从 zip 部件里按文档顺序取（`a:endParaRPr` 不在 `a:r` 下，天然排除）：三条 run 分别只设粗体、只设 22 磅、只设「宋体」，断言第一份既无 `sz` 也无 `a:latin`/`a:ea`/`a:solidFill`，后两份各只写自己那一项、不许臆造另一项；再 `PptxReader.Load` 回读并二次写出，验证读端没在文件里见到的属性不会被当成显式设过——模型侧回读断言 `Bold`、`FontSize=22`、`FontFamily=宋体` 三项仍在，省下来的属性按模型默认值读回，不是丢失。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
