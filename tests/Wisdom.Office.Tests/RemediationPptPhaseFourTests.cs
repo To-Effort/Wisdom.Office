@@ -22,6 +22,7 @@ namespace Wisdom.Office.Tests
             RunPartialRunFormatStaysInheritedTest();
             RunUndeclaredTableHeaderStaysPlainTest();
             RunZeroHeightSeparatorSurvivesTest();
+            RunTransitionDirectionSpeedClickTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -274,6 +275,88 @@ namespace Wisdom.Office.Tests
             }
             return null;
         }
+
+        /// <summary>
+        /// PT9：切换效果的方向、速度与「是否需要单击」过去全被写死成 <c>dir="l"</c>、<c>spd="med"</c>、
+        /// <c>advClick="1"</c>，于是「向上推入」读回来变成向左推入、设成自动换片的稿子又变回必须点击。
+        /// 现在三个字段都是模型的一部分，写得出也读得回；没设过的那些不写，输出与旧稿一致。
+        /// PT9: direction, speed and "advance on click" used to be hardcoded to dir="l", spd="med" and
+        /// advClick="1", so an "up" push came back as a left push and an auto-advancing deck needed a click
+        /// again. All three are model state now, written and read symmetrically; the ones never set stay
+        /// unwritten, so existing decks produce the same bytes as before.
+        /// </summary>
+        private static void RunTransitionDirectionSpeedClickTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+
+            Slide declared = deck.AddSlide(SlideLayoutKind.Blank);
+            declared.Transition = SlideTransitionKind.Push;
+            declared.TransitionDirection = SlideTransitionDirection.Up;
+            declared.TransitionSpeed = SlideTransitionSpeed.Fast;
+            declared.TransitionDuration = 1.5;
+            declared.AdvanceAfterSeconds = 2.5;
+            declared.AdvanceOnClick = false;
+
+            // 控制：默认字段一个都没设的那一页，写出的形状必须与旧实现一致（dir="l"、无 spd、无 advClick）。
+            // Control: the slide that sets nothing must keep the old shape — dir="l", no spd, no advClick.
+            Slide plain = deck.AddSlide(SlideLayoutKind.Blank);
+            plain.Transition = SlideTransitionKind.Push;
+
+            byte[] written = WriteToBuffer(deck);
+
+            XElement transition = FirstTransition(written, "ppt/slides/slide1.xml");
+            Require(transition != null, "the slide part carries no p:transition");
+            XElement push = transition.Element(P + "push");
+            Require(push != null, "the push effect element is missing");
+            Require((string)push.Attribute("dir") == "u",
+                "an upward push was written as dir=" + (string)push.Attribute("dir"));
+            Require((string)transition.Attribute("spd") == "fast",
+                "the fast speed was not written: spd=" + (string)transition.Attribute("spd"));
+            Require((string)transition.Attribute("advClick") == "0",
+                "an auto-advancing slide still demanded a click: advClick="
+                + (string)transition.Attribute("advClick"));
+            Require((string)transition.Attribute("advTm") == "2500",
+                "the auto-advance time did not survive: advTm=" + (string)transition.Attribute("advTm"));
+
+            XElement plainTransition = FirstTransition(written, "ppt/slides/slide2.xml");
+            Require(plainTransition != null, "the control slide lost its transition");
+            XElement plainPush = plainTransition.Element(P + "push");
+            Require(plainPush != null && (string)plainPush.Attribute("dir") == "l",
+                "the default push direction changed: dir="
+                + (plainPush == null ? "<no push>" : (string)plainPush.Attribute("dir")));
+            Require((string)plainTransition.Attribute("spd") == null,
+                "a slide that never set a speed still wrote spd");
+            Require((string)plainTransition.Attribute("advClick") == null,
+                "a slide that never set advClick still wrote it");
+
+            OfficePresentation loaded = PptxReader.Load(written);
+            Slide back = loaded.Slides[0];
+            Require(back.Transition == SlideTransitionKind.Push, "the transition kind did not read back");
+            Require(back.TransitionDirection == SlideTransitionDirection.Up,
+                "the direction did not read back: " + back.TransitionDirection);
+            Require(back.TransitionSpeed == SlideTransitionSpeed.Fast,
+                "the speed did not read back: " + back.TransitionSpeed);
+            Require(!back.AdvanceOnClick, "the slide started demanding a click again");
+            Require(Math.Abs(back.AdvanceAfterSeconds - 2.5) < 0.001,
+                "the auto-advance time did not read back: " + back.AdvanceAfterSeconds);
+            Require(loaded.Slides[1].AdvanceOnClick, "the default slide lost its click-to-advance");
+        }
+
+        /// <summary>取幻灯片部件里第一个 <c>p:transition</c>（带时长时它住在 mc:Choice 里）。 Takes the first <c>p:transition</c> in a slide part, which lives inside mc:Choice when a duration is present.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>transition 元素，缺失时 null。The transition element, null when absent.</returns>
+        private static XElement FirstTransition(byte[] archive, string entryName)
+        {
+            foreach (XElement transition in ReadSlideXml(archive, entryName).Descendants(P + "transition"))
+            {
+                return transition;
+            }
+            return null;
+        }
+
+        /// <summary>PresentationML 命名空间，测试里手写一份。 The PresentationML namespace, spelled out here.</summary>
+        private static readonly XNamespace P = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
         /// <summary>DrawingML 命名空间，测试里手写一份，避免依赖写端的私有常量。 The DrawingML namespace, spelled out here so the test does not lean on a writer private.</summary>
         private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";

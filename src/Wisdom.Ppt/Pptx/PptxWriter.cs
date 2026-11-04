@@ -1776,13 +1776,15 @@ namespace Wisdom.Ppt
             /// <returns>transition 或 AlternateContent 元素，无切换时 null。 The transition or AlternateContent element, null without a transition.</returns>
             private static XElement CreateTransition(Slide slide)
             {
+                string speed = slide.TransitionSpeed.HasValue ? SpeedCode(slide.TransitionSpeed.Value) : "med";
+                string click = slide.AdvanceOnClick ? "1" : "0";
                 XElement effect = null;
                 switch (slide.Transition)
                 {
                     case SlideTransitionKind.Fade: effect = new XElement(P + "fade"); break;
-                    case SlideTransitionKind.Push: effect = new XElement(P + "push", new XAttribute("dir", "l")); break;
-                    case SlideTransitionKind.Wipe: effect = new XElement(P + "wipe", new XAttribute("dir", "d")); break;
-                    case SlideTransitionKind.Split: effect = new XElement(P + "split", new XAttribute("orient", "vert"), new XAttribute("dir", "d")); break;
+                    case SlideTransitionKind.Push: effect = new XElement(P + "push", new XAttribute("dir", DirectionCode(slide.TransitionDirection, SlideTransitionDirection.Left))); break;
+                    case SlideTransitionKind.Wipe: effect = new XElement(P + "wipe", new XAttribute("dir", DirectionCode(slide.TransitionDirection, SlideTransitionDirection.Down))); break;
+                    case SlideTransitionKind.Split: effect = new XElement(P + "split", new XAttribute("orient", "vert"), new XAttribute("dir", DirectionCode(slide.TransitionDirection, SlideTransitionDirection.Down))); break;
                     default: break;
                 }
                 if (effect == null)
@@ -1790,8 +1792,10 @@ namespace Wisdom.Ppt
                     // 无切换效果但设了自动换页：写不带效果节点的 transition，仅由 advTm 表达计时。
                     // No visual effect but auto-advance set: a transition without an effect child, carried by advTm alone.
                     if (slide.AdvanceAfterSeconds <= 0) return null;
-                    return new XElement(P + "transition",
+                    XElement idle = new XElement(P + "transition",
                         new XAttribute("advTm", IntStr(RoundToInt(slide.AdvanceAfterSeconds * 1000.0))));
+                    if (!slide.AdvanceOnClick) idle.Add(new XAttribute("advClick", click));
+                    return idle;
                 }
                 string advTm = slide.AdvanceAfterSeconds > 0
                     ? IntStr(RoundToInt(slide.AdvanceAfterSeconds * 1000.0))
@@ -1800,18 +1804,20 @@ namespace Wisdom.Ppt
                 if (slide.TransitionDuration <= 0)
                 {
                     if (advTm != null) transition.Add(new XAttribute("advTm", advTm));
+                    if (slide.TransitionSpeed.HasValue) transition.Add(new XAttribute("spd", speed));
+                    if (!slide.AdvanceOnClick) transition.Add(new XAttribute("advClick", click));
                     transition.Add(new XElement(effect));
                     return transition;
                 }
                 string dur = IntStr(RoundToInt(slide.TransitionDuration * 1000.0));
                 XElement choiceTransition = new XElement(P + "transition",
-                    new XAttribute("spd", "med"),
+                    new XAttribute("spd", speed),
                     new XAttribute(P14 + "dur", dur),
-                    new XAttribute("advClick", "1"),
+                    new XAttribute("advClick", click),
                     new XElement(effect));
                 XElement fallbackTransition = new XElement(P + "transition",
-                    new XAttribute("spd", "med"),
-                    new XAttribute("advClick", "1"),
+                    new XAttribute("spd", speed),
+                    new XAttribute("advClick", click),
                     new XElement(effect));
                 if (advTm != null)
                 {
@@ -1828,6 +1834,34 @@ namespace Wisdom.Ppt
                     new XAttribute(XNamespace.Xmlns + "p14", P14.NamespaceName),
                     choice,
                     fallback);
+            }
+
+            /// <summary>把切换方向映射成 <c>dir</c> 的 l/r/u/d；未设置时用该效果的原生默认方向。Maps a transition direction to dir's l/r/u/d, falling back to the effect's native default.</summary>
+            /// <param name="direction">模型里的方向，可为 null。The direction from the model, possibly null.</param>
+            /// <param name="fallback">未设置时的默认方向。The default direction when unset.</param>
+            /// <returns>l、r、u 或 d。One of l, r, u or d.</returns>
+            private static string DirectionCode(SlideTransitionDirection? direction, SlideTransitionDirection fallback)
+            {
+                switch (direction ?? fallback)
+                {
+                    case SlideTransitionDirection.Right: return "r";
+                    case SlideTransitionDirection.Up: return "u";
+                    case SlideTransitionDirection.Down: return "d";
+                    default: return "l";
+                }
+            }
+
+            /// <summary>把切换速度映射成 <c>spd</c> 的 slow/med/fast。Maps a transition speed to spd's slow/med/fast.</summary>
+            /// <param name="speed">速度。The speed.</param>
+            /// <returns>slow、med 或 fast。One of slow, med or fast.</returns>
+            private static string SpeedCode(SlideTransitionSpeed speed)
+            {
+                switch (speed)
+                {
+                    case SlideTransitionSpeed.Slow: return "slow";
+                    case SlideTransitionSpeed.Fast: return "fast";
+                    default: return "med";
+                }
             }
 
             /// <summary>生成 <code>p:timing</code> 动画时间线：每个带动画的形状是一个顺序节点，按 z 序排列，

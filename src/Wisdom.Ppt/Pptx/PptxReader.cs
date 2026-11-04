@@ -500,6 +500,9 @@ namespace Wisdom.Ppt
                 slide.Layout = InferLayoutKind(slide);
                 XElement transition = FindTransition(root);
                 slide.Transition = ReadTransition(transition);
+                slide.TransitionDirection = ReadTransitionDirection(transition);
+                slide.TransitionSpeed = ReadTransitionSpeed(transition);
+                slide.AdvanceOnClick = ReadAdvanceOnClick(transition);
                 slide.TransitionDuration = ReadTransitionDuration(transition);
                 slide.AdvanceAfterSeconds = ReadAdvanceAfter(transition);
                 slide.NotesText = ReadNotes(root);
@@ -1139,6 +1142,58 @@ namespace Wisdom.Ppt
                 if (Ppt.Child(transition, "wipe") != null) return SlideTransitionKind.Wipe;
                 if (Ppt.Child(transition, "split") != null) return SlideTransitionKind.Split;
                 return SlideTransitionKind.None;
+            }
+
+            /// <summary>
+            /// 读取切换方向：取效果子元素上的 <c>dir</c> 属性（l/r/u/d）。缺失或无法识别时返回 null，
+            /// 让模型保持「未设置」而不是猜一个方向——写端据此回落到该效果的原生默认方向。
+            /// Reads the transition direction from the effect child's <c>dir</c> attribute (l/r/u/d).
+            /// Missing or unrecognised values return null so the model keeps "not set" instead of guessing,
+            /// and the writer falls back to the effect's native default.
+            /// </summary>
+            /// <param name="transition">p:transition 元素。The p:transition element.</param>
+            /// <returns>方向，未设置时 null。The direction, null when unset.</returns>
+            private static SlideTransitionDirection? ReadTransitionDirection(XElement transition)
+            {
+                if (transition == null) return null;
+                foreach (XElement child in transition.Elements())
+                {
+                    string dir = Ppt.Attribute(child, "dir");
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    switch (dir.ToLowerInvariant())
+                    {
+                        case "l": return SlideTransitionDirection.Left;
+                        case "r": return SlideTransitionDirection.Right;
+                        case "u": return SlideTransitionDirection.Up;
+                        case "d": return SlideTransitionDirection.Down;
+                    }
+                }
+                return null;
+            }
+
+            /// <summary>读取切换速度：<c>spd</c> 的 slow/med/fast，缺失或无法识别时返回 null。Reads the transition speed from spd's slow/med/fast, returning null when missing or unrecognised.</summary>
+            /// <param name="transition">p:transition 元素。The p:transition element.</param>
+            /// <returns>速度，未设置时 null。The speed, null when unset.</returns>
+            private static SlideTransitionSpeed? ReadTransitionSpeed(XElement transition)
+            {
+                string spd = Ppt.Attribute(transition, "spd");
+                if (string.IsNullOrEmpty(spd)) return null;
+                switch (spd.ToLowerInvariant())
+                {
+                    case "slow": return SlideTransitionSpeed.Slow;
+                    case "med": return SlideTransitionSpeed.Medium;
+                    case "fast": return SlideTransitionSpeed.Fast;
+                    default: return null;
+                }
+            }
+
+            /// <summary>读取 <c>advClick</c>：缺省为 true（单击可换片），只有显式写了假值才表示「不接受点击」。Reads advClick: true by default (a click advances), and only an explicit false means clicks are ignored.</summary>
+            /// <param name="transition">p:transition 元素。The p:transition element.</param>
+            /// <returns>需要单击换片时返回 true。True when a click advances the slide.</returns>
+            private static bool ReadAdvanceOnClick(XElement transition)
+            {
+                if (transition == null) return true;
+                return Ppt.ParseBool(Ppt.Attribute(transition, "advClick"), true);
             }
 
             /// <summary>

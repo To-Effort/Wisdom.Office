@@ -111,6 +111,36 @@ namespace Wisdom.Office.Core
         Split = 4
     }
 
+    /// <summary>
+    /// 切换效果的方向，对应 PresentationML 的 <c>dir</c> 属性（l/r/u/d）。
+    /// The direction of a transition, mapping to PresentationML's <c>dir</c> attribute (l/r/u/d).
+    /// </summary>
+    public enum SlideTransitionDirection
+    {
+        /// <summary>向左（<c>l</c>）。Left (l).</summary>
+        Left = 0,
+        /// <summary>向右（<c>r</c>）。Right (r).</summary>
+        Right = 1,
+        /// <summary>向上（<c>u</c>）。Up (u).</summary>
+        Up = 2,
+        /// <summary>向下（<c>d</c>）。Down (d).</summary>
+        Down = 3
+    }
+
+    /// <summary>
+    /// 切换速度，对应 PresentationML 的 <c>spd</c> 属性（slow/med/fast）。
+    /// The speed of a transition, mapping to PresentationML's <c>spd</c> attribute (slow/med/fast).
+    /// </summary>
+    public enum SlideTransitionSpeed
+    {
+        /// <summary>慢速（<c>slow</c>）。Slow.</summary>
+        Slow = 0,
+        /// <summary>中速（<c>med</c>）。Medium.</summary>
+        Medium = 1,
+        /// <summary>快速（<c>fast</c>）。Fast.</summary>
+        Fast = 2
+    }
+
     /// <summary>形状入场动画类别。Shape entrance animation kind.</summary>
     public enum SlideAnimationKind
     {
@@ -398,6 +428,26 @@ namespace Wisdom.Office.Core
         public string NotesText { get; set; }
         /// <summary>切换效果。Transition effect.</summary>
         public SlideTransitionKind Transition { get; set; }
+        /// <summary>
+        /// 切换方向；null 表示沿用该效果的原生默认方向（推入向左、擦除与分割向下）。
+        /// 写端只在这个字段设过时才写 <c>dir</c>，读端把 <c>dir</c> 原值读回，因此「向上推入」不会再被还原成向左推入。
+        /// Transition direction; null keeps the effect's native default (push left, wipe and split down).
+        /// The writer emits <c>dir</c> only when this is set and the reader restores the original value, so an
+        /// "up" push no longer comes back as a left push.
+        /// </summary>
+        public SlideTransitionDirection? TransitionDirection { get; set; }
+        /// <summary>
+        /// 切换速度；null 表示沿用 PowerPoint 的中速默认值（<c>spd="med"</c>）。
+        /// Transition speed; null keeps PowerPoint's medium default (<c>spd="med"</c>).
+        /// </summary>
+        public SlideTransitionSpeed? TransitionSpeed { get; set; }
+        /// <summary>
+        /// 是否需要单击才换片；默认 true，对应 <c>advClick="1"</c>。
+        /// 置 false 表示「自动换片、不接受点击」，与 <see cref="AdvanceAfterSeconds"/> 配合使用。
+        /// Whether a click advances the slide; true by default, written as <c>advClick="1"</c>.
+        /// Set it to false for "advance on its own, ignore clicks", together with <see cref="AdvanceAfterSeconds"/>.
+        /// </summary>
+        public bool AdvanceOnClick { get; set; }
         /// <summary>切换持续时间，单位为秒。Transition duration in seconds.</summary>
         public double TransitionDuration { get; set; }
         /// <summary>无人工操作时自动切换前的停留时间，单位为秒；0 表示仅点击切换。Seconds to wait before advancing automatically; 0 means click-only advance.</summary>
@@ -408,6 +458,7 @@ namespace Wisdom.Office.Core
         {
             Shapes = new List<SlideShape>();
             Layout = SlideLayoutKind.Blank;
+            AdvanceOnClick = true;
         }
 
         /// <summary>按版式创建幻灯片。Creates a slide with the given layout.</summary>
