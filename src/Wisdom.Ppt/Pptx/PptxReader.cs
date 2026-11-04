@@ -852,6 +852,17 @@ namespace Wisdom.Ppt
                 {
                     table.Table.Rows.Add(ReadTableRow(rowElement));
                 }
+                // a:tblPr@firstRow 是 TableRow.IsHeader 唯一能回来的路：不读它，声明过的表头在第二次
+                // 写出时被整段抹平，因为统一模型没有别的字段承载「这一行是表头」。
+                // a:tblPr@firstRow is the only route back to TableRow.IsHeader; skip it and a declared
+                // header is flattened away on the next save, because the unified model carries that intent
+                // nowhere else.
+                XElement tblPr = Ppt.DrawingChild(tbl, "tblPr");
+                if (tblPr != null && Ppt.ParseBool(Ppt.Attribute(tblPr, "firstRow"), false)
+                    && table.Table.Rows.Count > 0)
+                {
+                    table.Table.Rows[0].IsHeader = true;
+                }
                 RegisterShapeId(graphicFrame, table);
                 AddShape(slide, table);
             }

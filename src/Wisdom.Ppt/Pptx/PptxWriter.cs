@@ -1158,15 +1158,19 @@ namespace Wisdom.Ppt
                 List<TableRow> rows = model.Rows ?? new List<TableRow>();
                 int gridCols = ComputeGridColumns(model, rows);
 
-                XElement tbl = new XElement(A + "tbl",
-                    new XElement(A + "tblPr",
-                        new XAttribute("firstRow", "1"),
-                        new XAttribute("bandRow", "1"),
-                        new XElement(A + "tableStyleId", DefaultTableStyleId)),
+                // tblPr 的开关只写模型说过的话：firstRow 跟着显式表头走，带状行（bandRow）在统一模型里
+                // 没有对应字段，因此不再恒写——过去每张表出门都自带一套没人要过的条纹。
+                // The tblPr switches now say only what the model said: firstRow follows a declared header,
+                // and bandRow, which has no counterpart in the unified model, is no longer written for every
+                // table — until now every table left the file already striped.
+                XElement tblPr = new XElement(A + "tblPr", new XElement(A + "tableStyleId", DefaultTableStyleId));
+                bool styledHeader = HasDeclaredHeader(table, rows);
+                if (styledHeader) tblPr.Add(new XAttribute("firstRow", "1"));
+
+                XElement tbl = new XElement(A + "tbl", tblPr,
                     CreateGrid(model, rows, gridCols, Ppt.Emu(table.Width)));
 
                 OfficeColor headerFill = table.HeaderColor.HasValue ? table.HeaderColor.Value : AccentColor(0);
-                bool styledHeader = HasHeaderRow(rows);
                 double padding = model.CellPadding > 0 ? model.CellPadding : 4.0;
                 BorderLine inside = model.Borders != null ? model.Borders.InsideHorizontal : BorderLine.Thin();
                 int totalRows = rows.Count;
@@ -1189,9 +1193,15 @@ namespace Wisdom.Ppt
                     }
                     while (placed < gridCols)
                     {
+                        // 补齐用的空格跟着所在行的待遇走：表头行里的空格借表头色，免得一条表头被补位格截成两截；
+                        // 数据行里的空格什么都不写，让 tableStyleId 说话。
+                        // A filler cell follows its row's treatment: inside a header row it takes the header
+                        // fill so the band is not cut in two, and in a data row it writes no fill at all and
+                        // lets the tableStyleId speak.
+                        OfficeColor? fillerFill = isHeader ? (OfficeColor?)headerFill : null;
                         tr.Add(new XElement(A + "tc", new XElement(A + "txBody",
                             new XElement(A + "bodyPr"), new XElement(A + "lstStyle"), new XElement(A + "p")),
-                            CreateTcProperties(null, OfficeColor.White, isHeader, padding, inside, 1)));
+                            CreateTcProperties(null, fillerFill, isHeader, padding, inside, 1)));
                         placed++;
                     }
                     tbl.Add(tr);
@@ -1228,7 +1238,15 @@ namespace Wisdom.Ppt
                 return tc;
             }
 
-            /// <summary>生成 <code>a:tcPr</code>：内边距、锚点、底色与四边线。 Builds <code>a:tcPr</code>: insets, anchor, fill and four border edges.</summary>
+            /// <summary>
+            /// 生成 <code>a:tcPr</code>：内边距、锚点、底色与四边线。底色没设过就什么都不写——
+            /// 补一个 <code>a:noFill</code> 等于替调用者宣布「这格不许有底色」，会把 <code>tableStyleId</code>
+            /// 本来要给的条纹与整表填充一并抹掉。
+            /// Builds <code>a:tcPr</code>: insets, anchor, fill and four border edges. No fill at all when none
+            /// was set — emitting <code>a:noFill</code> would announce "this cell may not be filled" on the
+            /// caller's behalf and wipe out the banding and whole-table fill the <code>tableStyleId</code>
+            /// was about to give.
+            /// </summary>
             /// <param name="cell">单元格模型（可为 null）。 Cell model, may be null.</param>
             /// <param name="fill">底色覆盖；表头单元格使用表头色。 Fill override; header cells use the header color.</param>
             /// <param name="header">是否表头。 Whether it is a header cell.</param>
@@ -1260,10 +1278,6 @@ namespace Wisdom.Ppt
                 if (fill.HasValue)
                 {
                     tcPr.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", fill.Value.ToHex()))));
-                }
-                else
-                {
-                    tcPr.Add(new XElement(A + "noFill"));
                 }
                 return tcPr;
             }
@@ -1373,19 +1387,36 @@ namespace Wisdom.Ppt
                 return grid;
             }
 
-            /// <summary>判断表格是否存在表头行。 Determines whether the table has any header row.</summary>
+            /// <summary>
+            /// 判断调用者是否真的声明过表头：某一行带了 IsHeader，或者给过表头底色。
+            /// 两者都没有时一律不立 firstRow——「首行长得像表头」是写端自己的假设，不是模型里的意图；
+            /// 旧实现让每张表都当自己的首行是表头，于是没人要过的加粗白字与条带跟着进了文件。
+            /// Determines whether the caller actually declared a header: some row carries IsHeader, or a
+            /// header colour was set. With neither, firstRow stays off — "the first row looks like a header"
+            /// is the writer's own assumption, not intent held in the model; the old implementation treated
+            /// every table's first row as a header and shipped bold white text and banding nobody asked for.
+            /// </summary>
+            /// <param name="table">表格形状。 Table shape.</param>
             /// <param name="rows">行列表。 Rows.</param>
-            /// <returns>存在返回 true。 True when a header row exists.</returns>
-            private static bool HasHeaderRow(List<TableRow> rows)
+            /// <returns>声明过返回 true。 True when a header was declared.</returns>
+            private static bool HasDeclaredHeader(TableShape table, List<TableRow> rows)
             {
+                if (table != null && table.HeaderColor.HasValue) return true;
+                if (rows == null) return false;
                 for (int r = 0; r < rows.Count; r++)
                 {
                     if (rows[r] != null && rows[r].IsHeader) return true;
                 }
-                return rows.Count > 0;
+                return false;
             }
 
-            /// <summary>判断指定行是否按表头样式渲染（显式表头或首行）。 Determines whether a row is rendered with the header style (explicit header or the first row).</summary>
+            /// <summary>
+            /// 判断指定行是否按表头样式渲染。条件已经由 <see cref="HasDeclaredHeader"/> 把过一遍：
+            /// 走到这里说明调用者声明过表头，显式的行优先，没有显式行时把首行当表头。
+            /// Determines whether a row is rendered with the header style. The caller has already gated this
+            /// on <see cref="HasDeclaredHeader"/>: reaching here means a header was declared, an explicitly
+            /// marked row wins, and otherwise the first row carries the header treatment.
+            /// </summary>
             /// <param name="model">表格模型。 Table model.</param>
             /// <param name="rows">行列表。 Rows.</param>
             /// <param name="index">行下标。 Row index.</param>
