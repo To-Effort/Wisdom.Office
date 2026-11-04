@@ -378,8 +378,8 @@
 | `WE1` | ODT 畸形跨度乘积从假死/OOM 改为「预算用完停止登记覆盖」，声明的跨度保留 | `README.md` 不可信输入列举、`src/Wisdom.Word/README.md` 写明降级代价（已同步） |
 | `PD16`、`PD20`、`PT4` | 超限与畸形输入从静默产出空结果改为可检测失败 | `docs/Wisdom.Pdf.Tutorial.md`、`docs/Wisdom.Ppt.Tutorial.md` 的容错说明 |
 | `PD8` | 交叉表由全文扫描救回的文档，增量保存从「追加一段」改为全量重写；原字节不再逐字保留 | `docs/Wisdom.Pdf.Tutorial.md` 增量保存段、`src/Wisdom.Pdf/README.md` 已知限制、`docs/Wisdom.Office.功能导读.md` 2.4 的「只追加改动对象」承诺（三处已同步） |
-| `PD17` | 交叉表条目指到别人的对象头时，从「静默把该偏移上的对象当成目标号交回」改为「按条修正后重读，修不回即当作缺失」 | `src/Wisdom.Pdf/README.md` 已知限制（已同步）；`docs/Wisdom.Pdf.Tutorial.md` 的容错说明随 `PD9` 告警通道一并补 |
-| `PD9`、`WE7`、`WE9` | 引入告警集合后，读入失败的返回语义变化 | 两个包的教程与 `articles/Wisdom.Pdf.md`、`articles/Wisdom.Ppt.md` |
+| `PD17` | 交叉表条目指到别人的对象头时，从「静默把该偏移上的对象当成目标号交回」改为「按条修正后重读，修不回即当作缺失」 | `src/Wisdom.Pdf/README.md` 已知限制（已同步）；`docs/Wisdom.Pdf.Tutorial.md` 的容错说明已随 `PD9` 一并补（`PD9` 取上抛路由，未建告警通道） |
+| `PD9`、`WE7`、`WE9` | `PD9` 落地上抛路由：解码超限与内存失败不再被页提取吞掉，`ExtractText()` / `GetContentBytes()` 新增可抛 `DecompressionLimitException`（未建告警集合，统一通道留给 `WE7`/`WE9` 那一批） | `docs/Wisdom.Pdf.Tutorial.md` §10、`src/Wisdom.Pdf/README.md`、`articles/Wisdom.Pdf.md` 已补「资源上限不走静默降级」；`docs/Wisdom.Ppt.Tutorial.md` 与 Word 侧待 `WE7`/`WE9` |
 | `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
 
 ---
@@ -551,4 +551,13 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   ```
 
   两条控制断言（`Identity-H`、`UniGB-UTF8-H` 不许出现「中文测试」）修复前就是绿的，它们钉的是这次改动可能越过的界：UTF-16 码元逐个产出、由调用方拼接，因此代理对天然还原成增补平面字符，不需要在读字元时前瞻。产出字节不受影响——本条在读取端，只改 `ExtractText` 与依赖它的渲染取字结果；§9 不需要新行，README 与教程的清单从来没承诺「两字节字体无 ToUnicode 必定抽不出字」，这次是少抽变多抽。
-- 后续按 §10 顺序推进；`PD9`、`PD5`、`PD22` 合批设计告警与预算通道。
+- `PD9` + `PD5` + `PD22`（`b0c7a0a` + `c5b1d4a`）：三条按 §10 的「必须同批设计」合批落地。
+  - **路由取上抛，不建告警集合**。条目给的分支是「上抛或记入告警集合」。选上抛有两条理由：其一，`src/` 全仓没有 `InternalsVisibleTo`，告警集合做成 internal 就测不到、做成 public 就是新增一整个公共契约（要按 §9 同步两个包的教程与 `articles/`），而 §9 已经把 `PD9`、`WE7`、`WE9` 点名为「共享一个文档级告警与降级通道的新抽象」——统一通道不该由 PDF 单方面先定形状，留给 Word 那一批共同设计；其二，本条丢的是一件**确定的事实**（这一页解码超限），异常本身就能表达，告警集合该留给「部分丢失但整体可读」那一类。统一通道因此登记为独立后续条目。
+  - `PD9`：`PdfPageExtractor.Extract` 原来一把 `catch (Exception)` 全吞，超限因此伪装成「这页没字」，还被 `PdfPage.EnsureExtracted` 永久缓存成空文本；现在 `DecompressionLimitException` / `OutOfMemoryException` 先原样上抛，其余照旧按语法损坏静默降级。控制断言留在红测里：把一小段压缩正文的中间字节改坏，仍不许有任何异常逃出 `ExtractText()`——静默那一半不能被这次改动一起丢掉。`PdfContentInterpreter.Run` 的算符级 catch 与 `ExecuteXObject` 的解码 catch 同口径。
+  - `PD5`：`DecodeStream` 按 `PdfStream` 实例缓存解码正文。条目写「按对象号（或 `PdfStream` 实例）」，取实例这一半——解码调用点手里只有实例，按号缓存要把号穿到每一个解码点，而读取端一个号本来就只建一个实例。留存上限 64 MB，超了整表作废重解，不做 LRU：要挡的是「读完一本书把全书正文留在内存里」，逐条淘汰换来的复杂度换不到额外的正确性。解压放在锁外，两个线程同时未命中各解各的、内容相同。`GetContentBytes` 的 `/Contents` 数组出口逐段核对合计，共用单流上限。
+  - `PD22`：新增 internal `PdfDecodeBudget`，给单页累计解码量按流实例记账，越界即抛；嵌套 Form 沿用同一个实例。**不新增公共上限字段**——扇出预算和单流预算量的是同一格「一页能占多少内存」，多一个字段就得向调用方多解释一次两者怎么配比。按实例记账保证同一个表单被 `Do` 两千次只算一份（这条控制断言单独立着，正常模板不许误伤），深度上限只挡得住自引用，一层铺开的扇出由累计预算补。
+  - 断言形态偏离条目一处，记录原因：条目建议「计数型断言」数解码调用次数，但 `DecodeStream` 是 internal 且无 `InternalsVisibleTo`，测试数不到。改用计时：240 个对象、4.6 MB 的对象流，修复前 2 468 ms、修复后 84 ms（`net461` 127 ms），断言上界 700 ms。**首版这个夹具是假绿的**——200 页共用同一段填充数字，重复字节被 deflate 压得极小也 inflate 得极快，修复前只用 556 ms 就撞不到 2000 ms 的红线；改成每页独占一段不可压缩填充、页数升到 240、上界收到 700 ms 才拉开差距。计时夹具必须自己证明「每页数据互不相同」，否则测的是压缩率不是缓存。
+  - 刻意不动的一处：`PdfTextFont.cs:88-104` 的 ToUnicode 流解码仍按字体粒度静默降级。单个字体映射失败只让这一支字体抽不出字，页面其余文字照常，正是「部分丢失但整体可读」那一类，要不要上报等统一告警通道一起定。
+  - §9 文档同步到位：`docs/Wisdom.Pdf.Tutorial.md` 与 `src/Wisdom.Pdf/README.md` 的「结构损坏静默降级」段落各加一句「资源上限不走这条降级」，`articles/Wisdom.Pdf.md` 的读取上限一节同样补上。三处只写可观测行为（哪两个方法、抛哪一类异常、批量索引该怎么接），不提缓存字段与预算类名，未出现本地绝对路径或发布步骤。`docs/Wisdom.Office.功能导读.md` 那句「`DecompressionLimitException` 与 `InvalidDataException` 分开，好让调用方区分『文件坏了』和『文件太大了』」本来就以上抛为前提，这次是让它第一次真的成立，无需改动。
+  - 验证：`net8.0` 与 `net461` 双目标各整跑一遍，均打出 `[remediation] decode-budget PD9 PD5 PD22 ok` 并到末行 `All tests finished.`。
+- 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
