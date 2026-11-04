@@ -52,6 +52,7 @@ namespace Wisdom.Word
         /// <summary>从文件读取 ODT 文档。Loads an ODT document from a file.</summary>
         /// <param name="path">文件路径。The file path.</param>
         /// <returns>解析后的文档。The parsed document.</returns>
+        /// <exception cref="InvalidDataException">包内缺 content.xml，或 content.xml 不是合法 XML 时抛出。Thrown when the package has no content.xml or that part is not well-formed XML.</exception>
         public static OfficeDocument Load(string path)
         {
             if (path == null) throw new ArgumentNullException("path");
@@ -64,6 +65,7 @@ namespace Wisdom.Word
         /// <summary>从流读取 ODT 文档；流保持打开。Loads an ODT document from a stream, leaving it open.</summary>
         /// <param name="stream">ODT 字节流。The stream of ODT bytes.</param>
         /// <returns>解析后的文档。The parsed document.</returns>
+        /// <exception cref="InvalidDataException">包内缺 content.xml，或 content.xml 不是合法 XML 时抛出。Thrown when the package has no content.xml or that part is not well-formed XML.</exception>
         public static OfficeDocument Load(Stream stream)
         {
             if (stream == null) throw new ArgumentNullException("stream");
@@ -109,7 +111,20 @@ namespace Wisdom.Word
             byte[] contentBytes = parts.Read("content.xml");
             if (contentBytes == null) throw new InvalidDataException("不是有效的 ODT 文档：缺少 content.xml。");
 
-            XDocument content = Wml.LoadXml(contentBytes);
+            // 主部件不是合法 XML 就没有可降级的对象：整个文档一无所有，只能算坏文件。
+            // 换类型必须留着内层异常——行号与列号是「哪一段字节读不下去」的唯一线索。
+            // A malformed main part leaves nothing to degrade: the document is simply void, so this is a
+            // corrupt file. The rewrap keeps the inner exception, because line and column are the only
+            // record of which bytes could not be read.
+            XDocument content;
+            try
+            {
+                content = Wml.LoadXml(contentBytes);
+            }
+            catch (XmlException exception)
+            {
+                throw new InvalidDataException("不是有效的 ODT 文档：content.xml 不是合法 XML。", exception);
+            }
             if (content == null || content.Root == null) throw new InvalidDataException("不是有效的 ODT 文档：content.xml 为空。");
 
             XDocument stylesDocument = null;
