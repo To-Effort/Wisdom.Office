@@ -13,9 +13,11 @@ namespace Wisdom.Office.Tests
     /// Remediation design episode two, phase four: corrupt output and silently lost content.
     /// </summary>
     /// <remarks>
-    /// 需要告警通道的条目（<c>PD9</c> 与其下游 <c>PD5</c>/<c>PD22</c>）另批设计，这里只放可单独判定的条目。
-    /// Entries that need the warning channel (<c>PD9</c> and its downstream <c>PD5</c>/<c>PD22</c>) are
-    /// designed as their own batch; this file carries only what can be decided on its own.
+    /// 预算与上报批（<c>PD9</c> 与其下游 <c>PD5</c>/<c>PD22</c>）放在 <c>RemediationDecodeBudgetTests.cs</c>，
+    /// 由下面的入口末尾调用；本文件只放可单独判定的条目。
+    /// The budget and reporting batch (<c>PD9</c> and its downstream <c>PD5</c>/<c>PD22</c>) lives in
+    /// <c>RemediationDecodeBudgetTests.cs</c>, called at the bottom of the entry point below; this file
+    /// carries only what can be decided on its own.
     /// </remarks>
     internal static partial class Program
     {
@@ -30,6 +32,7 @@ namespace Wisdom.Office.Tests
             RunFlattenResourceNameTest();
             RunAppearanceWriteBackTest();
             RunNamedCmapTextTest();
+            RunRemediationDecodeBudgetTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
