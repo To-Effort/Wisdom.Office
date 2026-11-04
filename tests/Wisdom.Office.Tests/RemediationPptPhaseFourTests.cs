@@ -20,6 +20,7 @@ namespace Wisdom.Office.Tests
         {
             RunStyledPlaceholderSurvivesTest();
             RunPartialRunFormatStaysInheritedTest();
+            RunUndeclaredTableHeaderStaysPlainTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -148,8 +149,151 @@ namespace Wisdom.Office.Tests
                 "the round-tripped bold-only run was pinned to defaults on the second write");
         }
 
+        /// <summary>
+        /// PT3 结构档：没声明表头的表格，写端不该替它立 firstRow 与 bandRow、把首行刷成表头色加粗白字，
+        /// 更不该给每个格子写 <c>a:noFill</c> 把 <c>tableStyleId</c> 的话头堵死。
+        /// PT3 (structure tier): a table whose header was never declared must not leave the file with
+        /// firstRow/bandRow switched on, a painted bold-white first row, and an a:noFill in every cell that
+        /// silences the tableStyleId PowerPoint would otherwise apply.
+        /// </summary>
+        private static void RunUndeclaredTableHeaderStaysPlainTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+
+            TableShape plain = slide.AddTable(60, 60, 700, 160);
+            plain.Table.AddRow("华东", "588", "46%");
+            plain.Table.AddRow("华南", "384", "30%");
+
+            TableShape declared = slide.AddTable(60, 300, 700, 160);
+            declared.HeaderColor = new OfficeColor(0x1F, 0x3A, 0x5F);
+            declared.Table.AddRow("区域", "收入", "占比");
+            declared.Table.AddRow("华北", "300", "24%");
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] tables = ReadTables(written, "ppt/slides/slide1.xml");
+            Require(tables.Length == 2, "expected two tables on the slide, got " + tables.Length);
+
+            XElement plainPr = tables[0].Element(A + "tblPr");
+            Require(plainPr != null, "the undeclared table lost its a:tblPr");
+            Require((string)plainPr.Attribute("firstRow") == null,
+                "firstRow was switched on for a table that never declared a header row");
+            Require((string)plainPr.Attribute("bandRow") == null,
+                "bandRow was switched on although the model carries no banding to express");
+            XElement plainCell = FirstCell(FirstRow(tables[0]));
+            XElement plainTcPr = plainCell == null ? null : plainCell.Element(A + "tcPr");
+            Require(plainTcPr != null, "the undeclared table's first cell lost its a:tcPr");
+            Require(plainTcPr.Element(A + "solidFill") == null,
+                "the first row was painted a header fill nobody asked for");
+            Require(plainTcPr.Element(A + "noFill") == null,
+                "a:noFill was written for a cell that set no background, muting the table style");
+            XElement plainRun = FirstRunProps(plainCell);
+            Require(plainRun != null && (string)plainRun.Attribute("b") == null,
+                "the undeclared first row's text was pinned bold as a header");
+
+            XElement declaredPr = tables[1].Element(A + "tblPr");
+            Require(declaredPr != null && (string)declaredPr.Attribute("firstRow") == "1",
+                "HeaderColor was set but a:tblPr carries no firstRow, so the table style cannot paint it");
+            XElement headerCell = FirstCell(FirstRow(tables[1]));
+            XElement headerTcPr = headerCell == null ? null : headerCell.Element(A + "tcPr");
+            XElement headerFill = headerTcPr == null ? null : headerTcPr.Element(A + "solidFill");
+            XElement headerClr = headerFill == null ? null : headerFill.Element(A + "srgbClr");
+            Require(headerClr != null && (string)headerClr.Attribute("val") == "1F3A5F",
+                "the declared header colour was not written");
+            XElement headerRun = FirstRunProps(headerCell);
+            Require(headerRun != null && (string)headerRun.Attribute("b") == "1",
+                "the declared header row lost its bold emphasis");
+
+            // 往返：a:tblPr@firstRow 是模型里 IsHeader 唯一的回来路，读不回来等于二次写出把表头整段抹平。
+            // Round trip: a:tblPr@firstRow is the only route back to TableRow.IsHeader; skipping it would
+            // flatten a declared header on the second save.
+            OfficePresentation loaded = PptxReader.Load(written);
+            List<TableShape> back = FindTables(loaded.Slides[0]);
+            Require(back.Count == 2, "both tables must read back, got " + back.Count);
+            Require(back[1].Table.Rows[0].IsHeader,
+                "the declared header row did not survive the round trip");
+            Require(!back[0].Table.Rows[0].IsHeader,
+                "the undeclared table's first row was read back as a header");
+        }
+
         /// <summary>DrawingML 命名空间，测试里手写一份，避免依赖写端的私有常量。 The DrawingML namespace, spelled out here so the test does not lean on a writer private.</summary>
         private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+        /// <summary>取幻灯片部件里的每张 <c>a:tbl</c>，按文档顺序返回。 Collects every <c>a:tbl</c> in a slide part, in document order.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>表格元素列表。The table elements.</returns>
+        private static XElement[] ReadTables(byte[] archive, string entryName)
+        {
+            List<XElement> found = new List<XElement>();
+            foreach (XElement tbl in ReadSlideXml(archive, entryName).Descendants(A + "tbl")) found.Add(tbl);
+            return found.ToArray();
+        }
+
+        /// <summary>读出幻灯片部件的 XML 根。 Reads a slide part into an XML document.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>解析好的文档。The parsed document.</returns>
+        private static XDocument ReadSlideXml(byte[] archive, string entryName)
+        {
+            using (ZipArchive zip = new ZipArchive(new MemoryStream(archive), ZipArchiveMode.Read))
+            {
+                ZipArchiveEntry entry = zip.GetEntry(entryName);
+                Require(entry != null, "slide part missing: " + entryName);
+                using (Stream stream = entry.Open())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    return XDocument.Parse(reader.ReadToEnd());
+                }
+            }
+        }
+
+        /// <summary>取表格的首行 <c>a:tr</c>。 Takes a table's first <c>a:tr</c>.</summary>
+        /// <param name="tbl">a:tbl 元素。The a:tbl element.</param>
+        /// <returns>首行元素，空表为 null。 The first row, or null for an empty table.</returns>
+        private static XElement FirstRow(XElement tbl)
+        {
+            foreach (XElement tr in tbl.Elements(A + "tr")) return tr;
+            return null;
+        }
+
+        /// <summary>取行里的第一个单元格 <c>a:tc</c>。 Takes a row's first <c>a:tc</c>.</summary>
+        /// <param name="row">a:tr 元素，可为 null。The a:tr element, may be null.</param>
+        /// <returns>第一个单元格元素，取不到为 null。 The first cell, or null.</returns>
+        private static XElement FirstCell(XElement row)
+        {
+            if (row == null) return null;
+            foreach (XElement tc in row.Elements(A + "tc")) return tc;
+            return null;
+        }
+
+        /// <summary>取单元格里第一个文本运行的 <c>a:rPr</c>。 Takes the <c>a:rPr</c> of a cell's first text run.</summary>
+        /// <param name="cell">a:tc 元素，可为 null。The a:tc element, may be null.</param>
+        /// <returns>运行属性元素，无运行为 null。 The run properties, or null when the cell has no run.</returns>
+        private static XElement FirstRunProps(XElement cell)
+        {
+            if (cell == null) return null;
+            foreach (XElement run in cell.Descendants(A + "r"))
+            {
+                XElement props = run.Element(A + "rPr");
+                if (props != null) return props;
+            }
+            return null;
+        }
+
+        /// <summary>按 z 序列出这一页的表格形状。 Lists the slide's table shapes in z-order.</summary>
+        /// <param name="slide">读回的幻灯片。The reloaded slide.</param>
+        /// <returns>表格形状列表。The table shapes.</returns>
+        private static List<TableShape> FindTables(Slide slide)
+        {
+            List<TableShape> found = new List<TableShape>();
+            for (int i = 0; i < slide.Shapes.Count; i++)
+            {
+                TableShape table = slide.Shapes[i] as TableShape;
+                if (table != null) found.Add(table);
+            }
+            return found;
+        }
 
         /// <summary>把演示文稿写到内存并返回字节。 Writes the presentation to memory and returns the bytes.</summary>
         /// <param name="presentation">待写出的演示文稿。 The presentation to write.</param>
