@@ -476,16 +476,23 @@ namespace Wisdom.Ppt
                 _slideCount++;
             }
 
-            /// <summary>判断形状是否为没有可见文本的占位符。这类占位符一旦写出，PowerPoint 会在编辑视图
-            /// 显示"单击此处添加…"提示与图片/图表/表格插入图标，程序生成的演示文稿应当跳过它们。
-            /// Determines whether a shape is a placeholder without visible text. Written out as-is, such a
-            /// placeholder makes PowerPoint show the "click to add" prompt and the picture/chart/table insert
-            /// icons in edit view, so programmatically generated decks skip them.</summary>
+            /// <summary>判断形状是否可以按「程序生成的稿子不该留一个等用户点进去的空框」省略掉。
+            /// 只有本库自己补出来、且至今没有任何可见效果的占位符才算：文本为空、没有底色、没有描边、
+            /// 没有入场动画。从文件读回的或调用方自己添加的占位符不在其列——它们即便没有文本也是
+            /// 页面上的一个形状，省掉就是静默丢失。
+            /// Reports whether a shape may be dropped under the rule that a generated deck should not leave
+            /// a "click to add" box behind. Only a placeholder this library generated and that still has no
+            /// visible effect qualifies: no text, no fill, no outline, no entrance animation. One read back
+            /// from a file or added by the caller never does — even empty, it is a shape on the page, and
+            /// dropping it silently loses content.</summary>
             /// <param name="shape">待判断的形状。 The shape to test.</param>
-            /// <returns>是无文本占位符时为 true。 True for a text-less placeholder.</returns>
+            /// <returns>是可省略的空占位符时为 true。 True for a droppable text-less generated placeholder.</returns>
             private static bool IsEmptyPlaceholder(SlideShape shape)
             {
                 if (shape == null || shape.Placeholder == PlaceholderKind.None) return false;
+                if (!shape.IsGeneratedPlaceholder) return false;
+                if (shape.FillColor != null || shape.Outline != null) return false;
+                if (shape.Animation != SlideAnimationKind.None) return false;
                 TextBoxShape box = shape as TextBoxShape;
                 if (box == null) return false;
                 string text = box.GetText();
