@@ -14,11 +14,13 @@ namespace Wisdom.Office.Tests
     /// </summary>
     /// <remarks>
     /// 预算与上报批（<c>PD9</c> 与其下游 <c>PD5</c>/<c>PD22</c>）放在 <c>RemediationDecodeBudgetTests.cs</c>，
-    /// Word 侧的契约批（<c>WE2</c> 起）放在 <c>RemediationWordPhaseFourTests.cs</c>，两者都由下面的入口末尾调用；
+    /// Word 侧的契约批（<c>WE2</c>、<c>WE6</c>）放在 <c>RemediationWordPhaseFourTests.cs</c>，
+    /// PPT 侧的形状批（<c>PT6</c> 起）放在 <c>RemediationPptPhaseFourTests.cs</c>，三者都由下面的入口末尾调用；
     /// 本文件只放 PDF 侧可单独判定的条目。
     /// The budget and reporting batch (<c>PD9</c> and its downstream <c>PD5</c>/<c>PD22</c>) lives in
-    /// <c>RemediationDecodeBudgetTests.cs</c>, and the Word contract batch (from <c>WE2</c>) lives in
-    /// <c>RemediationWordPhaseFourTests.cs</c>; both are called at the bottom of the entry point below.
+    /// <c>RemediationDecodeBudgetTests.cs</c>, the Word contract batch (<c>WE2</c>, <c>WE6</c>) in
+    /// <c>RemediationWordPhaseFourTests.cs</c>, and the PPT shape batch (from <c>PT6</c>) in
+    /// <c>RemediationPptPhaseFourTests.cs</c>; all three are called at the bottom of the entry point below.
     /// This file carries only the PDF entries that can be decided on their own.
     /// </remarks>
     internal static partial class Program
@@ -36,6 +38,7 @@ namespace Wisdom.Office.Tests
             RunNamedCmapTextTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
+            RunRemediationPptPhaseFourTest();
 
             Console.WriteLine("[remediation] phase-four corrupt output and silent loss ok");
         }
