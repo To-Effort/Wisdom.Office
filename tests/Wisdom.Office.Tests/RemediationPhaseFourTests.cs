@@ -36,6 +36,7 @@ namespace Wisdom.Office.Tests
             RunFlattenResourceNameTest();
             RunAppearanceWriteBackTest();
             RunNamedCmapTextTest();
+            RunInheritedResourceAliasTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -561,6 +562,135 @@ namespace Wisdom.Office.Tests
                     + "/CIDSystemInfo << /Registry (Adobe) /Ordering (GB18030) /Supplement 5 >> /DW 1000 >>",
             };
             return AssembleClassicPdf(bodies, 1, null);
+        }
+
+        /// <summary>
+        /// PD19：页面自己不带 <c>/Resources</c> 时，<c>SetPageResource</c> 把继承来的那一份直接钉在本页上再落笔，
+        /// 一次登记同时写进了 <c>/Pages</c> 与所有兄弟页；同名条目被后一页顶掉前一页，前一页画的是后一页的对象。
+        /// PD19: when a page carries no /Resources of its own, SetPageResource pins the inherited dictionary
+        /// onto that page and writes straight into it, so one registration lands on /Pages and on every
+        /// sibling page at once; the later page overwrites the earlier one under the same name, leaving the
+        /// earlier page to draw the later page's object.
+        /// </summary>
+        private static void RunInheritedResourceAliasTest()
+        {
+            PdfFile file = PdfFile.Load(BuildInheritedResourcePdf());
+
+            int firstNumber = file.AddObject(BuildLogoForm());
+            int secondNumber = file.AddObject(BuildLogoForm());
+            file.SetPageResource(0, "XObject", "Logo", new PdfReference(firstNumber, 0));
+            file.SetPageResource(1, "XObject", "Logo", new PdfReference(secondNumber, 0));
+
+            PdfDictionary group0 = XObjectGroup(file, 0);
+            PdfDictionary group1 = XObjectGroup(file, 1);
+            Require(ReferenceNumber(group0 == null ? null : group0.Get("Logo")) == firstNumber,
+                "page 0 registered /Logo as " + firstNumber + " 0 R but the entry now reads '"
+                    + ReferenceText(group0 == null ? null : group0.Get("Logo"))
+                    + "': the sibling page wrote through the shared inherited /Resources");
+            Require(!ReferenceEquals(group0, group1),
+                "both pages resolve /XObject to one and the same group, so a per-page resource name is "
+                    + "a document-wide name");
+
+            // 第三页什么都没登记，却也跟着多了这个分组——继承字典被就地改写的直接证据。
+            // The third page registered nothing yet inherits the group as well, which is the smoking gun
+            // that the inherited dictionary itself was rewritten in place.
+            Require(file.GetPageResources(2).Get("XObject") == null,
+                "page 2 never registered a resource, but the inherited /Pages dictionary gained an "
+                    + "/XObject group holding " + Describe(file.GetPageResources(2).Get("XObject")) + " of its own");
+
+            // 存一趟再读回来：同名条目在文件里也得各归各页，不能整篇只剩最后一次登记。
+            // Round-tripped through a save, the same name still has to mean a different object per page
+            // instead of collapsing onto the last registration.
+            PdfFile back = PdfFile.Load(file.SaveToBytes());
+            PdfDictionary saved0 = XObjectGroup(back, 0);
+            PdfDictionary saved1 = XObjectGroup(back, 1);
+            Require(ReferenceNumber(saved0 == null ? null : saved0.Get("Logo")) == firstNumber,
+                "after saving, page 0's /Logo is '" + ReferenceText(saved0 == null ? null : saved0.Get("Logo"))
+                    + "' instead of " + firstNumber + " 0 R");
+            Require(ReferenceNumber(saved1 == null ? null : saved1.Get("Logo")) == secondNumber,
+                "after saving, page 1's /Logo is '" + ReferenceText(saved1 == null ? null : saved1.Get("Logo"))
+                    + "' instead of " + secondNumber + " 0 R");
+
+            // 控制用例：/Font 分组本来就在继承字典里，页面登记新字体时不能把兄弟页的字体也换掉。
+            // Control: the /Font group already lives in the inherited dictionary, so registering a font on
+            // one page must not swap the sibling page's font.
+            int helvetica = FontNumber(file, 0);
+            file.SetPageResource(0, "Font", "F1", new PdfReference(secondNumber, 0));
+            Require(FontNumber(file, 1) == helvetica,
+                "page 0 re-registered /F1, but page 1's /F1 now resolves to the same object");
+        }
+
+        /// <summary>
+        /// 拼一份三页文档：资源字典只挂在 <c>/Pages</c> 上，三页都靠继承取用，这是第三方 PDF 的常见写法。
+        /// Assembles a three-page document whose resource dictionary lives only on /Pages, so all three
+        /// pages read it by inheritance — a layout real-world generators actually emit.
+        /// </summary>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildInheritedResourcePdf()
+        {
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 "
+                    + "/Resources << /Font << /F1 6 0 R >> >> >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            };
+            return AssembleClassicPdf(bodies, 1, null);
+        }
+
+        /// <summary>造一枚最简表单 XObject，供两页各自登记。Builds a minimal form XObject for the two pages to register.</summary>
+        /// <returns>表单字典。The form dictionary.</returns>
+        private static PdfDictionary BuildLogoForm()
+        {
+            PdfDictionary form = new PdfDictionary();
+            form.SetName("Type", "XObject");
+            form.SetName("Subtype", "Form");
+            form.Set("BBox", new PdfArray().AddNumber(0).AddNumber(0).AddNumber(40).AddNumber(40));
+            return form;
+        }
+
+        /// <summary>取某页 <c>/XObject</c> 分组，取不到返回 null。Returns one page's /XObject group, or null when it has none.</summary>
+        /// <param name="file">待检查的文档。The document to inspect.</param>
+        /// <param name="index">页面下标。The page index.</param>
+        /// <returns>分组字典或 null。The group dictionary, or null.</returns>
+        private static PdfDictionary XObjectGroup(PdfFile file, int index)
+        {
+            PdfDictionary resources = file.GetPageResources(index);
+            return resources == null ? null : resources.Get("XObject") as PdfDictionary;
+        }
+
+        /// <summary>取某页 <c>/Font /F1</c> 指向的对象号，取不到返回 -1。Returns the object number behind one page's /Font /F1, or -1.</summary>
+        /// <param name="file">待检查的文档。The document to inspect.</param>
+        /// <param name="index">页面下标。The page index.</param>
+        /// <returns>对象号。The object number.</returns>
+        private static int FontNumber(PdfFile file, int index)
+        {
+            PdfDictionary resources = file.GetPageResources(index);
+            PdfDictionary fonts = resources == null ? null : resources.Get("Font") as PdfDictionary;
+            PdfObject value = fonts == null ? null : fonts.Get("F1");
+            return ReferenceNumber(value);
+        }
+
+        /// <summary>引用对象号，非引用返回 -1。The object number of a reference, or -1 for any other object.</summary>
+        /// <param name="value">待判定的对象。The object to inspect.</param>
+        /// <returns>对象号。The object number.</returns>
+        private static int ReferenceNumber(PdfObject value)
+        {
+            PdfReference reference = value as PdfReference;
+            return reference == null ? -1 : reference.Number;
+        }
+
+        /// <summary>把资源值写成可读文本，引用直接给「n g R」，便于失败信息点名。
+        /// Renders a resource value readably — references print as "n g R" — so the failure message names the culprit.</summary>
+        /// <param name="value">待描述的对象。The object to describe.</param>
+        /// <returns>描述串。The description.</returns>
+        private static string ReferenceText(PdfObject value)
+        {
+            PdfReference reference = value as PdfReference;
+            return reference == null ? Describe(value) : reference.ToString();
         }
 
         /// <summary>把末尾 startxref 的数字换成一个落在文件内的错号。Replaces the trailing startxref number with an in-range wrong offset.</summary>
