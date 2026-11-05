@@ -142,6 +142,10 @@ foreach (PdfPage page in pdf.Pages)
 }
 ```
 
+正文流按 `/Filter` 链解码，Flate、ASCIIHex、ASCII85、RunLength、LZW 以及它们的缩写别名都认；
+规范里并列的缩写键 `/F`（`/Filter`）与 `/DP`（`/DecodeParms`）同样生效。`/F` 取不出过滤器名时按无过滤器处理，
+富文本流与加密转换里那个写作 `/F` 的整数标志不会被误认成过滤器。
+
 转成统一模型后即可交给 Word 侧输出：
 
 ```csharp

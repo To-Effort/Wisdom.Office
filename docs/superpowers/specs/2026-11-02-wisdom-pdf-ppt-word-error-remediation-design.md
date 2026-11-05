@@ -191,6 +191,13 @@
 - 目标行为：页面自己不带 `/Resources` 时先按页复制一份再落笔，且连分类组一起脱开（只拷外层等于把同一件分组留给兄弟页，下一次登记照样串页）；继承来的条目照常可读，`GetPageResources` 对本页返回的就是本页独占那一份。
 - 红测：三页夹具，资源只挂在 `/Pages`；两页分别登记 `/Logo`，断言本页读回自己的引用、两页的分组不是同一实例、第三页没有多出分组，存一趟读回来两页仍各指自己的对象号；控制用例登记 `/Font /F1`，不得换掉兄弟页的字体。
 
+### PD24｜流字典的 `/Filter` 缩写键 `/F` 不认，缩写过滤器的正文当成未过滤原字节　A（机制）/B（命中率）
+
+- 位置：`src/Wisdom.Pdf/Parsing/PdfStreamDecoder.cs:32-34`——`DecodeParms` 有 `?? Get("DP")` 的缩写回退，同一段里的 `Filter` 只读全称；规范把 `/F` 与 `/DP` 并列为流字典的缩写键（标注「不建议使用」，第三方产物确实这么写）。
+- 后果：写成 `<< /F /Fl >>` 的正文流按原字节（压缩体）交回，文本抽取、内容流解析、渲染全部拿到空串或乱码，而文件本身合法；同族的 `/DP` 却照常生效，属自相矛盾的读端。
+- 目标行为：`/Filter` 缺席时取 `/F`；取不出过滤器名（`/F` 是富文本流与加密转换里那个整数标志）即按无过滤器处理，不误认。写出端从不发缩写，产出字节不变。
+- 红测：一页正文流，字典分别写 `/F /Fl`（压缩正文，断言抽出 `Hi`）与 `/F 3`（未压缩正文，控制用例断言同样抽出 `Hi`、不被误当过滤器）。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -451,6 +458,7 @@
 | `WE13` | RTF 表格边框补写 `\brdrcf`，读端按颜色表回色：有色边框的 RTF 产物在颜色那一句字节变化（变化本身就是修复），纯黑的边沿用 RTF 自动色不写引用，默认表格产物一字节不变。读端此前没有 `brdrcf` 分支，边框颜色一律读成黑色 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增 RTF 边框颜色一段（含「RTF 没有表级边框、`Table.Borders` 六向不回」这条边界）；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格边框的颜色存成 RTF 就变黑了」 |
 | `WE14` | HTML / RTF / ODT 三个读端新增按首行 `IsHeader` 回写 `Table.RepeatHeaderRow`（此前留着构造默认的 `true`）：经这三跳再存 DOCX 的表格不再冒出 `w:tblHeader`。只有「首行不是表头」这一类表格的产物形状变化（变化本身就是修复），声明过表头的照旧；DOCX 直进直出一字节不变 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增「重复表头只有 DOCX 带得动」一段；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格设了不重复表头，转一趟格式再存成 DOCX 又开始重复」 |
 | `PD23` | 页面自身没有 `/Resources` 时，`SetPageResource` 从「就地改写继承来的那一份」改为「按页复制一份、连分类组一起脱开再写」：登记不再串页，同名条目不再相互顶替。本库新建稿每页自带 `/Resources`，走不到这条，一字节不变；只有把资源挂在 `/Pages` 上的第三方稿，其水印与外观扁平化的资源名与分组归属随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「编辑既有 PDF 与水印」新增按页脱开一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「给第三方 PDF 逐页登记资源，另一页的同名条目被顶掉了」 |
+| `PD24` | 读端补认流字典的缩写键 `/F`（`/Filter`），与既认的 `/DP` 对齐：过去写成 `<< /F /Fl >>` 的正文按原字节交回、整页文字静默为空，现在照常解码。写出端从不发缩写，产出字节不变；`/F` 是整数标志时仍按无过滤器处理 | `src/Wisdom.Pdf/README.md`「解析 PDF」新增解码链一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的 PDF 在阅读器里显示正常，抽出来却是空的」 |
 
 ---
 
@@ -756,6 +764,17 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 只拷外层不够：资源恒是 `/Resources` → 分类组 → 名字 两层，浅拷贝把外层脱开而分类组仍是兄弟页共用的同一件，控制用例（在页 0 重登 `/Font /F1`，页 1 的 `/F1` 被一起换掉）当场抓到第二次串页。落点因此是新增的 `DetachResources`：连分类组一起复制，`SetPageResource` 与 `EnsureFlatPageTree` 两处共用。
   - 本页独占的副本同时回填页面节点缓存（`node.Resources`），否则 `GetPageResources` 在同一个 `PdfFile` 实例上还返回继承那一份，读到的仍是旧别名。
   - 字节口径：本库新建稿每页自带 `/Resources`，`Resolve(page.Get("Resources"))` 非空，走不到复制这条分支，一字节不变；继承字典本身不再被改写，`/Pages` 上的产物因此回到「只有它自己那份内容」。只有把资源挂在 `/Pages` 上的第三方稿，其多页水印的资源名不再被串页逼出 `_1`、`_2` 后缀（变化本身就是修复）。键序随 `Clone()` 保留，内联分组建出的字节与共享实例时代一致。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PD24` 流字典的 `/F` 缩写不认（`218affb` 取证 + `e9bc94a` 修复）：同一个 `Decode` 里 `/DecodeParms` 有 `?? Get("DP")` 的缩写回退，`/Filter` 只读全称，规范并列的两个缩写键认一个、不认一个，写成 `<< /F /Fl >>` 的正文按原字节交回。
+  - 修复前失败原文（两个 TFM 停在同一句，net461 只是把栈帧译成中文）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a content stream filtered with the abbreviated /F key decoded as raw bytes, got ''
+      at Wisdom.Office.Tests.Program.RunAbbreviatedFilterKeyTest() ... RemediationPhaseFourTests.cs:line 639
+    ```
+
+  - 只在 `/Filter` 缺席时取 `/F`，顺序按规范（全称优先）；取不出名字即 `continue`，所以富文本流与加密转换里写作 `/F` 的整数标志不会被误认成过滤器——这一头由控制用例钉住：同一段正文，字典写 `/F 3` 且不压缩，修复前后都要求抽出 `Hi`。
+  - 字节口径：写出端从不发缩写键，产出与保存链路一字节不变；变化只在读端，让过去解不开的合法文件解开。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
