@@ -656,7 +656,18 @@ namespace Wisdom.Pdf
                 if (c <= 32 || c >= 127 || c == '#' || c == '/' || c == '(' || c == ')' || c == '<' || c == '>' || c == '['
                     || c == ']' || c == '{' || c == '}' || c == '%')
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(c.ToString());
+                    // 代理对要合成整个码位再展开：一半一半地编码，UTF-8 会把每个孤儿代理换成 '?'，名称里的
+                    // 星外字符就此丢失。
+                    // A surrogate pair has to be expanded as the whole code point: encoding each half alone
+                    // makes UTF-8 replace every orphan surrogate with "?", losing astral characters from
+                    // the name.
+                    string piece = c.ToString();
+                    if (char.IsHighSurrogate(c) && i + 1 < name.Length && char.IsLowSurrogate(name[i + 1]))
+                    {
+                        piece = name.Substring(i, 2);
+                        i++;
+                    }
+                    byte[] bytes = Encoding.UTF8.GetBytes(piece);
                     for (int b = 0; b < bytes.Length; b++)
                     {
                         builder.Append('#');

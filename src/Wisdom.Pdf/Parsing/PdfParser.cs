@@ -20,6 +20,8 @@ namespace Wisdom.Pdf
         private readonly Func<PdfReference, PdfObject> _resolve;
         /// <summary>当前语法对象嵌套层数，供 MaxObjectDepth 判定。Current nesting depth of syntactic objects, checked against MaxObjectDepth.</summary>
         private int _depth;
+        /// <summary>名称正文的 UTF-8 解码器；非法序列换成替换符，由调用方按逐字节兜底。UTF-8 decoder for name bodies; invalid sequences become replacement characters and the caller falls back to byte-per-char.</summary>
+        private static readonly UTF8Encoding NameUtf8 = new UTF8Encoding(false, false);
 
         /// <summary>
         /// 在指定字节缓冲上创建解析器。
@@ -286,9 +288,17 @@ namespace Wisdom.Pdf
         /// Reads the name body and expands #HH escape sequences (the caller has already consumed the leading slash).
         /// </summary>
         /// <returns>不含斜杠的名称正文。The name body without the slash.</returns>
+        /// <remarks>名称在文件里是字节，与写出端「非 ASCII 按 UTF-8 展开」必须成对，否则一串 <c>#HH</c> 会还原成
+        /// 等量的拉丁字母。先按 UTF-8 解，只有能原样编回同一串字节时才采用；解不回去的（历史上把高位写成
+        /// 单字节的名称）退回逐字节，不凭空造替换符。
+        /// A name is bytes in the file, and the writer expands non-ASCII as UTF-8, so the two ends have to
+        /// agree—otherwise one run of #HH escapes comes back as that many Latin-1 letters. The bytes are
+        /// decoded as UTF-8 only when they encode back to the very same sequence; anything else (legacy names
+        /// whose high byte stands alone) falls back to one character per byte instead of inventing
+        /// replacement characters.</remarks>
         private string ReadNameRaw()
         {
-            StringBuilder builder = new StringBuilder();
+            List<byte> bytes = new List<byte>();
             while (Position < _data.Length)
             {
                 byte value = _data[Position];
@@ -299,14 +309,43 @@ namespace Wisdom.Pdf
                     int low;
                     if (Position + 2 < _data.Length && TryHexValue(_data[Position + 1], out high) && TryHexValue(_data[Position + 2], out low))
                     {
-                        builder.Append((char)((high << 4) | low));
+                        bytes.Add((byte)((high << 4) | low));
                         Position += 3;
                         continue;
                     }
                 }
-                builder.Append((char)value);
+                bytes.Add(value);
                 Position++;
             }
+            return DecodeNameBytes(bytes);
+        }
+
+        /// <summary>把名称字节还原成字符串：合法 UTF-8 按码位解，否则逐字节。Restores name bytes: as UTF-8 code points when they round-trip, otherwise one character per byte.</summary>
+        /// <param name="bytes">名称的正文字节。The name body bytes.</param>
+        /// <returns>名称正文。The name body.</returns>
+        private static string DecodeNameBytes(List<byte> bytes)
+        {
+            byte[] buffer = bytes.ToArray();
+            string decoded = NameUtf8.GetString(buffer, 0, buffer.Length);
+            byte[] reencoded = NameUtf8.GetBytes(decoded);
+            if (reencoded.Length == buffer.Length)
+            {
+                for (int i = 0; i < buffer.Length; i++)
+                {
+                    if (buffer[i] != reencoded[i]) return DecodeNameBytesLegacy(buffer);
+                }
+                return decoded;
+            }
+            return DecodeNameBytesLegacy(buffer);
+        }
+
+        /// <summary>历史口径：一个字节一个字符。The legacy reading: one character per byte.</summary>
+        /// <param name="buffer">名称的正文字节。The name body bytes.</param>
+        /// <returns>名称正文。The name body.</returns>
+        private static string DecodeNameBytesLegacy(byte[] buffer)
+        {
+            StringBuilder builder = new StringBuilder(buffer.Length);
+            for (int i = 0; i < buffer.Length; i++) builder.Append((char)buffer[i]);
             return builder.ToString();
         }
 
