@@ -1402,19 +1402,28 @@ namespace Wisdom.Ppt
                 return tcPr;
             }
 
-            /// <summary>生成单元格的单边线元素（lnL/lnR/lnT/lnB）。双线走 <c>cmpd="dbl"</c>，不是 prstDash 取值。 Builds one cell border edge element (lnL/lnR/lnT/lnB). A double line goes on <c>cmpd="dbl"</c>, never on prstDash.</summary>
+            /// <summary>
+            /// 生成单元格的单边线元素（lnL/lnR/lnT/lnB）。双线走 <c>cmpd="dbl"</c>，不是 prstDash 取值；
+            /// <c>BorderStyle.None</c> 写 <c>a:noFill</c>——补一条 solidFill 等于把调用者撤掉的线画回来。
+            /// Builds one cell border edge element (lnL/lnR/lnT/lnB). A double line goes on <c>cmpd="dbl"</c>,
+            /// never on prstDash; <c>BorderStyle.None</c> writes <c>a:noFill</c>, because a solidFill there would
+            /// redraw the very line the caller removed.
+            /// </summary>
             /// <param name="tag">边元素标签。 Edge element tag.</param>
             /// <param name="line">边线描述。 Border line.</param>
             /// <returns>边线元素。 The border element.</returns>
             private XElement CreateCellBorder(string tag, BorderLine line)
             {
                 XElement ln = new XElement(A + tag);
-                ln.Add(new XAttribute("w", IntStr(Math.Max(1, Ppt.Emu(line != null && line.Width > 0 ? line.Width : 0.5)))));
-                bool compound = line != null && line.Style == BorderStyle.Double;
-                ln.Add(new XAttribute("cmpd", compound ? "dbl" : "sng"), new XAttribute("algn", "ctr"));
-                OfficeColor color = line != null ? line.Color : OfficeColor.Gray;
-                ln.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", color.ToHex()))));
-                string dash = line == null ? null : DashStyle(line.Style);
+                ln.Add(new XAttribute("w", IntStr(Math.Max(1, Ppt.Emu(line.Width > 0 ? line.Width : 0.5)))));
+                ln.Add(new XAttribute("cmpd", line.Style == BorderStyle.Double ? "dbl" : "sng"), new XAttribute("algn", "ctr"));
+                if (line.Style == BorderStyle.None)
+                {
+                    ln.Add(new XElement(A + "noFill"));
+                    return ln;
+                }
+                ln.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", line.Color.ToHex()))));
+                string dash = DashStyle(line.Style);
                 if (dash != null) ln.Add(new XElement(A + "prstDash", new XAttribute("val", dash)));
                 return ln;
             }
