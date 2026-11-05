@@ -146,6 +146,8 @@ table.Table.AddRow("华南", "384", "30%");
 
 文本运行只写你**显式设过**的字符属性。`new TextFormat()` 预置的 Arial、11 磅、黑色是模型内置默认值，不算意图：一个只设了 `Bold = true` 的 run 写出的是 `<a:rPr b="1"/>`，字号、字体、颜色都留给版式与母版的继承链，不会被钉成 11 磅的 Calibri。`TextFormat` 上的 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor` 三个只读标记就是这条判定，赋过值才点亮；`new TextFormat("Calibri", 18)` 这类显式构造则三项都算设过。整段没有任何格式的文本沿用演示文稿的默认字体（`DefaultTextFormat` / `DefaultTitleFormat`，未显式设置时取主题主/次字体）。
 
+表格的结构开关同样只写模型里说过的话。`a:tblPr@firstRow` 只在**声明过**表头时写——判据是某一行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`；两者都没有时首行按普通数据行走，不会凭空加粗、变白。读回时 `firstRow` 被还原成首行的 `IsHeader`，所以声明过的表头能活过第二次保存（模型里没有第二个字段承载这件事）。隔行条纹（`bandRow`）在统一模型里没有对应字段，写出时不再恒带；单元格没设底色时也不补 `a:noFill`——那等于替调用者宣布「这格不许有底色」，会把 `tableStyleId` 本来要给的外观一并抹掉。列宽之外的整表样式（`tableStyleId`）固定为内置的一套，不开放选择。
+
 ## 入场动画、自动换页与主题深改
 
 每个 `SlideShape` 都可以挂一个入场动画；写出器据此生成 `p:timing` 主序列（PowerPoint 原生动画节点），读回时按 `presetClass="entr"` 的行为节点还原类别、延迟与时长：

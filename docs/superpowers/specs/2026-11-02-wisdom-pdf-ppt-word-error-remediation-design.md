@@ -380,9 +380,10 @@
 | `PD8` | 交叉表由全文扫描救回的文档，增量保存从「追加一段」改为全量重写；原字节不再逐字保留 | `docs/Wisdom.Pdf.Tutorial.md` 增量保存段、`src/Wisdom.Pdf/README.md` 已知限制、`docs/Wisdom.Office.功能导读.md` 2.4 的「只追加改动对象」承诺（三处已同步） |
 | `PD17` | 交叉表条目指到别人的对象头时，从「静默把该偏移上的对象当成目标号交回」改为「按条修正后重读，修不回即当作缺失」 | `src/Wisdom.Pdf/README.md` 已知限制（已同步）；`docs/Wisdom.Pdf.Tutorial.md` 的容错说明已随 `PD9` 一并补（`PD9` 取上抛路由，未建告警通道） |
 | `PD9`、`WE7`、`WE9` | `PD9` 落地上抛路由：解码超限与内存失败不再被页提取吞掉，`ExtractText()` / `GetContentBytes()` 新增可抛 `DecompressionLimitException`（未建告警集合，统一通道留给 `WE7`/`WE9` 那一批） | `docs/Wisdom.Pdf.Tutorial.md` §10、`src/Wisdom.Pdf/README.md`、`articles/Wisdom.Pdf.md` 已补「资源上限不走静默降级」；`docs/Wisdom.Ppt.Tutorial.md` 与 Word 侧待 `WE7`/`WE9` |
-| `PT1`、`PT2`、`PT3` 结构档 | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
+| `PT1`、`PT2` | 输出文件的 XML 形状改变（历史产物可能被新版本读不出） | `docs/Wisdom.Ppt.Tutorial.md` 需写明往返保真范围变化；若旧形状需保留读取兼容，一并声明 |
 | `PT6` | 空占位符的省略条件从「占位符且无文本」收窄为「本库按版式补出、且到写出时仍没有任何可见效果」；从文件读回的空占位符与调用方自建的空框现在照常写出，往返形状数与层叠次序稳定 | `src/Wisdom.Ppt/README.md`「版式与占位符」补了省略规则与新增的来源标记 `SlideShape.IsGeneratedPlaceholder`（public 读、internal 写）；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节「空框叠在表格上」的说法按新规则重写过 |
 | `PT5` | 输出 `a:rPr` 的形状改变：字号、颜色、字体三项只在**显式设过**时才写，只加粗的 run 从 `sz="1100"` + `a:solidFill` + `a:latin`/`a:ea` 缩成只剩 `b="1"`；这类稿子二次写出（Load+Save）的字节随之变化，渲染改由版式与母版继承决定 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」写明这条规则与 `TextFormat` 新增的三个只读标记；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「只想改字号，保存后连字体一起被换了」 |
+| `PT3` 结构档 | `a:tblPr` 从每张表恒写 `firstRow="1" bandRow="1"` 改为只在声明过表头（某行 `IsHeader` 或给过 `HeaderColor`）时写 `firstRow`，`bandRow` 因模型没有带状行字段而不再输出；未设底色的单元格从写 `a:noFill` 改为不写填充，补齐用的空格在数据行也不再写白色，`tableStyleId` 本该生效的整表外观因此重新可见。新写出的无人声明表头的表格字节随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格结构档一段；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节注意事项补「表头要声明才有表头」一条、常见问题补「表格首行没有表头的样子」；读端新增把 `a:tblPr@firstRow` 读回 `TableRow.IsHeader`，旧形状（恒写 firstRow 的历史文件）照常读取，其首行按表头认，二次写出不掉样式 |
 
 ---
 
@@ -596,4 +597,20 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 夹具走内存流，`a:rPr` 直接从 zip 部件里按文档顺序取（`a:endParaRPr` 不在 `a:r` 下，天然排除）：三条 run 分别只设粗体、只设 22 磅、只设「宋体」，断言第一份既无 `sz` 也无 `a:latin`/`a:ea`/`a:solidFill`，后两份各只写自己那一项、不许臆造另一项；再 `PptxReader.Load` 回读并二次写出，验证读端没在文件里见到的属性不会被当成显式设过——模型侧回读断言 `Bold`、`FontSize=22`、`FontFamily=宋体` 三项仍在，省下来的属性按模型默认值读回，不是丢失。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PT3` 结构档（`f9fc99a` + `04ff01b`）：目标行为「写端不伪造模型未表达的意图」（`PT3` 目标 2 的表头一档）落地为四件小事——声明式表头判据、`bandRow` 下线、单元格填充可缺省、`firstRow` 有读回的路。
+  - 旧 `HasHeaderRow(rows)` 循环查完显式表头后 `return rows.Count > 0`，等于宣布「只要非空，首行就是表头」；`IsHeaderRowAt` 又把这个条件逐格套用，于是两行数据表出门自带主题 accent1 底色 + 加粗白字。新判据 `HasDeclaredHeader(table, rows)` 只认模型里真说过的两句话：某行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`。`IsHeaderRowAt` 的「显式行优先，否则首行」不变，但它现在只在门控通过后才可达——门内不再有猜测。
+  - `bandRow` 直接不写而不是补字段：统一模型里没有带状行这一项，恒写 `bandRow="1"` 是替调用者做样式决定；把它建模属 Phase 5 的模型扩展（与 `PT3` 的超链接、组合、`rowSpan` 同批排期）。这次先让写端闭嘴。
+  - `a:tcPr` 的填充从「没底色就写 `a:noFill`」改为「没底色就不写」：`a:noFill` 是显式断言「这格不许有底色」，`tableStyleId` 本来要给条纹与整表填充被逐格堵死，这正是 §PT3 里「未设置」与「显式无填充」必须分开的同一件事。同一理由管到补齐用的空格（`placed < gridCols` 那一段）：它在表头行借表头色，免得一条表头被补位格截成两截；在数据行什么都不写。
+  - 读端这一次只补 `firstRow` 一条：`a:tblPr@firstRow` 是 `TableRow.IsHeader` 唯一能回来的路（读端从不解析 `a:tableStyles`），不读它，声明过的表头在第二次保存被整段抹平——写端不再猜测之后，这条读回路径就成了保真的一部分，不是可选优化。`lnSpc`/`wrap`/`baseline`/`rowSpan` 与主题 accent 的读端补齐仍留在 Phase 5。
+  - 修复前失败原文（`net8.0` 与 `net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: firstRow was switched on for a table that never declared a header row
+       at Wisdom.Office.Tests.Program.RunUndeclaredTableHeaderStaysPlainTest() ... RemediationPptPhaseFourTests.cs:line 179
+    ```
+
+  - 断言分正反两面：未声明的那张既不得出现 `firstRow`/`bandRow`，首格也既无 `a:solidFill` 也无 `a:noFill`，运行不带 `b="1"`；设了 `HeaderColor` 的那张必须写得出 `firstRow="1"`、`1F3A5F` 底色与加粗表头——把「不伪造」做成「该写的还写得出」的反证，避免修复退化成整段不写样式。再加一条往返：`PptxReader.Load` 后声明过的首行 `IsHeader` 仍在，未声明的仍是普通行。夹具继续走内存流，`a:tbl` 从 zip 部件按文档顺序取。
+  - `§9` 单独补一行（原先与 `PT1`/`PT2` 合并一行）：输出形状变了，`tableStyleId` 的话头重新生效。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`PptMarkdownTests` 的表格往返断言（`HeaderColor` + 三行，回读 3 行、单元格文本 `"华东"`）与 Word 侧共用表格夹具的套件全绿，说明声明过表头的常用写法输出不变。
+  - 同批目标 2 还剩两项未动，各自需要独立红测：段落没有任何项目符号标记时 `pPr` 仍恒被写出（`any = true` 那条）并带 `buNone`；`p:style` 未解析出的填充与描边一律落成 `a:noFill`（`PptxWriter.cs:757`、`:769`）。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。

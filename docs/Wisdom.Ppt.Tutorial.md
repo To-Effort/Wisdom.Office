@@ -167,6 +167,7 @@ Console.WriteLine("[3] 占位符几何=" + (int)holderLeft + "," + (int)holderTo
 - 占位符坐标由画布等比推出：960 x 540 上是 `left=76`（左右各留画布宽的 8%，即 76.8 取整）、`top=162`（高 x 0.30）、`806 x 313`（宽 = 画布宽 − 2 x 8%，高 = 高 x 0.58）。换 4:3 画布数值整体变小，别写死。
 - `Table.Columns` 只用来登记**列宽定义**，`AddRow(params string[])` 不会往里加东西；数列数用 `Rows[0].Cells.Count`。
 - `TableShape.Table` 就是 Word 侧的 `Table`，合并单元格、单元格内多段落等语义完全复用（`TableCell.Blocks`）。
+- 表头要**声明**才有表头：给过 `HeaderColor`（如上）或把某行的 `TableRow.IsHeader` 置真，写出器才会落 `a:tblPr@firstRow` 并按表头样式渲染首行；两者都没给时首行就是普通数据行，不会自动加粗变白。隔行条纹与 `RepeatHeaderRow` 在 `.pptx` 侧没有对应字段（那是 Word / PDF 分页时重复表头的语义），写了不影响 pptx 外观。没设底色的单元格不写填充，外观留给 `tableStyleId`。
 
 ## 4. 自选图形与图片
 
@@ -530,6 +531,8 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 **表格页上多出一个空框。** `TitleAndTable` / `TitleAndPicture` 生成的第二个占位符是文本框，不是表格或图片形状。用它的 `Left/Top/Width/Height` 定位 `AddTable` / `AddImage`，再 `slide.Shapes.Remove(占位符)`，见第 3 步。
 
 **读回来的 `Layout` 跟写进去的不一样。** 版式是推断值。带占位符的形状按 `ph type` 判，`obj`（模型里的 `Content` / `Table` 占位符）都归到内容类；表格与图片即使没有占位符，也按 `TableShape` / `PictureShape` 计入证据。
+
+**表格首行没有表头的样子。** 表头要**声明**才算：给 `TableShape.HeaderColor`，或把某一行的 `TableRow.IsHeader` 置真。写出器只在声明过时才写 `a:tblPr@firstRow`、才按表头样式（加粗、白字、表头底色）渲染那一行；一张谁也没声明过表头的表，首行就是普通数据行——过去写端自作主张把每张表的首行当表头，于是没人要过的加粗白字和隔行条纹跟着进了文件。回读时 `firstRow` 还原成首行的 `IsHeader`，声明过的表头因此能活过第二次保存。
 
 **切换动画没生效或时长丢了。** `TransitionDuration` 单位是秒，写出为 `p14:dur`（毫秒），包在 `mc:AlternateContent` 的 `mc:Choice` 里，`mc:Fallback` 只留 `spd="med"`——不支持 p14 扩展的老版本仍有切换，只是按 `spd` 走。`SlideTransitionKind.None` 不写效果节点，但 `AdvanceAfterSeconds > 0` 时仍会写一个只带 `advTm` 的 `p:transition`，自动换页不依赖切换效果。
 
