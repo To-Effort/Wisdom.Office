@@ -41,6 +41,7 @@ namespace Wisdom.Office.Tests
             RunNameEscapeRoundTripTest();
             RunSignatureFieldGuardTest();
             RunFormDefaultAppearanceInheritanceTest();
+            RunDefaultAppearanceCmykTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -922,6 +923,88 @@ namespace Wisdom.Office.Tests
             string one = body.Replace("\n", " ");
             if (one.Length > 160) one = one.Substring(0, 160) + "...";
             return one;
+        }
+
+        /// <summary>
+        /// PD28：<c>/DA</c> 用 CMYK 上色算子 <c>k</c>／<c>c</c> 时读端解不出颜色，生成外观一律画成黑字。
+        /// PD28: when /DA sets the colour with the CMYK operators k or c the reader finds no colour at all, so a
+        /// generated appearance paints black whatever the form asked for.
+        /// </summary>
+        private static void RunDefaultAppearanceCmykTest()
+        {
+            PdfFile file = PdfFile.Load(BuildWatermarkSource("[0 0 612 792]", 0));
+            PdfReference page = file.GetPageReference(0);
+
+            // 印刷向的表单常把 /DA 写成 CMYK：0 0.75 0.75 0.25 k 是一块砖红，对应 RGB 约 191/48/48。
+            // Print-oriented forms routinely write /DA in CMYK: 0 0.75 0.75 0.25 k is a brick red, about 191/48/48.
+            PdfDictionary acroForm = new PdfDictionary();
+            PdfArray fields = new PdfArray();
+            PdfArray annots = new PdfArray();
+            fields.Add(AddFormWidget(file, page, "da.cmyk", "/Helv 12 Tf 0 0.75 0.75 0.25 k", annots));
+            fields.Add(AddFormWidget(file, page, "da.rgb", "/Helv 12 Tf 0.2 0.6 0.9 rg", annots));
+            acroForm.Set("Fields", fields);
+            file.GetPageDictionary(0).Set("Annots", annots);
+            file.MarkModified(page.Number);
+            file.Catalog.Set("AcroForm", file.AddObjectReference(acroForm));
+            file.MarkModified(file.CatalogNumber);
+
+            file.SetFormFieldValue("da.cmyk", "Hi");
+            file.SetFormFieldValue("da.rgb", "Hi");
+            file.GenerateFormAppearances();
+
+            // 控制用例：DeviceRGB 的 /DA 一直是解得开的，颜色应当原样落进外观。
+            // Control: a DeviceRGB /DA always parsed, so its colour must reach the appearance unchanged.
+            double[] rgb = FirstFillTriple(AppearanceBodyOf(file, "da.rgb"));
+            Require(rgb != null && Near(rgb[0], 0.2) && Near(rgb[1], 0.6) && Near(rgb[2], 0.9),
+                "the DeviceRGB control reads " + DescribeTriple(rgb) + " instead of 0.2 0.6 0.9");
+
+            double[] cmyk = FirstFillTriple(AppearanceBodyOf(file, "da.cmyk"));
+            Require(cmyk != null && Near(cmyk[0], 191.0 / 255.0) && Near(cmyk[1], 48.0 / 255.0) && Near(cmyk[2], 48.0 / 255.0),
+                "a CMYK default appearance of 0 0.75 0.75 0.25 k painted " + DescribeTriple(cmyk)
+                    + " instead of the brick red it describes");
+        }
+
+        /// <summary>取外观正文里第一条 <c>rg</c> 填充色的三个分量。Reads the three channels of the first rg fill operator in an appearance body.</summary>
+        /// <param name="body">外观正文。The appearance body.</param>
+        /// <returns>三个 0~1 的分量，没有 <c>rg</c> 时返回 null。The three 0-1 channels, null when no rg operator exists.</returns>
+        private static double[] FirstFillTriple(string body)
+        {
+            if (body == null) return null;
+            int at = body.IndexOf(" rg", StringComparison.Ordinal);
+            if (at < 0) return null;
+            int start = at;
+            while (start > 0 && (body[start - 1] == '.' || body[start - 1] == ' ' || (body[start - 1] >= '0' && body[start - 1] <= '9'))) start--;
+            string[] tokens = body.Substring(start, at - start).Trim()
+                .Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 3) return null;
+            double[] result = new double[3];
+            for (int i = 0; i < 3; i++)
+            {
+                double value;
+                if (!double.TryParse(tokens[tokens.Length - 3 + i], NumberStyles.Float, CultureInfo.InvariantCulture, out value)) return null;
+                result[i] = value;
+            }
+            return result;
+        }
+
+        /// <summary>判断 0~1 的分量是否落在容差内。Whether a 0-1 channel sits within tolerance of the expected value.</summary>
+        /// <param name="value">实际分量。The actual channel.</param>
+        /// <param name="expected">期望分量。The expected channel.</param>
+        /// <returns>相差不到 0.01 时 true。True when they differ by less than 0.01.</returns>
+        private static bool Near(double value, double expected)
+        {
+            return Math.Abs(value - expected) < 0.01;
+        }
+
+        /// <summary>把一组分量写成可读文本。Writes a channel triple as readable text.</summary>
+        /// <param name="value">分量，可为 null。The channels, possibly null.</param>
+        /// <returns>可读描述。A printable description.</returns>
+        private static string DescribeTriple(double[] value)
+        {
+            if (value == null) return "<no rg operator>";
+            return value[0].ToString("0.###", CultureInfo.InvariantCulture) + " "
+                + value[1].ToString("0.###", CultureInfo.InvariantCulture) + " "
+                + value[2].ToString("0.###", CultureInfo.InvariantCulture);
         }
 
         /// <summary>拼一份目录里只挂着页面树的夹具，供名称读写。Assembles a fixture whose catalog only carries the page tree, for name round-trips.</summary>
