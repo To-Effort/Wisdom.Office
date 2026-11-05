@@ -211,15 +211,22 @@ namespace Wisdom.Pdf
         /// <param name="category">资源类别，如 Font、XObject、ExtGState。The resource category, such as Font, XObject or ExtGState.</param>
         /// <param name="name">资源名（不含斜杠）。The resource name without the slash.</param>
         /// <param name="value">资源对象。The resource object.</param>
+        /// <remarks>页面自己不带 <c>/Resources</c> 时先复制继承来的那一份再落笔：那件实例同时挂在 <c>/Pages</c>
+        /// 与每个兄弟页上，就地改写等于替全篇登记，同名条目还会被后一页顶掉前一页。
+        /// When the page has no /Resources of its own the inherited dictionary is copied before it is written:
+        /// that one instance also hangs on /Pages and on every sibling page, so editing it in place registers
+        /// document-wide and lets a later page overwrite the earlier one under the same name.</remarks>
         public void SetPageResource(int index, string category, string name, PdfObject value)
         {
             PdfDictionary page = GetPageDictionary(index);
             PdfDictionary resources = Resolve(page.Get("Resources")) as PdfDictionary;
             if (resources == null)
             {
-                resources = GetPageResources(index);
-                if (resources == null) resources = new PdfDictionary();
+                PageNode node = GetPageNode(index);
+                PdfDictionary inherited = node.Resources;
+                resources = inherited == null ? new PdfDictionary() : DetachResources(inherited);
                 page.Set("Resources", resources);
+                node.Resources = resources;
             }
             PdfDictionary group = Resolve(resources.Get(category)) as PdfDictionary;
             if (group == null)
@@ -229,6 +236,27 @@ namespace Wisdom.Pdf
             }
             group.Set(name, value);
             MarkModified(GetPageReference(index).Number);
+        }
+
+        /// <summary>
+        /// 复制一份继承来的资源字典，连分类组一起脱开。Copies an inherited resource dictionary down to its category groups.
+        /// </summary>
+        /// <param name="inherited">继承来的资源字典。The inherited resource dictionary.</param>
+        /// <returns>本页独占的副本。The copy owned by this page alone.</returns>
+        /// <remarks>资源恒是「<c>/Resources</c> → 分类组 → 名字」两层，只拷外层等于把同一件分类组留给兄弟页共用，
+        /// 下一次登记照样串页。键序随拷贝保留，内联分组建出来的字节与共享实例时代一致。
+        /// Resources are always two levels deep, so cloning only the outer dictionary would leave the very same
+        /// category group shared with siblings and the next registration would leak all the same. Insertion
+        /// order survives the copy, so an inline group writes the same bytes as the shared instance.</remarks>
+        private PdfDictionary DetachResources(PdfDictionary inherited)
+        {
+            PdfDictionary copy = inherited.Clone();
+            foreach (KeyValuePair<string, PdfObject> pair in inherited)
+            {
+                PdfDictionary group = Resolve(pair.Value) as PdfDictionary;
+                if (group != null) copy.Set(pair.Key, group.Clone());
+            }
+            return copy;
         }
 
         /// <summary>
@@ -488,7 +516,12 @@ namespace Wisdom.Pdf
                 }
                 PdfDictionary page = node.Dictionary;
                 page.Set("Parent", pagesReference);
-                if (page.Get("Resources") == null && node.Resources != null) page.Set("Resources", node.Resources);
+                // 继承来的资源字典一份实例挂在所有页上，钉死在这里就等于让后续的资源登记互相串页，
+                // 所以复制一份归本页；浅拷贝不改键序，写出的字节与原来一致。
+                // One inherited dictionary instance hangs on every page, so pinning it here would let later
+                // resource registrations leak between siblings; each page takes its own copy. Copying keeps
+                // the key order, so the written bytes stay the same.
+                if (page.Get("Resources") == null && node.Resources != null) page.Set("Resources", DetachResources(node.Resources));
                 if (page.Get("MediaBox") == null && node.MediaBox != null) page.Set("MediaBox", node.MediaBox);
                 if (page.Get("Rotate") == null && node.Rotation != 0) page.SetNumber("Rotate", node.Rotation);
                 MarkModified(node.Reference.Number);
