@@ -28,6 +28,7 @@ namespace Wisdom.Office.Tests
             RunDoubleBorderIsCompoundLineTest();
             RunTableBorderDirectionsLandTest();
             RunCellBorderNoneMeansNoLineTest();
+            RunTableCellBordersComeBackTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -636,6 +637,123 @@ namespace Wisdom.Office.Tests
                     Require(EdgeHex(tcPr, "lnR") == "<noFill>", where + "lnR was " + EdgeHex(tcPr, "lnR"));
                 }
             }
+        }
+
+        /// <summary>
+        /// PT14：写出器逐格写出的 <c>a:lnL</c>/<c>a:lnR</c>/<c>a:lnT</c>/<c>a:lnB</c> 读端从不解析，
+        /// 于是别人的表格载进来边框全丢，本库自己写的逐格边框也活不过第二次保存——模型里
+        /// <c>TableCellBorders</c> 四个字段本来就在，只是没人往里放东西。
+        /// PT14: the writer's per-cell <c>a:lnL</c>/<c>a:lnR</c>/<c>a:lnT</c>/<c>a:lnB</c> were never parsed
+        /// on the way in, so a foreign table lost every border on load and this library's own per-cell
+        /// borders did not survive a second save — <c>TableCellBorders</c> had the four fields all along,
+        /// nothing ever filled them.
+        /// </summary>
+        private static void RunTableCellBordersComeBackTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TableShape ring = slide.AddTable(60, 60, 700, 160);
+            ring.Table.Borders.Top = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0xFF, 0x00, 0x00));
+            ring.Table.Borders.Bottom = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0x00, 0x00, 0xFF));
+            ring.Table.Borders.Left = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0x00, 0xFF, 0x00));
+            ring.Table.Borders.Right = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0xFF, 0x80, 0x00));
+            ring.Table.Borders.InsideHorizontal = new BorderLine(BorderStyle.Single, 1.0, new OfficeColor(0x80, 0x80, 0x80));
+            ring.Table.Borders.InsideVertical = new BorderLine(BorderStyle.Double, 1.5, new OfficeColor(0x80, 0x00, 0x80));
+            ring.Table.AddRow("甲", "乙", "丙");
+            ring.Table.AddRow("丁", "戊", "己");
+            TableShape bare = slide.AddTable(60, 260, 700, 120);
+            bare.Table.Borders = TableBorders.None();
+            bare.Table.Borders.Top = BorderLine.Thin();
+            bare.Table.AddRow("庚", "辛");
+            bare.Table.AddRow("壬", "癸");
+
+            byte[] written = WriteToBuffer(deck);
+            OfficePresentation loaded = PptxReader.Load(written);
+            List<TableShape> tables = FindTables(loaded.Slides[0]);
+            Require(tables.Count == 2, "expected two table shapes back, got " + tables.Count);
+
+            TableCell corner = tables[0].Table.Rows[0].Cells[0];
+            TableCellBorders cornerEdges = corner.Borders;
+            Require(cornerEdges != null,
+                "the loaded table kept no cell borders: row 0 cell 0 has Borders="
+                + (cornerEdges == null ? "<null>" : "<set>"));
+            Require(HexOf(cornerEdges == null ? null : cornerEdges.Top) == "FF0000",
+                "row 0 cell 0 top edge read back as " + HexOf(cornerEdges == null ? null : cornerEdges.Top)
+                + ", expected the declared FF0000 ring line");
+            Require(HexOf(cornerEdges == null ? null : cornerEdges.Bottom) == "808080",
+                "row 0 cell 0 bottom edge read back as " + HexOf(cornerEdges == null ? null : cornerEdges.Bottom)
+                + ", expected the inner rule 808080");
+            Require(HexOf(cornerEdges == null ? null : cornerEdges.Left) == "00FF00",
+                "row 0 cell 0 left edge read back as " + HexOf(cornerEdges == null ? null : cornerEdges.Left));
+            Require(HexOf(cornerEdges == null ? null : cornerEdges.Right) == "800080",
+                "row 0 cell 0 right edge read back as " + HexOf(cornerEdges == null ? null : cornerEdges.Right));
+            BorderLine innerVertical = cornerEdges == null ? null : cornerEdges.Right;
+            Require(innerVertical != null && innerVertical.Style == BorderStyle.Double,
+                "the double inner rule read back as "
+                + (innerVertical == null ? "<null>" : innerVertical.Style.ToString()));
+            TableCell tail = tables[0].Table.Rows[1].Cells[2];
+            Require(HexOf(tail.Borders == null ? null : tail.Borders.Bottom) == "0000FF",
+                "the last row's bottom edge read back as " + HexOf(tail.Borders == null ? null : tail.Borders.Bottom)
+                + ", expected the declared 0000FF ring line");
+            Require(HexOf(tail.Borders == null ? null : tail.Borders.Right) == "FF8000",
+                "the last column's right edge read back as " + HexOf(tail.Borders == null ? null : tail.Borders.Right));
+
+            TableCell bareCorner = tables[1].Table.Rows[0].Cells[0];
+            BorderLine bareBottom = bareCorner.Borders == null ? null : bareCorner.Borders.Bottom;
+            Require(bareBottom != null && bareBottom.Style == BorderStyle.None,
+                "a cell edge written as a:noFill read back as "
+                + (bareBottom == null ? "<null>" : bareBottom.Style.ToString()));
+            BorderLine bareTop = bareCorner.Borders == null ? null : bareCorner.Borders.Top;
+            Require(bareTop != null && bareTop.Style == BorderStyle.Single,
+                "the one declared line of the borderless table read back as "
+                + (bareTop == null ? "<null>" : bareTop.Style.ToString()));
+
+            // 第二次保存不得改动任何一条边线：读回来的值必须正好是文件里那一份。
+            // The second save must not move a single edge: what came back has to be exactly what the file said.
+            byte[] again = WriteToBuffer(loaded);
+            XElement[] before = ReadTables(written, "ppt/slides/slide1.xml");
+            XElement[] after = ReadTables(again, "ppt/slides/slide1.xml");
+            Require(before.Length == after.Length, "the re-save changed the table count from "
+                + before.Length + " to " + after.Length);
+            string firstEdges = EdgeSignatures(before);
+            string secondEdges = EdgeSignatures(after);
+            Require(firstEdges == secondEdges, "per-cell edges changed on re-save:\n  first " + firstEdges
+                + "\n  again " + secondEdges);
+        }
+
+        /// <summary>边框线的颜色十六进制，线不存在就说是 null。 A border line's colour hex, or null.</summary>
+        /// <param name="line">边框线。 The line.</param>
+        /// <returns>十六进制或占位。 The hex text or a placeholder.</returns>
+        private static string HexOf(BorderLine line)
+        {
+            return line == null ? "<null>" : line.Color.ToHex();
+        }
+
+        /// <summary>把所有表格每格四条边线拼成可比较的签名串。 Builds a comparable signature of every cell edge of every table.</summary>
+        /// <param name="tables">a:tbl 元素列表。 The a:tbl elements.</param>
+        /// <returns>签名串。 The signature text.</returns>
+        private static string EdgeSignatures(XElement[] tables)
+        {
+            StringBuilder text = new StringBuilder();
+            for (int t = 0; t < tables.Length; t++)
+            {
+                XElement[] trs = tables[t].Elements(A + "tr").ToArray();
+                for (int r = 0; r < trs.Length; r++)
+                {
+                    XElement[] tcs = trs[r].Elements(A + "tc").ToArray();
+                    for (int c = 0; c < tcs.Length; c++)
+                    {
+                        XElement tcPr = tcs[c].Element(A + "tcPr");
+                        foreach (string tag in new string[] { "lnL", "lnR", "lnT", "lnB" })
+                        {
+                            text.Append(t).Append('/').Append(r).Append('/').Append(c).Append('/').Append(tag)
+                                .Append('=').Append(EdgeHex(tcPr, tag)).Append(',').Append(EdgeWidth(tcPr, tag))
+                                .Append(';');
+                        }
+                    }
+                }
+            }
+            return text.ToString();
         }
 
         /// <summary>
