@@ -880,7 +880,9 @@ namespace Wisdom.Pdf
         /// </summary>
         /// <param name="da">默认外观串。The default appearance string.</param>
         /// <param name="fontSize">字号，缺失或非法时为 0。The size; 0 when absent or malformed.</param>
-        /// <param name="color">填充色，缺失时为黑色。The fill colour; black when absent.</param>
+        /// <param name="color">填充色：认 <c>rg</c>、<c>g</c> 与 CMYK 的 <c>k</c>／<c>c</c>，缺失或不认时为黑色。
+        /// The fill colour: <c>rg</c>, <c>g</c> and the CMYK <c>k</c>／<c>c</c> are understood; anything else
+        /// leaves black.</param>
         private static void ParseDefaultAppearance(string da, out double fontSize, out OfficeColor color)
         {
             fontSize = 0;
@@ -911,8 +913,34 @@ namespace Wisdom.Pdf
                     byte gray = ToByte(numbers[numbers.Count - 1]);
                     color = new OfficeColor(gray, gray, gray);
                 }
+                else if ((operatorToken == "k" || operatorToken == "c") && numbers.Count >= 4)
+                {
+                    // k 是 DeviceCMYK 填充色，c 是按当前色彩空间的填充色；印刷向的稿子与 Acrobat 生成的表单
+                    // 常把 /DA 写成 CMYK。没有 ICC 配置可用，只能按最一般的减法混色换算——换算值与带配置文件的
+                    // 阅读器会有偏差，但那偏差属于原稿声明的那个颜色，比一律画成黑色更接近。
+                    // k sets a DeviceCMYK fill and c a fill in the current colour space; print-oriented documents
+                    // and Acrobat-generated forms routinely write /DA in CMYK. With no ICC profile available the
+                    // naive subtractive conversion is used - it drifts from a profile-aware viewer, but that
+                    // drift belongs to the colour the document asked for, unlike painting everything black.
+                    color = FromCmyk(numbers[numbers.Count - 4], numbers[numbers.Count - 3],
+                        numbers[numbers.Count - 2], numbers[numbers.Count - 1]);
+                }
                 numbers.Clear();
             }
+        }
+
+        /// <summary>
+        /// 按减法混色把 CMYK 近似换算成 RGB。Converts CMYK into RGB by the naive subtractive approximation.
+        /// </summary>
+        /// <param name="cyan">青分量（0~1）。The cyan channel (0-1).</param>
+        /// <param name="magenta">品红分量（0~1）。The magenta channel (0-1).</param>
+        /// <param name="yellow">黄分量（0~1）。The yellow channel (0-1).</param>
+        /// <param name="black">黑分量（0~1）。The black channel (0-1).</param>
+        /// <returns>RGB 颜色。The RGB colour.</returns>
+        private static OfficeColor FromCmyk(double cyan, double magenta, double yellow, double black)
+        {
+            double k = 1 - black;
+            return new OfficeColor(ToByte((1 - cyan) * k), ToByte((1 - magenta) * k), ToByte((1 - yellow) * k));
         }
 
         /// <summary>把 0~1 的通道值转成字节。Converts a 0-1 channel value into a byte.</summary>
