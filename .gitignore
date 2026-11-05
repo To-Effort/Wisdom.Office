@@ -30,6 +30,10 @@ bld/
 [Bb]in/
 [Oo]bj/
 [Oo]ut/
+# 隔离调试构建的输出目录（.hbDebug/<tfm>），由 .hb 里的临时构建树产生。
+# Output of the isolated debug build directories (.hbDebug/<tfm>) produced by temporary build trees under .hb.
+.hbDebug/
+.hb/
 [Ll]og/
 [Ll]ogs/
 
