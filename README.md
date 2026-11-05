@@ -352,7 +352,7 @@ OfficeConverter.Convert("review.pptx", "review.pdf");
 OfficeConverter.Convert("review.pptx", "review.docx");
 ```
 
-`Slide.AddShape` / `AddImage` / `AddTable` 分别产出 `AutoShape`（十种预设图形、`CornerRadius` 默认 0.15）、`PictureShape`（PNG / JPEG，带 `AlternativeText`）与 `TableShape`；页背景色、演讲者备注与五种切换效果（含时长）写出后都能原样读回。版式是读回时按形状推断的，`SectionHeader` 会归成 `Title`，带真实表格形状的页面会归成 `TitleAndTable`。
+`Slide.AddShape` / `AddImage` / `AddTable` 分别产出 `AutoShape`（十种预设图形、`CornerRadius` 默认 0.15）、`PictureShape`（PNG / JPEG，带 `AlternativeText`）与 `TableShape`；页背景色、演讲者备注、切换效果（含时长、方向、速度与是否单击换片）写出后都能原样读回。版式读回时先看版式部件自己声明的 `p:sldLayout@type`，因此 `SectionHeader` 这种「只有一个标题占位符、形状与仅标题页完全一样」的页面也能原样回来；其余按形状推断，带真实表格形状的页面会归成 `TitleAndTable`。
 
 ### Markdown 读写
 
