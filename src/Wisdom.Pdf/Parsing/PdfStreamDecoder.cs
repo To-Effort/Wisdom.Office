@@ -31,6 +31,13 @@ namespace Wisdom.Pdf
             byte[] data = stream.Data;
             PdfObject filterObject = stream.Dictionary.Get("Filter");
             PdfObject parmsObject = stream.Dictionary.Get("DecodeParms");
+            // /F 与 /DP 是规范里并列的缩写键（标注「不建议使用」，但第三方产物确实这么写）；
+            // 只认 /DP 会让这类正文当成未过滤原字节交回。加密转换标志也写作 /F，是个整数，
+            // 名字取不出来即跳过，不会被误当过滤器。
+            // /F and /DP are the paired abbreviated keys in the spec (marked "not recommended", yet real
+            // producers do emit them); honouring only /DP hands such content back as unfiltered bytes.
+            // A crypt conversion flag is also written /F but is an integer, so it yields no name and is skipped.
+            if (filterObject == null) filterObject = stream.Dictionary.Get("F");
             if (parmsObject == null) parmsObject = stream.Dictionary.Get("DP");
 
             List<PdfObject> filters = Normalize(filterObject, resolve);
