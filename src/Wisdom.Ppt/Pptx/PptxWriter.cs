@@ -367,6 +367,10 @@ namespace Wisdom.Ppt
                         new XElement(P + "cSld",
                             new XAttribute("name", LayoutName(kind)),
                             CreatePlaceholderTree(kind, false))), true);
+                    // 版式类别写进 p:sldLayout@type：章节过渡页只有这一处证据能区别于「仅标题页」。
+                    // The layout kind goes onto p:sldLayout@type: that is the only evidence that tells a
+                    // section header apart from a title-only slide.
+                    layout.SetAttributeValue("type", LayoutTypeCode(kind));
                     layout.Add(new XElement(P + "clrMapOvr", new XElement(A + "masterClrMapping")));
                     layout.Add(new XElement(P + "timing"));
                     XDocument rels = BuildRels(new List<RelEntry>
@@ -1595,6 +1599,30 @@ namespace Wisdom.Ppt
                     case SlideLayoutKind.TitleAndPicture: return "标题和内容（图片）";
                     case SlideLayoutKind.TitleAndTable: return "标题和内容（表格）";
                     default: return "空白";
+                }
+            }
+
+            /// <summary>
+            /// 版式类别到 ST_SlideLayoutType 的映射，写到 <c>p:sldLayout@type</c> 上。
+            /// 这是版式意图唯一能被读端还原的地方：章节过渡页与「仅标题页」的形状完全一样（都只有一个标题占位符），
+            /// 只靠形状推断永远认不出来。
+            /// Maps a layout kind to ST_SlideLayoutType for <c>p:sldLayout@type</c>. This is the only place the
+            /// layout intent survives a round trip: a section header and a title-only slide have identical
+            /// shapes (a single title placeholder), so shape inference alone can never tell them apart.
+            /// </summary>
+            /// <param name="kind">版式类别。 Layout kind.</param>
+            /// <returns>ST_SlideLayoutType 取值。 The ST_SlideLayoutType token.</returns>
+            private static string LayoutTypeCode(SlideLayoutKind kind)
+            {
+                switch (kind)
+                {
+                    case SlideLayoutKind.Title: return "title";
+                    case SlideLayoutKind.SectionHeader: return "secHead";
+                    case SlideLayoutKind.TwoContent: return "twoColTx";
+                    case SlideLayoutKind.TitleAndPicture: return "picTx";
+                    case SlideLayoutKind.TitleAndTable: return "tbl";
+                    case SlideLayoutKind.Blank: return "blank";
+                    default: return "obj";
                 }
             }
 

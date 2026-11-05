@@ -468,6 +468,17 @@ namespace Wisdom.Ppt
             private readonly Dictionary<string, Box> _masterBoxes;
             /// <summary>cNvPr id 到形状映射，供 p:timing 的动画目标定位。Maps cNvPr ids to shapes so that p:timing animation targets can be resolved.</summary>
             private readonly Dictionary<int, SlideShape> _shapeById = new Dictionary<int, SlideShape>();
+            /// <summary>
+            /// 版式部件自己声明的类别（只在能确定指向 <see cref="SlideLayoutKind.SectionHeader"/> 时有值）。
+            /// 形状推断认不出章节过渡页——它只有标题占位符，与「仅标题页」完全同形——所以这一条必须由版式部件
+            /// 的 <c>p:sldLayout@type</c> / <c>cSld@name</c> 补，否则章节页读回来永远被重绑成 `Title`。
+            /// The kind the layout part itself declares, set only when it pins down
+            /// <see cref="SlideLayoutKind.SectionHeader"/>. Shape inference cannot recognise a section
+            /// header — it carries only a title placeholder and looks exactly like a title-only slide — so
+            /// this one has to come from the layout part's <c>p:sldLayout@type</c> / <c>cSld@name</c>;
+            /// otherwise a section slide always comes back rebound as `Title`.
+            /// </summary>
+            private readonly SlideLayoutKind? _declaredLayoutKind;
 
             /// <summary>为一张幻灯片创建读取器，同时预读其版式与母版的占位符几何。Creates the reader for one slide, pre-reading placeholder geometry from its layout and master.</summary>
             /// <param name="session">包级读取会话。The package-level read session.</param>
@@ -478,8 +489,39 @@ namespace Wisdom.Ppt
                 _slidePart = slidePart;
                 string layoutPart = session.Package.GetRelationshipTargetByType(slidePart, Ppt.TypeSlideLayout);
                 string masterPart = session.Package.GetRelationshipTargetByType(layoutPart, Ppt.TypeSlideMaster);
-                _layoutBoxes = CollectPlaceholderBoxes(session.Package.GetXml(layoutPart));
+                XDocument layoutXml = session.Package.GetXml(layoutPart);
+                _layoutBoxes = CollectPlaceholderBoxes(layoutXml);
                 _masterBoxes = CollectPlaceholderBoxes(session.Package.GetXml(masterPart));
+                _declaredLayoutKind = ReadDeclaredLayoutKind(layoutXml);
+            }
+
+            /// <summary>
+            /// 读版式部件自己声明的类别：<c>p:sldLayout@type="secHead"</c> 或 <c>cSld@name</c> 为
+            /// 「Section Header」/「节标题」时返回 <see cref="SlideLayoutKind.SectionHeader"/>，其余一律返回 null，
+            /// 让形状推断继续负责其它类别（它认得出图片、表格与多栏，而版式声明的粒度与之并不一一对应）。
+            /// Reads the kind the layout part declares: <c>p:sldLayout@type="secHead"</c>, or a
+            /// <c>cSld@name</c> of "Section Header" / "节标题", yields
+            /// <see cref="SlideLayoutKind.SectionHeader"/>; every other value returns null so shape inference
+            /// keeps deciding the rest (it recognises pictures, tables and columns, and the declared layout
+            /// types do not map one-to-one onto the unified kinds).
+            /// </summary>
+            /// <param name="layoutXml">版式部件 XML，可为 null。The layout part XML, possibly null.</param>
+            /// <returns>能确定的类别，否则 null。The pinned kind, or null.</returns>
+            private static SlideLayoutKind? ReadDeclaredLayoutKind(XDocument layoutXml)
+            {
+                if (layoutXml == null || layoutXml.Root == null) return null;
+                string type = Ppt.Attribute(layoutXml.Root, "type");
+                if (string.Equals(type, "secHead", StringComparison.OrdinalIgnoreCase))
+                {
+                    return SlideLayoutKind.SectionHeader;
+                }
+                string name = Ppt.Attribute(Ppt.Child(layoutXml.Root, "cSld"), "name");
+                if (string.Equals(name, "Section Header", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "节标题", StringComparison.Ordinal))
+                {
+                    return SlideLayoutKind.SectionHeader;
+                }
+                return null;
             }
 
             /// <summary>
@@ -497,7 +539,7 @@ namespace Wisdom.Ppt
                 XElement cSld = Ppt.Child(root, "cSld");
                 ReadBackground(cSld, slide);
                 ReadShapes(Ppt.Child(cSld, "spTree"), slide, new ShapeTransform(), 0);
-                slide.Layout = InferLayoutKind(slide);
+                slide.Layout = _declaredLayoutKind ?? InferLayoutKind(slide);
                 XElement transition = FindTransition(root);
                 slide.Transition = ReadTransition(transition);
                 slide.TransitionDirection = ReadTransitionDirection(transition);

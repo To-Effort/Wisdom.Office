@@ -23,6 +23,7 @@ namespace Wisdom.Office.Tests
             RunUndeclaredTableHeaderStaysPlainTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
+            RunSectionHeaderLayoutSurvivesTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -340,6 +341,68 @@ namespace Wisdom.Office.Tests
             Require(Math.Abs(back.AdvanceAfterSeconds - 2.5) < 0.001,
                 "the auto-advance time did not read back: " + back.AdvanceAfterSeconds);
             Require(loaded.Slides[1].AdvanceOnClick, "the default slide lost its click-to-advance");
+        }
+
+        /// <summary>
+        /// PT8：章节过渡页只有一个标题占位符，与「仅标题页」形状完全一样，形状推断永远认不出来；
+        /// 版式部件自己声明的 <c>p:sldLayout@type="secHead"</c> 是唯一能把它带回来的证据。
+        /// 同时守住反方向：手工加表格的那一页仍按形状推断成 TitleAndTable（既有行为不变），
+        /// 说明这次只是让版式声明为章节页这一条生效，没有整体压过推断。
+        /// PT8: a section header carries a single title placeholder and is shape-for-shape identical to a
+        /// title-only slide, so inference can never recognise it; the layout part's own
+        /// <c>p:sldLayout@type="secHead"</c> is the only evidence that can bring it back. The opposite
+        /// direction is guarded too: a slide with a hand-added table still infers TitleAndTable (existing
+        /// behaviour unchanged), proving the declared kind is consulted for the section header only and does
+        /// not overrule inference generally.
+        /// </summary>
+        private static void RunSectionHeaderLayoutSurvivesTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+
+            Slide section = deck.AddSlide(SlideLayoutKind.SectionHeader);
+            ((TextBoxShape)section.Shapes[0]).Paragraphs[0].AddText("第二部分");
+
+            Slide titleOnly = deck.AddSlide(SlideLayoutKind.Title);
+            ((TextBoxShape)titleOnly.Shapes[0]).Paragraphs[0].AddText("仅标题");
+
+            Slide mixed = deck.AddSlide(SlideLayoutKind.TitleAndContent);
+            ((TextBoxShape)mixed.Shapes[0]).Paragraphs[0].AddText("混合");
+            mixed.AddTable(60, 200, 600, 100).Table.AddRow("A", "B");
+
+            byte[] written = WriteToBuffer(deck);
+
+            // 版式部件必须自己说清楚：有一个 type="secHead"，名字仍叫「节标题」。
+            // The layout part has to say so itself: one carries type="secHead" and keeps the 节标题 name.
+            int sectionLayouts = 0;
+            using (ZipArchive zip = new ZipArchive(new MemoryStream(written), ZipArchiveMode.Read))
+            {
+                foreach (ZipArchiveEntry entry in zip.Entries)
+                {
+                    if (!entry.FullName.StartsWith("ppt/slideLayouts/slideLayout", StringComparison.Ordinal)
+                        || !entry.FullName.EndsWith(".xml", StringComparison.Ordinal)) continue;
+                    using (Stream stream = entry.Open())
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        XElement root = XDocument.Parse(reader.ReadToEnd()).Root;
+                        if (root == null) continue;
+                        if ((string)root.Attribute("type") != "secHead") continue;
+                        sectionLayouts++;
+                        XElement cSld = root.Element(P + "cSld");
+                        Require(cSld != null && (string)cSld.Attribute("name") == "节标题",
+                            "the section layout lost its name: "
+                            + (cSld == null ? "<no cSld>" : (string)cSld.Attribute("name")));
+                    }
+                }
+            }
+            Require(sectionLayouts == 1, "expected exactly one secHead layout part, got " + sectionLayouts);
+
+            OfficePresentation loaded = PptxReader.Load(written);
+            Require(loaded.Slides[0].Layout == SlideLayoutKind.SectionHeader,
+                "the section header slide came back as " + loaded.Slides[0].Layout);
+            Require(loaded.Slides[1].Layout == SlideLayoutKind.Title,
+                "the title-only slide came back as " + loaded.Slides[1].Layout);
+            Require(loaded.Slides[2].Layout == SlideLayoutKind.TitleAndTable,
+                "a hand-added table no longer infers TitleAndTable: " + loaded.Slides[2].Layout);
         }
 
         /// <summary>取幻灯片部件里第一个 <c>p:transition</c>（带时长时它住在 mc:Choice 里）。 Takes the first <c>p:transition</c> in a slide part, which lives inside mc:Choice when a duration is present.</summary>
