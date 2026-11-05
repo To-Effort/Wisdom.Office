@@ -184,6 +184,13 @@
 - 目标行为：对 `*-UCS2-*`、`*-UTF16-*`、`Identity-*` 按双字节大端直接产出字符（处理落单字节），其余非 Identity 编码显式记「无法还原」而非静默空。
 - 红测：内存构造无 `/ToUnicode` 的 `/UniGB-UCS2-H` Type0 字体页，断言抽出预期字符。
 
+### PD23｜页面继承的 `/Resources` 被就地改写，兄弟页同名资源相互顶替　A
+
+- 位置：`src/Wisdom.Pdf/Document/PdfFile.Pages.cs` 的 `SetPageResource`——页面没有自带 `/Resources` 时，把 `GetPageResources(index)` 沿继承链取到的那一份实例直接 `page.Set("Resources", …)` 钉在本页上，随后 `resources.Set(category, group)` 就地改写；`EnsureFlatPageTree` 里 `page.Set("Resources", node.Resources)` 是同一个别名。来源在同文件 `CollectPageNodes`：`Resolve(node.Get("Resources")) as PdfDictionary ?? inheritedResources`，每个页面节点拿到的都是 `/Pages` 上那同一件。
+- 后果：第三方 PDF 把资源字典挂在 `/Pages` 上由全篇继承时（本库自己产出的页面各带一份，走不到这条），一次登记等于替 `/Pages` 与所有兄弟页一起登记；同名条目后一页顶掉前一页，前一页画的是后一页的对象；什么都没登记的第三页也跟着多出该分组；`WatermarkResourceName` 因此被串页逼出 `_1`、`_2` 后缀。
+- 目标行为：页面自己不带 `/Resources` 时先按页复制一份再落笔，且连分类组一起脱开（只拷外层等于把同一件分组留给兄弟页，下一次登记照样串页）；继承来的条目照常可读，`GetPageResources` 对本页返回的就是本页独占那一份。
+- 红测：三页夹具，资源只挂在 `/Pages`；两页分别登记 `/Logo`，断言本页读回自己的引用、两页的分组不是同一实例、第三页没有多出分组，存一趟读回来两页仍各指自己的对象号；控制用例登记 `/Font /F1`，不得换掉兄弟页的字体。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -443,6 +450,7 @@
 | `WE12` | ODT 页码域从 `IndexOf("PAGE")` 改为整词判定：`NUMPAGES`/`PAGES` 写 `text:page-count`、整词 `PAGE` 写 `text:page-number`，读端新增 `text:page-count` → `NUMPAGES`（此前没有这一分支）。同时用到两个域的 ODT 产物在总页数那一处字节变化（变化本身就是修复），只用 `PAGE` 的稿子一个字节不动 | `src/Wisdom.Word/README.md`「在格式之间保留什么」的页码一行改为「页码与总页数域」并新增一段说明 ODT 只认这两个指令、其余指令写的是显示文本；`docs/Wisdom.Word.Tutorial.md` 常见问题补「『第 X 页 共 N 页』存成 ODT 变成两个页码」 |
 | `WE13` | RTF 表格边框补写 `\brdrcf`，读端按颜色表回色：有色边框的 RTF 产物在颜色那一句字节变化（变化本身就是修复），纯黑的边沿用 RTF 自动色不写引用，默认表格产物一字节不变。读端此前没有 `brdrcf` 分支，边框颜色一律读成黑色 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增 RTF 边框颜色一段（含「RTF 没有表级边框、`Table.Borders` 六向不回」这条边界）；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格边框的颜色存成 RTF 就变黑了」 |
 | `WE14` | HTML / RTF / ODT 三个读端新增按首行 `IsHeader` 回写 `Table.RepeatHeaderRow`（此前留着构造默认的 `true`）：经这三跳再存 DOCX 的表格不再冒出 `w:tblHeader`。只有「首行不是表头」这一类表格的产物形状变化（变化本身就是修复），声明过表头的照旧；DOCX 直进直出一字节不变 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增「重复表头只有 DOCX 带得动」一段；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格设了不重复表头，转一趟格式再存成 DOCX 又开始重复」 |
+| `PD23` | 页面自身没有 `/Resources` 时，`SetPageResource` 从「就地改写继承来的那一份」改为「按页复制一份、连分类组一起脱开再写」：登记不再串页，同名条目不再相互顶替。本库新建稿每页自带 `/Resources`，走不到这条，一字节不变；只有把资源挂在 `/Pages` 上的第三方稿，其水印与外观扁平化的资源名与分组归属随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「编辑既有 PDF 与水印」新增按页脱开一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「给第三方 PDF 逐页登记资源，另一页的同名条目被顶掉了」 |
 
 ---
 
@@ -736,6 +744,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 夹具故意把「无线」与「有线」混在一张表里：`Borders = TableBorders.None()` 之后只把 `Top` 设回细黑线。断言首行 `lnT` 仍是 `000000`（证明没把「有线」那一档一起修没），其余三条边一律是 `<a:noFill/>`。`EdgeHex` 这个助手把缺失的边、无填充的边与没颜色的边写成不同占位串，失败消息直接说清文件里是什么。
   - 字节口径：只有设过 `TableBorders.None()` 或某方向 `BorderStyle.None` 的稿子会变，那正是本条要修的差别；默认六向细实线的表与形状描边输出不动。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PD23` 继承来的 `/Resources` 被就地改写（`21e9f30` 取证 + `96e54e0` 修复）：`SetPageResource` 在页面没有自带 `/Resources` 时把沿继承链取到的那一份实例钉在本页字典上再落笔，而那份实例同时挂在 `/Pages` 与每个兄弟页上；`EnsureFlatPageTree` 拍平页面树时 `page.Set("Resources", node.Resources)` 留下的是同一个别名，此后无论从哪条路登记都在改公共件。
+  - 修复前失败原文（三跳断言里最先倒下的是「本页读回自己登记的那一枚」）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: page 0 registered /Logo as 7 0 R but the entry now reads '8 0 R': the sibling page wrote through the shared inherited /Resources
+      at Wisdom.Office.Tests.Program.RunInheritedResourceAliasTest() ... RemediationPhaseFourTests.cs:line 586
+    ```
+
+  - 只拷外层不够：资源恒是 `/Resources` → 分类组 → 名字 两层，浅拷贝把外层脱开而分类组仍是兄弟页共用的同一件，控制用例（在页 0 重登 `/Font /F1`，页 1 的 `/F1` 被一起换掉）当场抓到第二次串页。落点因此是新增的 `DetachResources`：连分类组一起复制，`SetPageResource` 与 `EnsureFlatPageTree` 两处共用。
+  - 本页独占的副本同时回填页面节点缓存（`node.Resources`），否则 `GetPageResources` 在同一个 `PdfFile` 实例上还返回继承那一份，读到的仍是旧别名。
+  - 字节口径：本库新建稿每页自带 `/Resources`，`Resolve(page.Get("Resources"))` 非空，走不到复制这条分支，一字节不变；继承字典本身不再被改写，`/Pages` 上的产物因此回到「只有它自己那份内容」。只有把资源挂在 `/Pages` 上的第三方稿，其多页水印的资源名不再被串页逼出 `_1`、`_2` 后缀（变化本身就是修复）。键序随 `Clone()` 保留，内联分组建出的字节与共享实例时代一致。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
