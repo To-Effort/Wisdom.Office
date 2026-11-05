@@ -219,6 +219,11 @@ namespace Wisdom.Word
                 }
             }
 
+            // 把包读取期间的降级记录搬到文档上：调用方据此区分「本来没有这个部件」与「部件坏了被跳过」。
+            // Move the package's downgrade notices onto the document so callers can tell "this part was
+            // never there" from "the part was broken and skipped".
+            document.Warnings.AddRange(package.Warnings);
+
             return document;
         }
 
@@ -284,6 +289,10 @@ namespace Wisdom.Word
             List<Block> blocks = new List<Block>();
             XDocument xml = package.GetXml(partPath);
             if (xml == null || xml.Root == null) return blocks;
+            // 同一份页眉会被多个节各解析一次：计数器必须先复位，否则第二节的页眉列表从 2. 接着排。
+            // One header part is parsed once per section that inherits it, so the counters have to be reset first;
+            // otherwise the second section's header list would carry on at 2.
+            styles.ResetNumberingCounters();
             DocxPartReader reader = new DocxPartReader(package, styles, partPath);
             reader.ReadBlocks(xml.Root, blocks);
             return blocks;

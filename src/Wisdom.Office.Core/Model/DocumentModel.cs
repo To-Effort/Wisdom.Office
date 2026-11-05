@@ -995,6 +995,17 @@ namespace Wisdom.Office.Core
         /// </summary>
         public BookmarkCollection Bookmarks { get; private set; }
 
+        /// <summary>
+        /// 读取过程中遇到的降级信息：某个部件存在但无法解析、某个特性不被支持等。
+        /// 缺失的部件不算降级（本来就没有），所以这里只记「东西在、但没读成」这一类；
+        /// 调用方据此区分「文档本来没有页眉」与「页眉被丢弃」。
+        /// Downgrade notices collected while reading: a part exists but cannot be parsed, a feature is not
+        /// supported, and so on. A part that is simply absent is not a downgrade (it was never there), so
+        /// only "it exists but did not read" lands here; callers can tell "the document had no header" from
+        /// "the header was dropped".
+        /// </summary>
+        public List<string> Warnings { get; private set; }
+
         /// <summary>默认构造：空文档、默认元数据与文本格式。Default constructor: an empty document with default metadata and text format.</summary>
         public OfficeDocument()
         {
@@ -1002,6 +1013,7 @@ namespace Wisdom.Office.Core
             Sections = new List<Section>();
             DefaultTextFormat = new TextFormat();
             Bookmarks = new BookmarkCollection(this);
+            Warnings = new List<string>();
         }
 
         /// <summary>追加一个使用默认 A4 设置的节。Appends a section using the default A4 setup.</summary>

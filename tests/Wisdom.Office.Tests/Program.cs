@@ -46,6 +46,7 @@ namespace Wisdom.Office.Tests
             RunRemediationPhaseThreeTest();
             RunRemediationPhaseFourTest();
             RunRemediationExcelTest();
+            RunRemediationCoreTest();
 
             string fixtureDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "fixtures"));
             string chromePdfPath = Path.Combine(fixtureDirectory, "chrome-print.pdf");

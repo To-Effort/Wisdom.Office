@@ -33,6 +33,7 @@ namespace Wisdom.Office.Tests
             RunRtfNonBmpCodeUnitTest();
             RunWritersTolerateNullModelFieldsTest();
             RunWritersNeverTruncateTheOriginalTest();
+            RunCorruptHeaderPartIsReportedTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -325,6 +326,76 @@ namespace Wisdom.Office.Tests
             string[] leftovers = Directory.GetFiles(directory, "." + Path.GetFileName(path) + ".*.tmp");
             Require(leftovers.Length == 0,
                 "a failed " + extension + " write left " + leftovers.Length + " temporary file(s) behind");
+        }
+
+        /// <summary>
+        /// WE7：`word/header1.xml` 存在但内容不是合法 XML 时，读端过去把「解析失败」与「没有页眉」都表达成
+        /// `null`，页眉被静默丢弃且调用方无从分辨。现在这类降级记进 `OfficeDocument.Warnings`：
+        /// 文档照常加载、正文可读，那条告警点名是哪个部件。
+        /// WE7: when `word/header1.xml` exists but is not well-formed XML, the reader used to express both
+        /// "parse failed" and "no header" as `null`, dropping the header silently with no way for the caller
+        /// to tell. Such downgrades now land in `OfficeDocument.Warnings`: the document still loads, the body
+        /// is readable, and the notice names the part that was dropped.
+        /// </summary>
+        private static void RunCorruptHeaderPartIsReportedTest()
+        {
+            OfficeDocument source = new OfficeDocument();
+            Section section = source.AddSection(PageSetup.A4());
+            section.Header.Blocks.Add(new Paragraph("页眉内容"));
+            section.Blocks.Add(new Paragraph("正文内容"));
+
+            byte[] clean = WordFormatConverter.ToArray(source, WordDocumentFormat.Docx);
+            byte[] corrupted = RewriteZipEntry(clean, "word/header1.xml",
+                Encoding.UTF8.GetBytes("<w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><<<<"));
+
+            OfficeDocument loaded = WordFormatConverter.Load(corrupted, WordDocumentFormat.Docx);
+            Require(ContainsText(loaded, "正文内容"),
+                "a corrupt header must not take the body down with it");
+            Require(loaded.Warnings.Count == 1,
+                "expected exactly one downgrade notice for the corrupt header, got " + loaded.Warnings.Count);
+            Require(loaded.Warnings[0].IndexOf("header1.xml", StringComparison.OrdinalIgnoreCase) >= 0,
+                "the notice does not name the part that was dropped: " + loaded.Warnings[0]);
+
+            // 控制：未损坏的同一份文档不得产生任何告警——「缺失」与「坏了」必须真的分开。
+            // Control: the same document with an intact header must produce no notice at all, so "missing"
+            // and "broken" really are distinguishable.
+            OfficeDocument ok = WordFormatConverter.Load(clean, WordDocumentFormat.Docx);
+            Require(ok.Warnings.Count == 0, "a clean document reported " + ok.Warnings.Count + " downgrade notice(s)");
+        }
+
+        /// <summary>在内存里重打包，替换指定条目的内容；其余条目原样复制。 Repackages in memory, replacing the named entry and copying every other entry as-is.</summary>
+        /// <param name="package">原包字节。The original package bytes.</param>
+        /// <param name="entryName">要替换的条目名。The entry to replace.</param>
+        /// <param name="content">新的条目内容。The new entry content.</param>
+        /// <returns>重打包后的字节。The repackaged bytes.</returns>
+        private static byte[] RewriteZipEntry(byte[] package, string entryName, byte[] content)
+        {
+            using (MemoryStream buffer = new MemoryStream())
+            {
+                using (ZipArchive source = new ZipArchive(new MemoryStream(package), ZipArchiveMode.Read))
+                using (ZipArchive target = new ZipArchive(buffer, ZipArchiveMode.Create, true))
+                {
+                    foreach (ZipArchiveEntry entry in source.Entries)
+                    {
+                        ZipArchiveEntry copy = target.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+                        using (Stream output = copy.Open())
+                        {
+                            if (string.Equals(entry.FullName, entryName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                output.Write(content, 0, content.Length);
+                            }
+                            else
+                            {
+                                using (Stream input = entry.Open())
+                                {
+                                    input.CopyTo(output);
+                                }
+                            }
+                        }
+                    }
+                }
+                return buffer.ToArray();
+            }
         }
 
         /// <summary>正文加一个引用图片的 <c>draw:frame</c>。 A body paragraph followed by a <c>draw:frame</c> that references a picture.</summary>

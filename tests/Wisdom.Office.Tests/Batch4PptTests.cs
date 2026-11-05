@@ -46,11 +46,16 @@ namespace Wisdom.Office.Tests
             string slideXml = ReadArchiveEntryText(path, "ppt/slides/slide1.xml");
             Require(CountOccurrences(slideXml, "presetClass=\"entr\"") == kinds.Length,
                 "entrance behaviours lost: " + CountOccurrences(slideXml, "presetClass=\"entr\""));
-            Require(slideXml.IndexOf("presetId=\"10\"", StringComparison.Ordinal) >= 0, "fade preset id missing");
-            Require(slideXml.IndexOf("presetId=\"2\"", StringComparison.Ordinal) >= 0, "fly-in preset id missing");
-            Require(slideXml.IndexOf("presetId=\"22\"", StringComparison.Ordinal) >= 0, "wipe preset id missing");
-            Require(slideXml.IndexOf("presetId=\"23\"", StringComparison.Ordinal) >= 0, "zoom preset id missing");
-            Require(slideXml.IndexOf("presetId=\"26\"", StringComparison.Ordinal) >= 0, "split preset id missing");
+            // CT_TLCommonTimeNodeData 的属性名是 presetID（大写 ID），PowerPoint 也这样写；
+            // 旧的 presetId 大小写不匹配架构，严格校验会把它当成未知属性。
+            // CT_TLCommonTimeNodeData spells the attribute presetID (capital ID), which is also what
+            // PowerPoint writes; the old presetId casing does not match the schema and strict validation
+            // reports it as an unknown attribute.
+            Require(slideXml.IndexOf("presetID=\"10\"", StringComparison.Ordinal) >= 0, "fade preset id missing");
+            Require(slideXml.IndexOf("presetID=\"2\"", StringComparison.Ordinal) >= 0, "fly-in preset id missing");
+            Require(slideXml.IndexOf("presetID=\"22\"", StringComparison.Ordinal) >= 0, "wipe preset id missing");
+            Require(slideXml.IndexOf("presetID=\"23\"", StringComparison.Ordinal) >= 0, "zoom preset id missing");
+            Require(slideXml.IndexOf("presetID=\"26\"", StringComparison.Ordinal) >= 0, "split preset id missing");
             Require(slideXml.IndexOf("advTm=\"3000\"", StringComparison.Ordinal) >= 0, "advTm auto-advance missing");
             Require(slideXml.IndexOf("<p:timing>", StringComparison.Ordinal) >= 0, "p:timing wrapper missing");
 

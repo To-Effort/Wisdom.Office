@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Xml.Linq;
 using Wisdom.Office.Core;
@@ -24,6 +25,9 @@ namespace Wisdom.Office.Tests
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
+            RunAppPropertiesSchemaOrderTest();
+            RunTimingTreeShapeTest();
+            RunBaselineAndSpacingRoundTripTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -403,6 +407,171 @@ namespace Wisdom.Office.Tests
                 "the title-only slide came back as " + loaded.Slides[1].Layout);
             Require(loaded.Slides[2].Layout == SlideLayoutKind.TitleAndTable,
                 "a hand-added table no longer infers TitleAndTable: " + loaded.Slides[2].Layout);
+        }
+
+        /// <summary>
+        /// PT10：`docProps/app.xml` 的元素必须按 ISO/IEC 29500 的 `CT_Properties` 序列排（Company → Slides →
+        /// Application → AppVersion），而不是 PowerPoint 实测写出的「Application 提前」次序；后者不满足架构
+        /// 定义的 sequence，严格校验会报错，而这个部件只承载统计信息，按架构写不掉任何能力。
+        /// PT10: the elements of `docProps/app.xml` have to follow the `CT_Properties` sequence in ISO/IEC
+        /// 29500 (Company → Slides → Application → AppVersion) rather than the "Application first" order
+        /// PowerPoint actually emits; the latter violates the schema's sequence and fails strict validation,
+        /// and this part only carries statistics, so following the schema costs no capability.
+        /// </summary>
+        private static void RunAppPropertiesSchemaOrderTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            deck.AddSlide(SlideLayoutKind.Blank);
+            byte[] written = WriteToBuffer(deck);
+
+            XElement root = ReadSlideXml(written, "docProps/app.xml").Root;
+            Require(root != null, "docProps/app.xml is missing");
+            List<string> order = new List<string>();
+            foreach (XElement child in root.Elements()) order.Add(child.Name.LocalName);
+
+            string[] expected = { "Company", "Slides", "Application", "AppVersion" };
+            Require(order.Count == expected.Length,
+                "unexpected element count in docProps/app.xml: " + string.Join(", ", order.ToArray()));
+            for (int i = 0; i < expected.Length; i++)
+            {
+                Require(order[i] == expected[i],
+                    "docProps/app.xml is not in CT_Properties order (position " + i + "): "
+                    + string.Join(", ", order.ToArray()));
+            }
+        }
+
+        /// <summary>
+        /// PT2：`p:timing` 必须长成 <c>tnLst/par/cTn(nodeType="tmRoot")/childTnLst/seq</c> 的形状，
+        /// id 全局唯一，`dur`/`delay` 用规范词法 `indefinite`，类别用 `nodeType` 而不是 `type`，
+        /// `p:set` 内容按 <c>cBhvr + p:to/p:strVal</c> 给出。旧实现是一个 `p:par` 里并列两个 `p:cTn`、
+        /// `seq` 与根 `cTn` 平级、两个节点同用 `id="1"`、并把 `a:clrMapOvr` 塞进 `p:setTo`——PowerPoint 打开即走修复。
+        /// PT2: `p:timing` has to take the <c>tnLst/par/cTn(nodeType="tmRoot")/childTnLst/seq</c> shape, with
+        /// tree-wide unique ids, the schema spellings `indefinite` for dur/delay, `nodeType` instead of `type`,
+        /// and a `p:set` built from <c>cBhvr + p:to/p:strVal</c>. The old tree put two `p:cTn` inside one
+        /// `p:par`, kept `seq` beside the root `cTn`, gave two nodes `id="1"`, and tucked an `a:clrMapOvr`
+        /// into `p:setTo` — any of which sends PowerPoint into its repair path.
+        /// </summary>
+        private static void RunTimingTreeShapeTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TextBoxShape box = slide.AddTextBox(40, 40, 400, 80, "淡入");
+            box.Animation = SlideAnimationKind.Fade;
+            box.AnimationDurationSeconds = 0.5;
+            box.AnimationDelaySeconds = 0.25;
+
+            byte[] written = WriteToBuffer(deck);
+            XElement timing = ReadSlideXml(written, "ppt/slides/slide1.xml").Root.Element(P + "timing");
+            Require(timing != null, "the animated slide carries no p:timing");
+            Require(timing.Elements().Count() == 1 && timing.Elements().First().Name == P + "tnLst",
+                "p:timing must hold exactly one p:tnLst");
+
+            XElement rootCtn = timing.Element(P + "tnLst").Element(P + "par");
+            rootCtn = rootCtn == null ? null : rootCtn.Element(P + "cTn");
+            Require(rootCtn != null, "p:tnLst must hold a par wrapping one cTn");
+            Require((string)rootCtn.Attribute("nodeType") == "tmRoot",
+                "the root cTn must carry nodeType=\"tmRoot\": " + (string)rootCtn.Attribute("nodeType"));
+            Require((string)rootCtn.Attribute("dur") == "indefinite",
+                "the root dur must be indefinite: " + (string)rootCtn.Attribute("dur"));
+            Require(rootCtn.Elements(P + "cTn").Count() == 0,
+                "two cTn siblings inside one par is exactly what CT_TLTimeNodeParallel forbids");
+
+            XElement seq = rootCtn.Element(P + "childTnLst") == null
+                ? null : rootCtn.Element(P + "childTnLst").Element(P + "seq");
+            Require(seq != null, "the sequence must live inside the root cTn's childTnLst");
+            XElement seqCtn = seq.Element(P + "cTn");
+            Require(seqCtn != null && (string)seqCtn.Attribute("nodeType") == "mainSeq",
+                "the sequence cTn must carry nodeType=\"mainSeq\"");
+
+            // 全树翻一遍：不许出现 indef；不许把类别写进 type；每个 cTn 的 id 必须唯一。
+            // Sweep the whole tree: no "indef", no kind smuggled into type, and every cTn id unique.
+            HashSet<string> ids = new HashSet<string>();
+            foreach (XElement element in timing.DescendantsAndSelf())
+            {
+                foreach (XAttribute attribute in element.Attributes())
+                {
+                    Require(attribute.Value != "indef",
+                        "the schema spelling is 'indefinite', not 'indef' (on " + attribute.Name + ")");
+                }
+                if (element.Name != P + "cTn") continue;
+                string id = (string)element.Attribute("id");
+                Require(!string.IsNullOrEmpty(id) && ids.Add(id),
+                    "duplicate or missing cTn id: " + id);
+            }
+
+            XElement effect = null;
+            foreach (XElement candidate in timing.Descendants(P + "cTn"))
+            {
+                if ((string)candidate.Attribute("presetClass") == "entr") effect = candidate;
+            }
+            Require(effect != null, "no entrance behaviour was written");
+            Require((string)effect.Attribute("nodeType") == "clickEffect",
+                "the effect node type is not written to nodeType: " + (string)effect.Attribute("nodeType"));
+
+            XElement set = effect.Element(P + "childTnLst") == null ? null : effect.Element(P + "childTnLst").Element(P + "set");
+            Require(set != null, "the entrance behaviour lost its visibility p:set");
+            Require(set.Descendants(A + "clrMapOvr").Count() == 0,
+                "a:clrMapOvr inside p:setTo is not part of the p:set content model");
+            XElement toValue = set.Element(P + "to") == null ? null : set.Element(P + "to").Element(P + "strVal");
+            Require(toValue != null && (string)toValue.Attribute("val") == "visible",
+                "p:set must end with p:to/p:strVal val=\"visible\"");
+            Require(set.Descendants(P + "attrName").Count() == 1,
+                "p:set must declare exactly one p:attrName");
+
+            // 往返：新形状仍要能读回类别、时长与延迟。
+            // Round trip: the new shape still reads back its kind, duration and delay.
+            OfficePresentation loaded = PptxReader.Load(written);
+            SlideShape back = loaded.Slides[0].Shapes[0];
+            Require(back.Animation == SlideAnimationKind.Fade,
+                "the animation kind did not read back: " + back.Animation);
+            Require(Math.Abs(back.AnimationDurationSeconds - 0.5) < 0.001,
+                "the animation duration did not read back: " + back.AnimationDurationSeconds);
+            Require(Math.Abs(back.AnimationDelaySeconds - 0.25) < 0.001,
+                "the animation delay did not read back: " + back.AnimationDelaySeconds);
+        }
+
+        /// <summary>
+        /// PT3 读端补齐（上下标与段落间距）：`Superscript`/`Subscript` 读端一直按 `a:rPr/@baseline` 还原，
+        /// 写端却从不输出；`lnSpc`/`spcBef`/`spcAft` 反过来——写端一直输出、读端从不读。两个方向都补齐后，
+        /// 「存进去再读回来」才真的等于存进去的东西。
+        /// PT3 read-side parity (super/subscript and paragraph spacing): the reader has always restored
+        /// `Superscript`/`Subscript` from `a:rPr/@baseline` while the writer never emitted it, and
+        /// `lnSpc`/`spcBef`/`spcAft` went the other way — always written, never read. With both directions
+        /// filled in, "save then load" finally equals what was saved.
+        /// </summary>
+        private static void RunBaselineAndSpacingRoundTripTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TextBoxShape box = slide.AddTextBox(40, 40, 520, 140, "基线");
+            Paragraph paragraph = box.Paragraphs[0];
+            paragraph.Inlines.Clear();
+
+            TextRun superscript = new TextRun("上标");
+            superscript.Format.Superscript = true;
+            TextRun subscript = new TextRun("下标");
+            subscript.Format.Subscript = true;
+            paragraph.Inlines.Add(superscript);
+            paragraph.Inlines.Add(subscript);
+            paragraph.LineSpacing = 1.5;
+            paragraph.SpaceBefore = 6.0;
+            paragraph.SpaceAfter = 9.0;
+
+            byte[] written = WriteToBuffer(deck);
+            OfficePresentation loaded = PptxReader.Load(written);
+            Paragraph back = ((TextBoxShape)loaded.Slides[0].Shapes[0]).Paragraphs[0];
+
+            Require(back.Inlines.Count == 2, "the two runs did not read back: " + back.Inlines.Count);
+            Require(((TextRun)back.Inlines[0]).Format.Superscript,
+                "superscript was lost: the writer never emits a:rPr/@baseline");
+            Require(((TextRun)back.Inlines[1]).Format.Subscript,
+                "subscript was lost: the writer never emits a:rPr/@baseline");
+            Require(Math.Abs(back.LineSpacing - 1.5) < 0.0001,
+                "line spacing did not read back: " + back.LineSpacing);
+            Require(Math.Abs(back.SpaceBefore - 6.0) < 0.0001,
+                "space before did not read back: " + back.SpaceBefore);
+            Require(Math.Abs(back.SpaceAfter - 9.0) < 0.0001,
+                "space after did not read back: " + back.SpaceAfter);
         }
 
         /// <summary>取幻灯片部件里第一个 <c>p:transition</c>（带时长时它住在 mc:Choice 里）。 Takes the first <c>p:transition</c> in a slide part, which lives inside mc:Choice when a duration is present.</summary>

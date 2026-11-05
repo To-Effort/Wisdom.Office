@@ -33,6 +33,9 @@ namespace Wisdom.Word
         /// <summary>OPC 包关系命名空间，用于解析 *.rels 文件。The OPC package-relationships namespace used to parse *.rels files.</summary>
         public static readonly XNamespace PackageRels = "http://schemas.openxmlformats.org/package/2006/relationships";
 
+        /// <summary>单个 XML 部件允许的元素嵌套层数上限。The ceiling on element nesting depth for one XML part.</summary>
+        private const int MaxXmlDepth = 512;
+
         /// <summary>父元素缺失时返回的空子元素序列（共享实例，避免逐次分配）。Shared empty child sequence returned when a parent is missing, avoiding a per-call allocation.</summary>
         private static readonly XElement[] EmptyElements = new XElement[0];
 
@@ -292,7 +295,47 @@ namespace Wisdom.Word
             using (MemoryStream stream = new MemoryStream(data, false))
             using (XmlReader reader = XmlReader.Create(stream, settings))
             {
-                return XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+                XDocument document = XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+                LimitElementDepth(document.Root);
+                return document;
+            }
+        }
+
+        /// <summary>
+        /// 把元素嵌套深度截到上限：达到上限的元素，其下级元素整体摘掉（文本与属性保留）。
+        /// XmlReaderSettings 没有 MaxDepth 可设，而模板填充会把包里的 XML 原样再序列化一次，
+        /// 两千层的恶意嵌套会让递归写出栈溢出（不可捕获，直接带走宿主进程），
+        /// 所以这里按「降级而不是失败」的口径截断，读取照常成功。
+        /// Truncates the element nesting to the ceiling: children of an element that already sits at the limit are
+        /// detached (text and attributes stay). XmlReaderSettings exposes no MaxDepth, and template filling
+        /// re-serialises a package's XML verbatim, so a two-thousand-level nesting would overflow the stack during
+        /// the recursive write — an uncatchable failure that kills the host process. Truncating keeps the read
+        /// working instead of failing the whole document.
+        /// </summary>
+        /// <param name="root">根元素，可为 null。The root element, may be null.</param>
+        private static void LimitElementDepth(XElement root)
+        {
+            if (root == null) return;
+            Stack<XElement> pending = new Stack<XElement>();
+            Stack<int> depths = new Stack<int>();
+            pending.Push(root);
+            depths.Push(1);
+            while (pending.Count > 0)
+            {
+                XElement current = pending.Pop();
+                int depth = depths.Pop();
+                if (depth >= MaxXmlDepth)
+                {
+                    List<XElement> excess = new List<XElement>();
+                    foreach (XElement child in current.Elements()) excess.Add(child);
+                    for (int i = 0; i < excess.Count; i++) excess[i].Remove();
+                    continue;
+                }
+                foreach (XElement child in current.Elements())
+                {
+                    pending.Push(child);
+                    depths.Push(depth + 1);
+                }
             }
         }
 
@@ -367,6 +410,15 @@ namespace Wisdom.Word
         /// <summary>已累计读取的字节数，用于配合 <see cref="OfficePackageLimits"/> 限制解压体积。Bytes read so far, used with <see cref="OfficePackageLimits"/> to cap the decompressed size.</summary>
         private long _totalBytes;
 
+        /// <summary>降级记录：部件存在但解析失败时写入，供调用方区分「缺失」与「坏了」。Downgrade notices, written when a part exists but fails to parse so callers can tell "missing" from "broken".</summary>
+        private readonly List<string> _warnings = new List<string>();
+
+        /// <summary>读取过程中产生的降级记录。Downgrade notices produced while reading.</summary>
+        public List<string> Warnings
+        {
+            get { return _warnings; }
+        }
+
         /// <summary>
         /// 基于已打开的 ZIP 包创建访问器。
         /// Creates an accessor around an opened ZIP archive.
@@ -378,8 +430,12 @@ namespace Wisdom.Word
         }
 
         /// <summary>
-        /// 读取并解析指定部件的 XML；部件缺失或 XML 非法时返回 null。
-        /// Reads and parses the XML of a part; returns null when the part is missing or the XML is invalid.
+        /// 读取并解析指定部件的 XML；部件缺失时返回 null，部件存在但 XML 非法时返回 null 并记一条降级记录。
+        /// 两者对调用方的含义不同：缺失是正常形态（例如没有页眉），解析失败意味着内容被丢弃，必须可见。
+        /// Reads and parses the XML of a part. A missing part returns null; a part that exists but is not
+        /// well-formed XML also returns null, with a downgrade notice recorded. The two mean different
+        /// things to the caller: absence is normal (no header, for instance), while a parse failure means
+        /// content was dropped and has to be visible.
         /// </summary>
         /// <param name="partPath">部件路径（如 word/document.xml）。The part path (e.g. word/document.xml).</param>
         /// <returns>解析出的文档，失败时为 null。The parsed document, or null on failure.</returns>
@@ -393,6 +449,10 @@ namespace Wisdom.Word
             }
             catch (XmlException)
             {
+                if (!string.IsNullOrEmpty(partPath))
+                {
+                    _warnings.Add("Part '" + partPath + "' is not well-formed XML and was skipped.");
+                }
                 return null;
             }
         }
@@ -514,9 +574,9 @@ namespace Wisdom.Word
 
         /// <summary>
         /// 按关系 ID 加载图片：解析目标部件并构造 <see cref="OfficeImage"/>；
-        /// 部件缺失、读取失败或格式不是 PNG/JPEG 时返回 null。
+        /// 部件缺失、读取失败或魔数无法识别时返回 null。
         /// Loads an image by relationship id: resolves the target part and builds an <see cref="OfficeImage"/>;
-        /// returns null when the part is missing, cannot be read, or is neither PNG nor JPEG.
+        /// returns null when the part is missing, cannot be read, or its magic bytes are not a known image format.
         /// </summary>
         /// <param name="partPath">引用图片的部件路径。The part path that references the image.</param>
         /// <param name="relationshipId">图片关系的 ID。The id of the image relationship.</param>
@@ -536,7 +596,10 @@ namespace Wisdom.Word
             {
                 return null;
             }
-            return image.Format == OfficeImageFormat.Png || image.Format == OfficeImageFormat.Jpeg ? image : null;
+            // GIF/BMP/TIFF/EMF/WMF 也要带走：只认 PNG/JPEG 会让旧文档里的插图在读写往返中凭空消失。
+            // GIF, BMP, TIFF, EMF and WMF have to travel too: accepting only PNG and JPEG made the illustrations
+            // of older documents vanish during a read-write round trip.
+            return image.Format == OfficeImageFormat.Unknown ? null : image;
         }
 
         /// <summary>

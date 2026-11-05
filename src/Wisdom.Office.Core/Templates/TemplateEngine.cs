@@ -234,7 +234,19 @@ namespace Wisdom.Office.Core
                 IFormattable formattable = value as IFormattable;
                 if (formattable != null)
                 {
-                    result = formattable.ToString(format, options.Culture);
+                    try
+                    {
+                        result = formattable.ToString(format, options.Culture);
+                    }
+                    catch (FormatException)
+                    {
+                        // 格式串来自模板、取值来自数据，一个坏格式不该让整份文档渲染失败：
+                        // 退回不带格式的默认转换，值仍然出现。
+                        // The format string comes from the template and the value from the data, so one bad
+                        // format must not fail the whole render: fall back to the unformatted conversion and
+                        // let the value appear anyway.
+                        result = Convert.ToString(value, options.Culture);
+                    }
                 }
                 else
                 {

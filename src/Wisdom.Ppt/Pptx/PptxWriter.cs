@@ -1004,6 +1004,13 @@ namespace Wisdom.Ppt
                 if (format.Italic) el.Add(new XAttribute("i", "1"));
                 if (format.Underline) el.Add(new XAttribute("u", "sng"));
                 if (format.Strikeout) el.Add(new XAttribute("strike", "sngStrike"));
+                // 上下标由 a:rPr/@baseline 表达：上标 +30%、下标 -25%，与 PowerPoint 的取值一致。
+                // 读端一直按这个属性还原 Superscript/Subscript，写端过去从不输出，于是往返一次就丢。
+                // Super- and subscript are expressed by a:rPr/@baseline (+30% and -25%, the values PowerPoint
+                // uses). The reader has always restored Superscript/Subscript from that attribute, but the
+                // writer never emitted it, so a round trip dropped it.
+                if (format.Superscript) el.Add(new XAttribute("baseline", "30000"));
+                else if (format.Subscript) el.Add(new XAttribute("baseline", "-25000"));
                 if (format.HasExplicitColor)
                 {
                     el.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", format.Color.ToHex()))));
@@ -1905,109 +1912,164 @@ namespace Wisdom.Ppt
             {
                 if (shapes == null || shapes.Count == 0) return null;
                 bool autoAdvance = slide.AdvanceAfterSeconds > 0;
-                int idCursor = 2;
-                XElement behaviors = new XElement(P + "childTnLst");
+                // id 全局唯一：过去根节点与主序列节点都用 "1"，严格的 CT_TLTimeNode 校验直接判重。
+                // Ids are unique across the tree; the root and the main sequence used to share "1", which a
+                // strict CT_TLTimeNode check rejects as a duplicate.
+                int nextId = 3;
+                XElement groups = new XElement(P + "childTnLst");
                 for (int i = 0; i < shapes.Count; i++)
                 {
                     SlideShape shape = shapes[i];
                     int delay = shape.AnimationDelaySeconds > 0 ? RoundToInt(shape.AnimationDelaySeconds * 1000.0) : 0;
                     bool autoFirst = i == 0 && autoAdvance;
 
-                    XElement outer = new XElement(P + "cTn",
-                        new XAttribute("id", IntStr(idCursor++)),
+                    int groupId = nextId++;
+                    int delayId = nextId++;
+                    int effectId = nextId++;
+                    int setId = nextId++;
+                    int behaviorId = nextId++;
+                    XElement effect = CreateEffectNode(shape, ids[i], effectId, setId, behaviorId,
+                        autoFirst ? "afterEffect" : "clickEffect");
+
+                    // 三层：触发节点（单击=indefinite / 自动=0）→ 延迟节点（数值毫秒）→ 效果节点。
+                    // PowerPoint 对「单击后延迟」正是这样写：延迟单独占一个 cTn，挂在触发节点与效果节点之间。
+                    // 每一层都用 par > cTn 包装，因为 CT_TLTimeNodeList 只接受 par/seq，裸 cTn 不是合法子元素。
+                    // Three levels: the trigger node (indefinite on click, 0 for automatic), the delay node
+                    // (milliseconds), and the effect node. That is exactly how PowerPoint encodes "delay after
+                    // click": the delay gets its own cTn between the trigger and the effect. Each level is
+                    // wrapped in par > cTn because CT_TLTimeNodeList only accepts par/seq, never a bare cTn.
+                    XElement delayNode = new XElement(P + "cTn",
+                        new XAttribute("id", IntStr(delayId)),
                         new XAttribute("fill", "hold"),
-                        new XAttribute("type", autoFirst ? "afterEffect" : "clickEffect"),
                         new XElement(P + "stCondLst",
-                            new XElement(P + "cond",
-                                new XAttribute("delay", autoFirst ? IntStr(delay) : "indef"),
-                                new XAttribute("st", autoFirst ? "afterEvent" : "indef"))));
-                    int behaviorId = idCursor;
-                    idCursor += 4;
-                    XElement inner = new XElement(P + "cTn",
-                        new XAttribute("id", IntStr(idCursor++)),
-                        new XAttribute("dur", "indef"),
-                        new XAttribute("restart", "whenNotActive"),
+                            new XElement(P + "cond", new XAttribute("delay", IntStr(delay)))),
+                        new XElement(P + "childTnLst", new XElement(P + "par", effect)));
+                    XElement group = new XElement(P + "cTn",
+                        new XAttribute("id", IntStr(groupId)),
                         new XAttribute("fill", "hold"),
                         new XElement(P + "stCondLst",
-                            new XElement(P + "cond", new XAttribute("delay", "0"))),
-                        CreateBehaviorNode(shape, ids[i], behaviorId));
-                    behaviors.Add(new XElement(P + "par", outer, inner));
+                            new XElement(P + "cond", new XAttribute("delay", autoFirst ? "0" : "indefinite"))),
+                        new XElement(P + "childTnLst", new XElement(P + "par", delayNode)));
+                    groups.Add(new XElement(P + "par", group));
                 }
 
                 XElement seq = new XElement(P + "seq",
                     new XAttribute("concurrent", "1"),
                     new XAttribute("nextAc", "seek"),
                     new XElement(P + "cTn",
-                        new XAttribute("id", "1"),
-                        new XAttribute("dur", "indef"),
-                        new XAttribute("restart", "whenNotActive"),
-                        new XAttribute("fill", "hold"),
-                        new XAttribute("type", "mainSeq"),
-                        behaviors));
+                        new XAttribute("id", "2"),
+                        new XAttribute("dur", "indefinite"),
+                        new XAttribute("nodeType", "mainSeq"),
+                        groups),
+                    new XElement(P + "prevCondLst",
+                        new XElement(P + "cond",
+                            new XAttribute("evt", "onPrev"),
+                            new XAttribute("delay", "0"),
+                            new XElement(P + "tgtEl", new XElement(P + "sldTgt")))),
+                    new XElement(P + "nextCondLst",
+                        new XElement(P + "cond",
+                            new XAttribute("evt", "onNext"),
+                            new XAttribute("delay", "0"),
+                            new XElement(P + "tgtEl", new XElement(P + "sldTgt")))));
+                // 根节点：nodeType="tmRoot" 加 childTnLst，seq 必须住在它里面而不是与它平级。
+                // The root node: nodeType="tmRoot" with a childTnLst, and seq lives inside it rather than
+                // sitting beside it.
                 return new XElement(P + "timing",
                     new XElement(P + "tnLst",
                         new XElement(P + "par",
                             new XElement(P + "cTn",
                                 new XAttribute("id", "1"),
-                                new XAttribute("dur", "indef"),
+                                new XAttribute("dur", "indefinite"),
                                 new XAttribute("restart", "never"),
-                                new XAttribute("fill", "hold")),
-                            seq)));
+                                new XAttribute("nodeType", "tmRoot"),
+                                new XElement(P + "childTnLst", seq)))));
             }
 
-            /// <summary>生成单个形状入场动画的行为 <code>p:cTn</code>：preset 属性、spid 目标与效果子节点。
-            /// Builds one shape's entrance behavior <code>p:cTn</code>: preset attributes, the spid target and the effect child.</summary>
+            /// <summary>
+            /// 生成单个形状的入场行为 <code>p:cTn</code>：preset 属性、子节点列表（可见性 set 加效果行为）。
+            /// Builds one shape's entrance behaviour <code>p:cTn</code>: the preset attributes and the child
+            /// list holding the visibility set plus the effect behaviour.
+            /// </summary>
             /// <param name="shape">带动画的形状。 The animated shape.</param>
             /// <param name="spid">形状的 cNvPr id。 The shape's cNvPr id.</param>
-            /// <param name="baseId">本行为的起始节点 id。 The first node id of this behavior.</param>
-            /// <returns>p:cTn 行为元素。 The behavior cTn element.</returns>
-            private static XElement CreateBehaviorNode(SlideShape shape, int spid, int baseId)
+            /// <param name="effectId">行为节点的 id。 The behaviour node id.</param>
+            /// <param name="setId">可见性 set 节点内 cTn 的 id。 The cTn id inside the visibility set.</param>
+            /// <param name="behaviorId">效果行为内 cTn 的 id。 The cTn id inside the effect behaviour.</param>
+            /// <param name="nodeType">clickEffect 或 afterEffect。 Either clickEffect or afterEffect.</param>
+            /// <returns>p:cTn 行为元素。 The behaviour cTn element.</returns>
+            private static XElement CreateEffectNode(SlideShape shape, int spid, int effectId, int setId,
+                int behaviorId, string nodeType)
             {
                 int duration = shape.AnimationDurationSeconds > 0
                     ? RoundToInt(shape.AnimationDurationSeconds * 1000.0)
                     : DefaultAnimationDuration(shape.Animation);
                 string spidText = IntStr(spid);
-                XElement effectNode = AnimationEffect(shape.Animation, spidText, baseId + 3);
-                XElement target = new XElement(P + "cTn",
-                    new XAttribute("id", IntStr(baseId + 1)),
-                    new XAttribute("dur", "1"),
-                    new XAttribute("type", "target"),
-                    new XElement(P + "stCondLst",
-                        new XElement(P + "cond", new XAttribute("delay", "indef"))),
-                    new XElement(P + "childTnLst",
-                        new XElement(P + "set",
-                            new XElement(P + "cBhvr",
-                                new XElement(P + "cTn",
-                                    new XAttribute("id", IntStr(baseId + 2)),
-                                    new XAttribute("dur", "1"),
-                                    new XAttribute("type", "attrStyle")),
-                                new XElement(P + "tgtEl",
-                                    new XElement(P + "spid", new XAttribute("val", spidText))),
-                                new XElement(P + "setTo",
-                                    new XElement(A + "clrMapOvr",
-                                        new XElement(A + "masterClrMapping")))))));
-                XElement effect = new XElement(P + "cTn",
-                    new XAttribute("id", IntStr(baseId)),
-                    new XAttribute("dur", IntStr(duration)),
-                    new XAttribute("presetId", AnimationPresetId(shape.Animation)),
+                XElement children = new XElement(P + "childTnLst",
+                    CreateVisibilitySet(spidText, setId),
+                    CreateEffectBehavior(shape.Animation, spidText, behaviorId, duration));
+                return new XElement(P + "cTn",
+                    new XAttribute("id", IntStr(effectId)),
+                    new XAttribute("presetID", AnimationPresetId(shape.Animation)),
                     new XAttribute("presetClass", "entr"),
                     new XAttribute("presetSubtype", AnimationPresetSubtype(shape.Animation)),
+                    // dur 写在行为节点上：读端按 cTn/@dur 还原时长，PowerPoint 对入场效果也这样落。
+                    // dur sits on the behaviour node: the reader restores the duration from cTn/@dur, and
+                    // PowerPoint writes entrance effects the same way.
+                    new XAttribute("dur", IntStr(duration)),
                     new XAttribute("fill", "hold"),
-                    new XAttribute("type", "effect"),
-                    new XAttribute("nodeType", "clickEffect"),
+                    new XAttribute("nodeType", nodeType),
+                    // 触发延迟记在外层组节点上（PowerPoint 就是这样写的），效果节点自己的 cond 恒为 0。
+                    // The trigger delay lives on the outer group node (which is how PowerPoint writes it), and
+                    // the effect node's own cond stays at zero.
                     new XElement(P + "stCondLst",
-                        new XElement(P + "cond", new XAttribute("delay", "indef"))),
-                    new XElement(P + "childTnLst", target, effectNode));
-                return effect;
+                        new XElement(P + "cond", new XAttribute("delay", "0"))),
+                    children);
             }
 
-            /// <summary>按动画类别生成 <code>p:childTnLst</code> 下的效果元素（animEffect/animMotion/animScale/bldP）。
-            /// Emits the effect element (animEffect/animMotion/animScale/bldP) for the animation kind.</summary>
+            /// <summary>
+            /// 生成入场前的可见性 <code>p:set</code>：cBhvr 里给 cTn、目标（<c>p:spTgt/@spid</c>）与
+            /// <c>p:attrNameLst</c>，再由 <c>p:to/p:strVal</c> 给出 "visible"。
+            /// 过去这里是 <c>p:setTo</c> 里塞一个 <c>a:clrMapOvr</c>，既不是 <c>p:set</c> 的内容模型，也没有意义。
+            /// Builds the pre-entrance visibility <code>p:set</code>: a cBhvr carrying the cTn, the target
+            /// (<c>p:spTgt/@spid</c>) and a <c>p:attrNameLst</c>, with <c>p:to/p:strVal</c> supplying "visible".
+            /// It used to put an <c>a:clrMapOvr</c> inside a <c>p:setTo</c>, which is neither part of the
+            /// <c>p:set</c> content model nor meaningful.
+            /// </summary>
+            /// <param name="spidText">形状 id 文本。 The shape id as text.</param>
+            /// <param name="setId">set 内 cTn 的 id。 The cTn id inside the set.</param>
+            /// <returns>p:set 元素。 The p:set element.</returns>
+            private static XElement CreateVisibilitySet(string spidText, int setId)
+            {
+                return new XElement(P + "set",
+                    new XElement(P + "cBhvr",
+                        new XElement(P + "cTn",
+                            new XAttribute("id", IntStr(setId)),
+                            new XAttribute("dur", "1"),
+                            new XAttribute("fill", "hold"),
+                            new XElement(P + "stCondLst",
+                                new XElement(P + "cond", new XAttribute("delay", "0")))),
+                        new XElement(P + "tgtEl",
+                            new XElement(P + "spTgt", new XAttribute("spid", spidText))),
+                        new XElement(P + "attrNameLst",
+                            new XElement(P + "attrName", "style.visibility"))),
+                    new XElement(P + "to",
+                        new XElement(P + "strVal", new XAttribute("val", "visible"))));
+            }
+
+            /// <summary>
+            /// 生成效果行为元素（animEffect / animMotion / animScale），统一挂上 cBhvr 的 cTn 与目标。
+            /// Split 用 <c>animEffect filter="barn(inVertical)"</c>——<c>p:bldP</c> 属于 <c>p:bldLst</c> 的构建清单，
+            /// 不是时间节点，塞进 childTnLst 同样不合法。
+            /// Builds the effect behaviour element (animEffect / animMotion / animScale) with the cBhvr's cTn
+            /// and target. Split uses <c>animEffect filter="barn(inVertical)"</c> because <c>p:bldP</c> belongs
+            /// to the <c>p:bldLst</c> build list rather than the time node list, so it is equally illegal here.
+            /// </summary>
             /// <param name="kind">动画类别。 Animation kind.</param>
             /// <param name="spidText">形状 id 文本。 The shape id as text.</param>
-            /// <param name="nodeId">效果节点 id。 The effect node id.</param>
-            /// <returns>p 命名空间下的效果元素（bldP 亦为 p 命名空间）。 The effect element in the presentation namespace.</returns>
-            private static XElement AnimationEffect(SlideAnimationKind kind, string spidText, int nodeId)
+            /// <param name="nodeId">行为 cTn 的 id。 The behaviour cTn id.</param>
+            /// <param name="duration">时长（毫秒）。Duration in milliseconds.</param>
+            /// <returns>行为元素。 The behaviour element.</returns>
+            private static XElement CreateEffectBehavior(SlideAnimationKind kind, string spidText, int nodeId, int duration)
             {
                 XElement behavior;
                 switch (kind)
@@ -2028,10 +2090,10 @@ namespace Wisdom.Ppt
                                 new XAttribute("x", "100000"), new XAttribute("y", "100000")));
                         break;
                     case SlideAnimationKind.Split:
-                        return new XElement(P + "bldP",
-                            new XAttribute("grp", "1"),
-                            new XAttribute("spid", spidText),
-                            new XAttribute("bldLst", "tx"));
+                        behavior = new XElement(P + "animEffect",
+                            new XAttribute("transition", "in"),
+                            new XAttribute("filter", "barn(inVertical)"));
+                        break;
                     case SlideAnimationKind.Wipe:
                         behavior = new XElement(P + "animEffect",
                             new XAttribute("transition", "in"),
@@ -2046,10 +2108,11 @@ namespace Wisdom.Ppt
                 behavior.Add(new XElement(P + "cBhvr",
                     new XElement(P + "cTn",
                         new XAttribute("id", IntStr(nodeId)),
-                        new XAttribute("dur", "1"),
-                        new XAttribute("type", "css1")),
+                        new XAttribute("dur", IntStr(duration)),
+                        new XElement(P + "stCondLst",
+                            new XElement(P + "cond", new XAttribute("delay", "0")))),
                     new XElement(P + "tgtEl",
-                        new XElement(P + "spid", new XAttribute("val", spidText)))));
+                        new XElement(P + "spTgt", new XAttribute("spid", spidText)))));
                 return behavior;
             }
 
@@ -2118,16 +2181,27 @@ namespace Wisdom.Ppt
                 return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
             }
 
-            /// <summary>生成 <code>docProps/app.xml</code>：应用名与幻灯片数。 Builds <code>docProps/app.xml</code> with the application name and slide count.</summary>
+            /// <summary>
+            /// 生成 <code>docProps/app.xml</code>：应用名与幻灯片数。
+            /// 元素次序按 ISO/IEC 29500 的 <c>CT_Properties</c> 序列给出（Company → Slides → Application → AppVersion），
+            /// 而不是 PowerPoint 实测写出的那种「Application 提前」次序——后者不满足架构定义的 sequence，
+            /// 严格校验会报错，而本部件只承载统计信息，按架构写不会有任何消费方损失。
+            /// Builds <code>docProps/app.xml</code> with the application name and slide count.
+            /// The elements follow the <c>CT_Properties</c> sequence in ISO/IEC 29500
+            /// (Company → Slides → Application → AppVersion) rather than the "Application first" order
+            /// PowerPoint actually emits; the latter violates the schema's sequence and fails strict
+            /// validation, while this part only carries statistics, so following the schema costs no consumer
+            /// anything.
+            /// </summary>
             /// <returns>扩展属性文档。 The extended-properties document.</returns>
             private XDocument CreateAppProperties()
             {
                 XNamespace ep = Ppt.ExtendedProperties;
                 XElement root = new XElement(ep + "Properties",
                     new XAttribute(XNamespace.Xmlns + "ep", ep.NamespaceName),
-                    new XElement(ep + "Application", "Wisdom.Ppt"),
-                    new XElement(ep + "Slides", IntStr(_slideCount)),
                     new XElement(ep + "Company", string.Empty),
+                    new XElement(ep + "Slides", IntStr(_slideCount)),
+                    new XElement(ep + "Application", "Wisdom.Ppt"),
                     new XElement(ep + "AppVersion", "1.0"));
                 return new XDocument(new XDeclaration("1.0", "UTF-8", "yes"), root);
             }

@@ -586,8 +586,8 @@ namespace Wisdom.Ppt
                 }
             }
 
-            /// <summary>在入场行为子树中解析目标形状：p:bldP/@spid 优先，其次第一个 p:spid/@val。
-            /// Resolves the behavior's target shape: p:bldP/@spid first, otherwise the first p:spid/@val.</summary>
+            /// <summary>在入场行为子树中解析目标形状：p:bldP/@spid 优先，其次 p:spTgt/@spid，最后 p:spid/@val。
+            /// Resolves the behavior's target shape: p:bldP/@spid first, then p:spTgt/@spid, and finally p:spid/@val.</summary>
             /// <param name="effect">入场行为 cTn。The entrance behavior cTn.</param>
             /// <returns>映射到的模型形状或 null。The mapped shape or null.</returns>
             private SlideShape ResolveTargetShape(XElement effect)
@@ -597,6 +597,13 @@ namespace Wisdom.Ppt
                 {
                     if (descendant.Name.Namespace != Ppt.Main) continue;
                     if (descendant.Name.LocalName == "bldP")
+                    {
+                        id = Ppt.ParseInt(Ppt.Attribute(descendant, "spid"), -1);
+                        if (id > 0) break;
+                    }
+                    // CT_TLTimeTargetElement 的规范写法是 p:spTgt/@spid；p:spid/@val 是旧版遗留形态。
+                    // The canonical CT_TLTimeTargetElement is p:spTgt/@spid; p:spid/@val is the legacy form.
+                    if (descendant.Name.LocalName == "spTgt")
                     {
                         id = Ppt.ParseInt(Ppt.Attribute(descendant, "spid"), -1);
                         if (id > 0) break;
@@ -637,26 +644,25 @@ namespace Wisdom.Ppt
                 XElement node = effect;
                 while (node != null && node.Name != Ppt.Main + "seq")
                 {
-                    // 触发节点既可能是带 stCondLst 直接子元素的 cTn，也可能是仅包着一个 cTn 的 par/clk。
-                    // A trigger node is either a cTn with a direct stCondLst or a par/clk wrapping a single cTn.
-                    XElement condition = node;
-                    if (condition.Name.LocalName != "cTn")
+                    // 逐级向上检查每个 cTn 自己的 stCondLst：PowerPoint 把「触发后延迟」记在外层组节点上，
+                    // 中间可能夹任意层 par/childTnLst，按「父节点的父节点」跳会跨过组节点。
+                    // Walk the ancestors element by element and inspect every cTn's own stCondLst:
+                    // PowerPoint records "delay after trigger" on the outer group node, and arbitrary
+                    // par/childTnLst layers can sit in between, so jumping two parents skips it.
+                    if (node.Name == Ppt.Main + "cTn")
                     {
-                        XElement only = FirstChild(condition, "cTn");
-                        if (only == null) { node = node.Parent == null ? null : node.Parent.Parent; continue; }
-                        condition = only;
-                    }
-                    XElement cond = FirstChild(Ppt.Child(condition, "stCondLst"), "cond");
-                    if (cond != null)
-                    {
-                        int delayMs;
-                        if (int.TryParse(Ppt.Attribute(cond, "delay"), NumberStyles.Integer, CultureInfo.InvariantCulture, out delayMs) && delayMs > 0)
+                        XElement cond = FirstChild(Ppt.Child(node, "stCondLst"), "cond");
+                        if (cond != null)
                         {
-                            shape.AnimationDelaySeconds = delayMs / 1000.0;
-                            break;
+                            int delayMs;
+                            if (int.TryParse(Ppt.Attribute(cond, "delay"), NumberStyles.Integer, CultureInfo.InvariantCulture, out delayMs) && delayMs > 0)
+                            {
+                                shape.AnimationDelaySeconds = delayMs / 1000.0;
+                                break;
+                            }
                         }
                     }
-                    node = node.Parent == null ? null : node.Parent.Parent;
+                    node = node.Parent;
                 }
             }
 
@@ -675,6 +681,10 @@ namespace Wisdom.Ppt
                         {
                             string filter = Ppt.Attribute(candidate, "filter");
                             if (filter != null && filter.StartsWith("wipe", StringComparison.OrdinalIgnoreCase)) return SlideAnimationKind.Wipe;
+                            // 分割在 OOXML 里是 barn 类擦除，不是 p:bldP（那是段落构建清单，不是时间节点）。
+                            // Split is a barn wipe in OOXML, not p:bldP (that is the paragraph build list,
+                            // not a time node).
+                            if (filter != null && filter.StartsWith("barn", StringComparison.OrdinalIgnoreCase)) return SlideAnimationKind.Split;
                             return SlideAnimationKind.Fade;
                         }
                     default: return SlideAnimationKind.None;
@@ -1026,6 +1036,32 @@ namespace Wisdom.Ppt
                 return paragraphs;
             }
 
+            /// <summary>
+            /// 读取行距：<c>a:lnSpc/a:spcPct@val</c> 是百分比（1/100000），换回模型的行距倍数；
+            /// 只认 spcPct——<c>spcPts</c> 表示固定磅值行距，统一模型用倍数表达，无法无损换算，宁可不写。
+            /// Reads line spacing: <c>a:lnSpc/a:spcPct@val</c> is a percentage (1/100000) and converts back to
+            /// the model's multiplier. Only spcPct is honoured; <c>spcPts</c> means a fixed point line height,
+            /// which the multiplier-based model cannot reproduce losslessly, so it is left alone.
+            /// </summary>
+            /// <param name="element">a:lnSpc 元素，可为 null。The a:lnSpc element, possibly null.</param>
+            /// <returns>行距倍数，缺失时为 0。The multiplier, or 0 when absent.</returns>
+            private static double ReadLineSpacing(XElement element)
+            {
+                XElement percent = Ppt.DrawingChild(element, "spcPct");
+                if (percent == null) return 0;
+                return Ppt.IntAttribute(percent, "val", 0) / 100000.0;
+            }
+
+            /// <summary>读取以磅为单位的段间距：<c>a:spcBef|a:spcAft/a:spcPts@val</c>（1/100 磅）。Reads a point spacing value from <c>a:spcBef|a:spcAft/a:spcPts@val</c> (1/100 pt).</summary>
+            /// <param name="element">a:spcBef 或 a:spcAft 元素，可为 null。The a:spcBef or a:spcAft element, possibly null.</param>
+            /// <returns>磅值，缺失时为 0。Points, or 0 when absent.</returns>
+            private static double ReadPointSpacing(XElement element)
+            {
+                XElement points = Ppt.DrawingChild(element, "spcPts");
+                if (points == null) return 0;
+                return Ppt.IntAttribute(points, "val", 0) / 100.0;
+            }
+
             /// <summary>读取单个 a:p 段落：pPr 提供对齐、缩进与列表标记，子元素提供文本运行与换行。Reads one a:p paragraph: pPr gives alignment, indentation and the list marker while children supply runs and line breaks.</summary>
             /// <param name="paragraphElement">a:p 元素。The a:p element.</param>
             /// <returns>读取出的段落。The parsed paragraph.</returns>
@@ -1039,6 +1075,16 @@ namespace Wisdom.Ppt
                     paragraph.LeftIndent = Ppt.ToPoints(ParseLong(Ppt.Attribute(pPr, "marL"), 0));
                     paragraph.FirstLineIndent = Ppt.ToPoints(ParseLong(Ppt.Attribute(pPr, "indent"), 0));
                     paragraph.ListMarker = ReadListMarker(pPr);
+                    // lnSpc/spcBef/spcAft 一直由写端输出、读端从不读取，往返一次行距与段间距就丢。
+                    // lnSpc is a percentage of the line (spcPct, 1/100000) and spcBef/spcAft are points
+                    // (spcPts, 1/100). lnSpc/spcBef/spcAft were always written but never read, so a round
+                    // trip dropped the line spacing and the paragraph spacing.
+                    double lineSpacing = ReadLineSpacing(Ppt.DrawingChild(pPr, "lnSpc"));
+                    if (lineSpacing > 0) paragraph.LineSpacing = lineSpacing;
+                    double spaceBefore = ReadPointSpacing(Ppt.DrawingChild(pPr, "spcBef"));
+                    if (spaceBefore > 0) paragraph.SpaceBefore = spaceBefore;
+                    double spaceAfter = ReadPointSpacing(Ppt.DrawingChild(pPr, "spcAft"));
+                    if (spaceAfter > 0) paragraph.SpaceAfter = spaceAfter;
                 }
                 foreach (XElement child in paragraphElement.Elements())
                 {
