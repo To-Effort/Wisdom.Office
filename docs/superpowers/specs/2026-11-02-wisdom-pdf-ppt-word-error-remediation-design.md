@@ -270,6 +270,13 @@
 - 目标行为：每条边按单元格落在网格的哪一格取声明——贴外圈的走六个方向各自的边，内部的走两条分隔线，跨行跨列的合并块按自身首末行列判定，`TableCell.Borders` 仍逐边优先。`TableBorders` 的默认六向同为 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。
 - 红测：2 行 3 列表格，六个方向各给不同颜色与线宽，逐格断言 `a:lnT`/`lnB`/`lnL`/`lnR` 的 `srgbClr@val` 与 `w` 落在该落的那份声明上。
 
+### PT13｜`BorderStyle.None` 的表格边线仍写 `a:solidFill`，无边框被反着执行　A
+
+- 位置：`src/Wisdom.Ppt/Pptx/PptxWriter.cs:1409-1420`（`CreateCellBorder` 取线色时无条件 `ln.Add(solidFill)`，从不看 `line.Style`）。两处对照就在同仓：`PptxWriter.cs:789-802` 给形状描边的 `None` 写 `a:noFill`；`src/Wisdom.Word/Docx/DocxWriter.cs:2040-2044` 给 `None` 写 `w:val="nil"`。
+- 后果：`Table.Borders = TableBorders.None()` 是统一模型里「去边框」的唯一写法（`WordLabels.cs:441`、`WorkbookToDocumentConverter.cs:355` 都在用它），存进 `.pptx` 得到的却是四条 0.5 磅黑色实线——声明被反着执行。读端又不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，往返一路看不出问题。
+- 目标行为：`BorderStyle.None` 写 `<a:lnX w cmpd algn><a:noFill/></a:lnX>`，其余线型的字节不变。
+- 红测：一张 `Borders = TableBorders.None()`、只把 `Top` 设回细线的表，逐格断言首行 `lnT` 是黑色实线、`lnB`/`lnL`/`lnR` 都是 `a:noFill`。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -402,6 +409,7 @@
 | `PT3` 结构档·文本框折行 | `TextBoxShape` 新增 public 可空字段 `WrapText`（纯增项，不破坏既有调用）。写端仍按「未设置 → `wrap="square"`」落，自家产物字节不变；差别在载入第三方稿：过去 `wrap="none"` 被读端完全忽略、写端一律钉成 square，那条不许折行的单行标题存一次盘就开始在框内折行。现在 `false` 写 `none`、`none` 读回 `false`；`square`/`emergency`/属性缺失一律读成 null（文件里没有任何一句「要折行」值得当成声明，`emergency` 本库模型也表达不了） | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」段落属性一段后补折行一段、「已知限制」补 `emergency` 与 true 不往返的边界；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「载入别人的稿子后那一行标题开始折行」 |
 | `PT11` | 双线不再写进 `a:prstDash`（`ST_PresetLineDashVal` 没有 `dbl` 这一档），改写成 `a:ln@cmpd="dbl"`；点线从 `sysDash`（长划）改成 `sysDot`。用过这两种线型的稿件在双线/点线两处字节变化，实线与虚线不动；读端补 `cmpd` 识别，并继续认历史文件里的 `prstDash val="dbl"`，旧稿读回仍是双线 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增线型一段、「已知限制」补「表格边线只出不进」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「双线边框存一次盘变成单线」 |
 | `PT12` | 表格四条边不再一律取 `InsideHorizontal`：贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线，合并块按自身首末行列判定，`TableCell.Borders` 逐边优先。`Table()` 的默认六向同为细黑线，没动过 `Borders` 的稿子一个字节不变；只有声明过非默认方向的稿子随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格边框一段，「已知限制」的「只出不进」改写为按六向落位；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「表格外圈加粗，保存后四条边一样粗」 |
+| `PT13` | 表格的「无边框」不再补一条实线：`BorderStyle.None` 的那条边写 `a:noFill`。用过 `TableBorders.None()` 的稿子字节随之变化（变化本身就是修复），其余线型一个字节不动；形状描边一直是这个口径，两条路径由此一致 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」的表格边框一段补这句；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「`Table.Borders` 设成 `TableBorders.None()`，保存后边框还在」 |
 
 ---
 
@@ -682,5 +690,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
     ```
 
   - 夹具是一张 2 行 3 列的表，六个方向各给一种颜色与线宽（外圈 3 磅四种色、内部 1 磅两色），逐格断言 `a:lnT`/`lnB`/`lnL`/`lnR` 的 `srgbClr@val` 与该取的色一致、`w` 落在 38100 或 12700 上——一张表同时盯住「方向有没有落位」和「线宽有没有落位」，也顺便钉住首行与末行、首列与末列的判定边界。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PT13` 表格无边框（`3986130` + `f19f842`）：`CreateCellBorder` 从不看线型，`BorderStyle.None` 也照样补 `a:solidFill`。
+  - 这条与 `PT3` 那批形状填充一档是同一个语义在两条路径上的落差：`CreateLine` 早在 `6dce2b6` 就学会「`None` 写 `a:noFill`」，表格边线留在原地——于是统一模型里唯一的「去边框」写法（`TableBorders.None()`，Word 侧 `WordLabels.cs:441` 与门面包 `WorkbookToDocumentConverter.cs:355` 都用它）进了 `.pptx` 变成四条黑色实线，声明被反着执行。同库 DOCX 给 `None` 写 `w:val="nil"`，仓内口径本来就一致，缺的只是这一处实现。
+  - 修法三行：`line.Style == BorderStyle.None` 时写 `a:noFill` 并就此收尾，`w`/`cmpd`/`algn` 三个属性照写（PowerPoint 也是这么写无填充的边）。顺带删掉 `line == null` 的分支——`ResolveEdges` 经 `PT12` 之后每条边都拿得到线，那个 null 是上一批留下的死路，留着只会让人以为还能没线。
+  - 修复前失败原文（`net8.0`，`net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: row 0 cell 0 lnB was 000000
+       at Wisdom.Office.Tests.Program.RunCellBorderNoneMeansNoLineTest() ... RemediationPptPhaseFourTests.cs:line 634
+    ```
+
+  - 夹具故意把「无线」与「有线」混在一张表里：`Borders = TableBorders.None()` 之后只把 `Top` 设回细黑线。断言首行 `lnT` 仍是 `000000`（证明没把「有线」那一档一起修没），其余三条边一律是 `<a:noFill/>`。`EdgeHex` 这个助手把缺失的边、无填充的边与没颜色的边写成不同占位串，失败消息直接说清文件里是什么。
+  - 字节口径：只有设过 `TableBorders.None()` 或某方向 `BorderStyle.None` 的稿子会变，那正是本条要修的差别；默认六向细实线的表与形状描边输出不动。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。

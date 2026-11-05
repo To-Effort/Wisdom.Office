@@ -154,7 +154,7 @@ table.Table.AddRow("华南", "384", "30%");
 
 线型分两处编码。`BorderLine.Style` 取 `None`、`Single`、`Dashed`、`Dotted`、`Double`：虚线与点线是**划线图案**，写进 `a:ln` 下的 `a:prstDash`（`dash` 与 `sysDot`）；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl` 这一档。从前写出器把 Double 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端又认不出来，双线边框存一次盘就静默降成单线；点线当时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线两条路径都按 `cmpd` 写双线，读端优先看 `cmpd="dbl"`，同时继续认旧文件里 `prstDash val="dbl"` 这份历史写法，早前版本存出的双线不会读成实线。单线与虚线的字节不变（`cmpd` 缺省即 `sng`，形状描边非双线时不写这个属性）。
 
-表格边框认六个方向。`Table.Borders` 的 `Top`/`Bottom`/`Left`/`Right` 管外圈那四条边，`InsideHorizontal`/`InsideVertical` 管内部的两条分隔线；写出器按单元格落在网格的哪一格来决定每条边取哪一份声明，跨多行多列的合并块按它自己的首末行列判定，`TableCell.Borders` 再逐边覆盖（四边的 `TableCellBorders` 优先于表格方向）。从前这四条边一律取 `InsideHorizontal`，另外五份声明连一个字节都写不出门——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。`TableBorders` 的六个方向默认都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。读端不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，所以表格边框仍是只出不进（见「已知限制」）。
+表格边框认六个方向。`Table.Borders` 的 `Top`/`Bottom`/`Left`/`Right` 管外圈那四条边，`InsideHorizontal`/`InsideVertical` 管内部的两条分隔线；写出器按单元格落在网格的哪一格来决定每条边取哪一份声明，跨多行多列的合并块按它自己的首末行列判定，`TableCell.Borders` 再逐边覆盖（四边的 `TableCellBorders` 优先于表格方向）。从前这四条边一律取 `InsideHorizontal`，另外五份声明连一个字节都写不出门——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。`TableBorders` 的六个方向默认都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。`BorderStyle.None` 是「这条边不画」，写出 `<a:lnT><a:noFill/></a:lnT>`（同库 DOCX 侧写 `w:val="nil"`，同一个意思）；从前这里不看线型，照旧补一条 `a:solidFill`，于是 `Table.Borders = TableBorders.None()` 存出门是一张满黑格的表，声明被反着执行。读端不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，所以表格边框仍是只出不进（见「已知限制」）。
 
 ## 入场动画、自动换页与主题深改
 

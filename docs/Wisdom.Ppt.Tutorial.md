@@ -548,6 +548,8 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 **表格外圈加粗，保存后四条边一样粗。** 已修。`Table.Borders` 有六个方向：`Top`/`Bottom`/`Left`/`Right` 是外圈四条边，`InsideHorizontal`/`InsideVertical` 是内部的两条分隔线。写出器过去只读 `InsideHorizontal`，四条边一律拿它当默认，其余五份声明在文件里查无此线——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。现在按单元格落在网格哪一格决定每条边取哪份声明，合并块按它自己的首末行列判定，`TableCell.Borders` 的四边优先、逐格覆盖表格方向。默认六个方向都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。要说边界：读端不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，表格边框只出不进，`Table.Borders` 不会从文件里回来。
 
+**`Table.Borders` 设成 `TableBorders.None()`，保存后边框还在。** 已修。「这条边不画」在文件里是一句显式的话：`<a:lnB><a:noFill/></a:lnB>`（DOCX 那边写 `w:val="nil"`，同一个意思）。写出器过去不看线型，四条边一律补一条 `a:solidFill`，撤边框的声明于是被反着执行——存出门是一张满黑格的表。现在 `BorderStyle.None` 写 `a:noFill`，其余线型的字节不变；形状描边一直就是这么写的，两条路径终于一致。
+
 **只想改字号，保存后连字体一起被换了。** 不会。写出器只把**显式设过**的字符属性落进 `<a:rPr>`：`run.Format.FontSize = 11` 只写 `sz="1100"`，字体与颜色仍由版式、母版决定。以前 `TextFormat` 构造器预置的 Arial / 11 磅 / 黑色会被当成调用者的意图，于是母版里 18pt 的主题字体被一个显式 `a:latin` 压成 11pt Arial。判定依据是 `TextFormat` 的三个只读标记 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor`：`new TextFormat()` 的预置值不点亮它们，`new TextFormat("Calibri", 18)` 三项都点亮。第 2 步里那句 `Format.FontSize = 11` 因此只影响字号，读回来的 `FontSize` 仍是 11（没写进文件的属性按模型默认值读回）。
 
 **图片读回来字节不对 / 打不开。** 只支持 PNG 与 JPEG；`.emf`、`.svg`、`.gif` 不解析。教程里那颗 1 x 1 的 PNG（70 字节）就是最省事的自造图片。
