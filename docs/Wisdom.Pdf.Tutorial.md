@@ -420,7 +420,10 @@ Console.WriteLine(filled);                          // 4
 
 各类型的取值口径：文本域原样写入（含换行、中文）；组合框/列表框给导出值，可编辑组合框也接受自由文本；
 复选框的 `true` 会翻译成该控件自己的勾选态名（本例 `/Yes`）；单选组可以给状态名、选项名或 1 起的序号，
-值记在父域 `/V` 上，各选项只同步自己的 `/AS`。签名域赋值会抛 `InvalidOperationException`。
+值记在父域 `/V` 上，各选项只同步自己的 `/AS`。签名域在任何填写入口都抛 `InvalidOperationException`——它的 `/V`
+是一份 `/Sig` 字典，配合域上的 `/ByteRange` 与 `/Contents` 标定签名区间，写进字符串就是把签好的文档改坏；
+批量填写的映射里点了签名域同样抛，抛出时先前各域已写进内存但尚未保存。名单从 `form.FillableFields` 取，
+父域、只读域、普通按钮与签名域都不在里面，照着它填保证写得进去。
 
 只想写值、把排版交给阅读器时用 `file.FillForm(values, false)`——此时 `/NeedAppearances` 会被置为 `true`，
 避免"值已改、外观还是旧的"被阅读器显示成旧值；随后调用 `GenerateFormAppearances()` 会生成外观并把它复位。
@@ -541,6 +544,8 @@ Console.WriteLine($"{pagesWithHeader}/{check.PageCount}");
 **单选组填了值但没有任何一项被选中。** 传入的必须是某一项的勾选态名（`/AP /N` 里的键）、选项部分名，或 1 起的序号；本库不会猜中文标签，遍历 `Children` 取 `OnState`（为空时退回 `Name`）就能列出合法取值。
 
 **别人的表单打开再存一次，选项名对不上了。** 已修。名称在文件里是字节：写出端把非 ASCII 名称按 UTF-8 展开成 `#HH`，读回端过去却一个字节还原一个字符，「中」回来成一串拉丁字母，载进来再存盘就变形一次；星外字符（成对代理）更是每个半边退化成 `?`，直接在文件里丢掉。现在两端成对——读回按 UTF-8 还原，写出的代理对按整个码位展开；把高位写成单字节的历史名称仍按逐字节读，不会多出替换符。同类口径也用于字体名与任何 `/Name` 键值。
+
+**批量填表单抛出 "Signature fields cannot be filled."。** 映射里点了签名域的名字，这是有意的拒绝：签名域的 `/V` 是一份 `/Sig` 字典，域上还有 `/ByteRange` 与 `/Contents` 标定签名在文件里的字节区间，写进一个字符串等于把签好的文档改坏。本库只读不填签名域，`SetFormFieldValue`、`FillForm` 与 `field.Value` 三条入口同一口径。名单改用 `form.FillableFields`，它不列签名域与普通按钮。
 
 **加水印后正文被盖住了。** 默认水印在背景层（`WatermarkLayer.Background`，排在原内容之前）；显式设成 `Foreground` 才会压在正文上，此时把 `Opacity` 调低一些。
 

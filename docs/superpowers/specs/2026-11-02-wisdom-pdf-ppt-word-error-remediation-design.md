@@ -205,6 +205,13 @@
 - 目标行为：读回端攒起名称字节按 UTF-8 解码，只有能原样编回同一串字节时才采用，否则退回逐字节（历史名称把高位写成单字节，硬按 UTF-8 解会得到替换符，等于凭空造字符）；写端把成对代理当一个码位展开。
 - 红测：目录上挂 `SetName("Label", "中A文")` 存盘读回，要求值不变且文件里确实是 UTF-8 展开的转义串；再加一枚星外字符要求四个 UTF-8 字节整体展开；控制用例读 `/Marked /A#80B`，要求仍按 `A`、`U+0080`、`B` 逐字节还原。
 
+### PD26｜签名域在填写入口被当成普通文本域覆写，可填写清单又把它列进来　A
+
+- 位置：`src/Wisdom.Pdf/Document/PdfFile.Forms.cs:946`——`WriteFieldValue` 的兜底分支，既不是 `Tx`/`Ch`/`Btn` 就一律 `Set("V", PdfString.Unicode(value))`；拒绝只写在 `src/Wisdom.Pdf/Document/PdfForm.cs:330` 的 `Value` setter 上；同文件 `FillableFields`（`:74-83`）的说明写着「不含父域与签名/按钮」，条件里独漏签名。
+- 后果：`PdfFile.SetFormFieldValue("sig", "x")` 与 `PdfFile.FillForm(map)` 能把签名域的 `/V`——一份 `/Sig` 字典，配域上的 `/ByteRange` 与 `/Contents` 标定签名在文件里的字节区间——换成一个字符串，签好的文档当场作废，而前者返回 `true`、后者的计数也把它算作已填，全程没有提示。「数字签名域，本库只读不填」这条承诺只守住了三条入口里的一条。补上入口拒绝之后，`FillableFields` 那份「照着填保证写得进去」的名单仍会把签名域递出来，成为同一缺陷的第二处落点。
+- 目标行为：拒绝移到唯一收口 `WriteFieldValue`，三条入口同一口径抛 `InvalidOperationException`，模型属性里的重复判定随之删除；`FillableFields` 按自身说明同时排除签名域。批量映射含签名域时抛出，先前各域已写进内存但尚未保存——这一点写进文档，不留「返回计数少一个」那种静默口径。
+- 红测：一页挂一个文本域与一份真稿形状的签名域（`/FT /Sig`、`/V` 指向 `/Sig` 字典、域上带 `/ByteRange` 与 `/Contents`）。控制用例先钉住文本域照常填得进去、模型属性本就拒绝写入；再要求 `SetFormFieldValue` 与 `FillForm` 同样抛出，存盘读回后 `/V` 仍解析成 `/Type /Sig` 字典，且 `FillableFields` 里查不到签名域。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -467,6 +474,7 @@
 | `PD23` | 页面自身没有 `/Resources` 时，`SetPageResource` 从「就地改写继承来的那一份」改为「按页复制一份、连分类组一起脱开再写」：登记不再串页，同名条目不再相互顶替。本库新建稿每页自带 `/Resources`，走不到这条，一字节不变；只有把资源挂在 `/Pages` 上的第三方稿，其水印与外观扁平化的资源名与分组归属随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「编辑既有 PDF 与水印」新增按页脱开一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「给第三方 PDF 逐页登记资源，另一页的同名条目被顶掉了」 |
 | `PD24` | 读端补认流字典的缩写键 `/F`（`/Filter`），与既认的 `/DP` 对齐：过去写成 `<< /F /Fl >>` 的正文按原字节交回、整页文字静默为空，现在照常解码。写出端从不发缩写，产出字节不变；`/F` 是整数标志时仍按无过滤器处理 | `src/Wisdom.Pdf/README.md`「解析 PDF」新增解码链一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的 PDF 在阅读器里显示正常，抽出来却是空的」 |
 | `PD25` | 名称读回端由「一个 `#HH` 一个字符」改为「攒起字节按 UTF-8 还原」，且只在能原样编回同一串字节时才采用，否则退回逐字节（历史高位单字节名不凭空造替换符）；写端把成对代理当一个码位展开，星外字符不再各编成 `?` 而丢失。纯 ASCII 名称的产物一字节不变；带非 ASCII 名称的第三方稿载入再存盘不再逐次增长，带星外字符的名称写出字节变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「解析 PDF」新增名称转义成对一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的表单打开再存一次，选项名对不上了」 |
+| `PD26` | 签名域在 `PdfFile.SetFormFieldValue`、`PdfFile.FillForm` 与 `PdfFormField.Value` 三条入口统一抛 `InvalidOperationException`（此前只有模型属性抛，另两条把 `/V` 的 `/Sig` 字典覆写成字符串并照样返回成功）；`PdfForm.FillableFields` 按其自身说明同时排除签名域。本库自产表单不含 `/Sig` 域，产出字节不变；带签名域的第三方稿不再被改坏，改坏的口径改为明确报错 | `src/Wisdom.Pdf/README.md` 表单一段改写拒绝口径与 `FillableFields` 取名单，「已知不支持」的表单一行改为「签名域不参与填写也不参与扁平化」；`docs/Wisdom.Pdf.Tutorial.md` 填写口径补一段、常见问题补「批量填表单抛出 Signature fields cannot be filled.」 |
 
 ---
 
@@ -796,6 +804,24 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 写端补代理对：`Escape` 遇到高位代理且后继是低位代理时按整个码位取子串再编码，此前半边代理各走 `Encoding.UTF8.GetBytes` 降级成 `?`（`0x3F`），星外字符在文件里直接丢了。
   - 字节口径：纯 ASCII 名称不受影响，本库默认产物一字节不变；带 BMP 非 ASCII 名称的第三方稿载入再存盘不再逐次增长（转义串长度稳定），带星外字符的名称写出字节变化——过去是 `?`，现在是四个 UTF-8 字节的转义，变化本身就是修复。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PD26` 签名域在填写入口被覆写（`759535c` 取证 + `110f198` 修复）：`WriteFieldValue` 的兜底分支把「既不是 Tx/Ch/Btn」的域一律按文本域写字符串 `/V`，而签名域的 `/V` 是一份 `/Sig` 字典；拒绝只挂在 `PdfFormField.Value` 上，同一个承诺在模型与文件两条入口上口径不一。
+  - 修复前失败原文（net8.0 取证；第一条挡住后第二条才可抵达）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: PdfFile.SetFormFieldValue wrote straight through to a /Sig field instead of refusing the way PdfFormField.Value does: the library promises signature fields are never filled
+      at Wisdom.Office.Tests.Program.RunSignatureFieldGuardTest() ... RemediationPhaseFourTests.cs:line 791
+    ```
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: PdfForm.FillableFields yields a signature field although its own summary says it excludes them
+      at Wisdom.Office.Tests.Program.RunSignatureFieldGuardTest() ... RemediationPhaseFourTests.cs:line 810
+    ```
+
+  - 收口点选在 `WriteFieldValue` 而不是补三条守卫：所有写入路径本就汇流到这里，模型属性里那句重复判定随之删掉，`PdfFormField.Value` 的注释改为指向同一个异常，口径只剩一处要维护。
+  - `FillableFields` 的说明早于修复就写着「不含父域与签名/按钮」，代码只滤了父域、只读与按钮；补上签名域是让代码回到文档承诺，不是新加限制。该属性此前在库内、文档与测试里都没有调用点，改动面只在读端枚举结果。
+  - 批量映射含签名域时选择抛出，而不是静默少计一个：`FillForm` 的返回值语义是「实际写入的字段数」，静默跳过会让调用者以为整批落地。抛出时先前各域已写进内存但尚未保存，这个中间态写进 README 与教程，不留悬念。
+  - 字节口径：本库自己生成的表单从不产出 `/FT /Sig` 域，默认产物一字节不变；带签名域的第三方稿过去一次填写就被改坏，现在 `/V` 原样保留——不再产出签名校验失败的 PDF 本身就是修复。
+  - 验证：修复后 `net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（红测只在 `net8.0` 取证，两条断言由同一次运行先后挡下）。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
   - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。

@@ -273,8 +273,11 @@ int filled = file.FillForm(values);                 // 填完统一生成外观�
 file.Save("form-filled.pdf");
 ```
 
-单字段用 `file.SetFormFieldValue("applicant.name", "李四")`，或直接 `field.Value = "李四"`；给签名域赋值会抛
-`InvalidOperationException`。`FillForm(values, false)` 只写值不生成外观，此时 `/NeedAppearances` 置为 `true` 交给阅读器排版，
+单字段用 `file.SetFormFieldValue("applicant.name", "李四")`，或直接 `field.Value = "李四"`。签名域在任何填写入口
+一律拒绝并抛 `InvalidOperationException`：它的 `/V` 是一份 `/Sig` 字典，配合域上的 `/ByteRange` 与 `/Contents`
+标定签名在文件里的字节区间，写进一个字符串等于把签好的文档改坏。`FillForm(values)` 的映射里含签名域名同样抛出，
+抛出时先前各域已写进内存但尚未保存。批量填写请从 `form.FillableFields` 取名单——这份清单不含父域、只读域、
+普通按钮与签名域，照着它填保证写得进去。`FillForm(values, false)` 只写值不生成外观，此时 `/NeedAppearances` 置为 `true` 交给阅读器排版，
 调用 `GenerateFormAppearances()` 后自动复位——所以"填了值但外观还是旧的"这种中间态不会在阅读器里显示错值。
 
 扁平化：把值烧进页面内容，控件与字段一并移除。
@@ -346,7 +349,7 @@ PdfReadLimits.MaxGlyphMapEntries = 50000;                 // 单个字体 CMap �
 ## 已知限制
 
 - 加密读写支持标准安全处理器（RC4-40、RC4-128、AES-128、AES-256），四种算法已与第三方阅读器双向验证；写出统一用 R6，读取兼容 R5。公钥加密与 Adobe 自定义安全处理器不在范围内。
-- 表单：支持 AcroForm 的读取、填写、外观生成与扁平化；XFA 只能整体剥离，不解析 XFA 模板；本包不生成新的表单字段，要给空白文档加控件请使用 `PdfFile` 的对象级 API；签名域与普通按钮不参与扁平化。
+- 表单：支持 AcroForm 的读取、填写、外观生成与扁平化；XFA 只能整体剥离，不解析 XFA 模板；本包不生成新的表单字段，要给空白文档加控件请使用 `PdfFile` 的对象级 API；签名域不参与填写也不参与扁平化，普通按钮同样不烧进页面。
 - 字体嵌入支持 TrueType `glyf` 轮廓；CFF/OpenType（`OTTO`）字体不能作为嵌入源（部分厂商以 `.otf` 后缀发布 TrueType 轮廓的字体可正常使用）。
 - PNG 不支持隔行扫描（interlaced）图片；图片支持 PNG 与 JPEG。
 - `GetTables()` 是启发式识别（基于文本位置与线条），复杂版式可能需要人工校正。
