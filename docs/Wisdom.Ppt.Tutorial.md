@@ -544,6 +544,8 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 **载入别人的演示稿存一次盘，那行标题开始折行。** 已修。「不许折行」在文件里是 `a:bodyPr@wrap="none"`——单行标题与竖排标签就是这么写的，文字超出右边界照样画出去。过去写端无论模型说没说都钉一个 `wrap="square"`，读端从不看这个属性，于是载入再存盘就把那行标题放进了折行模式：文本一个字没少，形状数也没变，只有版式静默改了。现在 `TextBoxShape.WrapText` 承载这件事，置 `false` 写 `none`、读回来还是 `false`；`true` 与没设置都写 `square`（PowerPoint 属性缺失时的默认，自家产物因此字节不变），回读得到 `null`——文件里没有一句「要折行」值得当成声明。`wrap="emergency"`（紧急收缩）不在模型里，读来当作没说过。本库的 PPT→PDF 渲染按绝对坐标逐段画行，本来就不折行，这个开关只影响写出的 `.pptx` 在 PowerPoint / WPS 里的样子。
 
+**双线边框存一次盘变成单线。** 已修。PresentationML 把线型拆在两个地方：虚线、点线是**划线图案**，写在 `a:ln` 下的 `a:prstDash`；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl`。过去写出器把 `BorderStyle.Double` 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端 `MapDashStyle` 认不出来一律回落 `Single`，双线存一次盘就降成单线；同批的还有点线，那时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线都按 `cmpd="dbl"` 写双线，点线写 `sysDot`；读端优先看 `cmpd`，并继续认旧文件里 `prstDash val="dbl"` 这份历史写法，所以早前版本存出的双线仍然读得回来。单线、虚线的字节没动（`cmpd` 缺省就是 `sng`，非双线时形状描边干脆不写这个属性）。要说边界：表格的 `a:lnL`/`lnR`/`lnT`/`lnB` 四条边线只出不进，读回不解析，所以表格边框不往返，形状描边的线型与颜色才会。
+
 **只想改字号，保存后连字体一起被换了。** 不会。写出器只把**显式设过**的字符属性落进 `<a:rPr>`：`run.Format.FontSize = 11` 只写 `sz="1100"`，字体与颜色仍由版式、母版决定。以前 `TextFormat` 构造器预置的 Arial / 11 磅 / 黑色会被当成调用者的意图，于是母版里 18pt 的主题字体被一个显式 `a:latin` 压成 11pt Arial。判定依据是 `TextFormat` 的三个只读标记 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor`：`new TextFormat()` 的预置值不点亮它们，`new TextFormat("Calibri", 18)` 三项都点亮。第 2 步里那句 `Format.FontSize = 11` 因此只影响字号，读回来的 `FontSize` 仍是 11（没写进文件的属性按模型默认值读回）。
 
 **图片读回来字节不对 / 打不开。** 只支持 PNG 与 JPEG；`.emf`、`.svg`、`.gif` 不解析。教程里那颗 1 x 1 的 PNG（70 字节）就是最省事的自造图片。

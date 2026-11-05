@@ -152,6 +152,8 @@ table.Table.AddRow("华南", "384", "30%");
 
 表格的结构开关同样只写模型里说过的话。`a:tblPr@firstRow` 只在**声明过**表头时写——判据是某一行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`；两者都没有时首行按普通数据行走，不会凭空加粗、变白。读回时 `firstRow` 被还原成首行的 `IsHeader`，所以声明过的表头能活过第二次保存（模型里没有第二个字段承载这件事）。隔行条纹（`bandRow`）在统一模型里没有对应字段，写出时不再恒带；单元格没设底色时也不补 `a:noFill`——那等于替调用者宣布「这格不许有底色」，会把 `tableStyleId` 本来要给的外观一并抹掉。列宽之外的整表样式（`tableStyleId`）固定为内置的一套，不开放选择。
 
+线型分两处编码。`BorderLine.Style` 取 `None`、`Single`、`Dashed`、`Dotted`、`Double`：虚线与点线是**划线图案**，写进 `a:ln` 下的 `a:prstDash`（`dash` 与 `sysDot`）；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl` 这一档。从前写出器把 Double 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端又认不出来，双线边框存一次盘就静默降成单线；点线当时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线两条路径都按 `cmpd` 写双线，读端优先看 `cmpd="dbl"`，同时继续认旧文件里 `prstDash val="dbl"` 这份历史写法，早前版本存出的双线不会读成实线。单线与虚线的字节不变（`cmpd` 缺省即 `sng`，形状描边非双线时不写这个属性）。
+
 ## 入场动画、自动换页与主题深改
 
 每个 `SlideShape` 都可以挂一个入场动画；写出器据此生成 `p:timing` 主序列（PowerPoint 原生动画节点），读回时按 `presetClass="entr"` 的行为节点还原类别、延迟与时长：
@@ -263,5 +265,6 @@ OfficeConverter.DocumentToPptx(document, "from-word.pptx");    // byte[] 重载�
 - 文本换行、自动字号、形状阴影与 3D 效果由 PowerPoint / WPS 运行时决定，本包只输出对应属性，不做排版模拟。
 - 列表符号只有 `Paragraph.ListMarker` 一个字段：没有标记就不写任何 bullet 子元素，符号由母版与版式继承决定。因此「显式关掉上层符号」（`a:buNone`）与「没设置过符号」在模型里是同一个值，读入带 `buNone` 的第三方演示稿再存盘时，那份显式关闭不会被保留。隔行条纹（`bandRow`）同理没有对应字段。
 - 折行只表达「不许折行」这一档：`TextBoxShape.WrapText` 置 `false` 才写 `wrap="none"`，`true` 与 `null` 在文件里是同一个样子（都写 `square`），回读只会得到 `null`；`wrap="emergency"`（紧急收缩）本库不建模，读来当作没说过。
+- 表格边线只出不进：写出时按 `Table.Borders.InsideHorizontal` 给每个单元格写四边 `a:lnL`/`lnR`/`lnT`/`lnB`（含双线的 `cmpd="dbl"` 与点线的 `sysDot` 编码），读回不解析这些边线，所以表格边框不往返；形状描边（`a:ln`）的线型与颜色照常往返。
 - 图片仅支持 PNG / JPEG。
 - 文本里 XML 1.0 不接受的字符（控制字符、未配对代理项）在写出前由 `OfficeXmlText` 剔除，避免一个脏字符让整个演示文稿保存失败；因此这类字符不会往返保留。

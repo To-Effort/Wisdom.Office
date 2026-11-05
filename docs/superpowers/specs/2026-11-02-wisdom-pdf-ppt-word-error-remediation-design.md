@@ -256,6 +256,13 @@
 - 目标行为：允许 0 尺寸（负值才拒绝），区分「读不到」与「读到 0」；非占位符形状保留 0 尺寸。
 - 红测：分隔线往返断言高度为 0。
 
+### PT11｜双线与点线被塞进 `prstDash`，产出枚举外的线型　A
+
+- 位置：写 `src/Wisdom.Ppt/Pptx/PptxWriter.cs:807-816`（`DashStyle` 给 `Double` 返回 `"dbl"`、给 `Dotted` 返回 `"sysDash"`），调用点 `:799-800`（形状描边 `a:ln`）与 `:1406-1407`（表格边线 `a:lnL`/`lnR`/`lnT`/`lnB`）；读 `PptxReader.cs:1193-1200`（`MapDashStyle` 的取值表里没有 `dbl`）。
+- 后果：`ST_PresetLineDashVal` 根本没有 `dbl` 这一档——双线不是划线图案，是**复合线**，规范写法是 `a:ln@cmpd="dbl"`（同一个写出器给表格边线就写了 `cmpd="sng"`，可见属性位置本来就在手边）。文件里落下一个枚举外的值，严格校验按坏属性处理；更要紧的是读端认不出来，`MapDashStyle` 一律回落 `Single`，双线边框存一次盘静默降成单线。点线写成 `sysDash`（长划图案），画出来是虚线而不是点。
+- 目标行为：`Double` 写 `cmpd="dbl"`（形状描边与表格边线两条路径同改），`Dotted` 写 `sysDot`；读端优先看 `cmpd`，同时继续认历史文件里的 `prstDash val="dbl"`，让 1.0.2 之前存出的双线仍然读得回来。实线与虚线的字节不动。
+- 红测：一份双线描边 + 点线描边 + 双线表格边线的稿子，断言文件里不出现 `prstDash val="dbl"`、双线形状的 `a:ln@cmpd="dbl"` 在位、点线落在圆点档、表格某条 `a:lnX@cmpd="dbl"` 在位，`PptxReader.Load` 回读 `Style` 仍是 `Double` 与 `Dotted`。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -386,6 +393,7 @@
 | `PT3` 结构档 | `a:tblPr` 从每张表恒写 `firstRow="1" bandRow="1"` 改为只在声明过表头（某行 `IsHeader` 或给过 `HeaderColor`）时写 `firstRow`，`bandRow` 因模型没有带状行字段而不再输出；未设底色的单元格从写 `a:noFill` 改为不写填充，补齐用的空格在数据行也不再写白色，`tableStyleId` 本该生效的整表外观因此重新可见。新写出的无人声明表头的表格字节随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格结构档一段；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节注意事项补「表头要声明才有表头」一条、常见问题补「表格首行没有表头的样子」；读端新增把 `a:tblPr@firstRow` 读回 `TableRow.IsHeader`，旧形状（恒写 firstRow 的历史文件）照常读取，其首行按表头认，二次写出不掉样式 |
 | `PT3` 结构档·段落符号 | 每段末尾的 `a:buNone` 不再无条件写出：无 `ListMarker` 时不写任何 bullet 子元素，全段无属性时连 `a:pPr` 一并省略。自家母版与版式不定义符号，故新建产物字节不变；差别在载入第三方稿再存盘——过去那份逐段压制等于关掉母版里的项目符号，现在符号继承照常生效。代价是「显式关掉符号」与「未设置」在模型里仍同一个值，来稿中的 `buNone` 存盘后不保留 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增段落属性一段（含这条边界）；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「用本库打开别人的演示稿再存盘，列表的项目符号全消失了」 |
 | `PT3` 结构档·文本框折行 | `TextBoxShape` 新增 public 可空字段 `WrapText`（纯增项，不破坏既有调用）。写端仍按「未设置 → `wrap="square"`」落，自家产物字节不变；差别在载入第三方稿：过去 `wrap="none"` 被读端完全忽略、写端一律钉成 square，那条不许折行的单行标题存一次盘就开始在框内折行。现在 `false` 写 `none`、`none` 读回 `false`；`square`/`emergency`/属性缺失一律读成 null（文件里没有任何一句「要折行」值得当成声明，`emergency` 本库模型也表达不了） | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」段落属性一段后补折行一段、「已知限制」补 `emergency` 与 true 不往返的边界；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「载入别人的稿子后那一行标题开始折行」 |
+| `PT11` | 双线不再写进 `a:prstDash`（`ST_PresetLineDashVal` 没有 `dbl` 这一档），改写成 `a:ln@cmpd="dbl"`；点线从 `sysDash`（长划）改成 `sysDot`。用过这两种线型的稿件在双线/点线两处字节变化，实线与虚线不动；读端补 `cmpd` 识别，并继续认历史文件里的 `prstDash val="dbl"`，旧稿读回仍是双线 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增线型一段、「已知限制」补「表格边线只出不进」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「双线边框存一次盘变成单线」 |
 
 ---
 
@@ -642,4 +650,16 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 夹具做法：新 API 在修复前不存在，红测不能靠「引用一个还不存在的字段」，于是从文件侧取证——写一份两个文本框的稿子，把第一个 `bodyPr` 的属性原文改成 `none`（内存重打包，新增 `SlideEntryText`、`RewriteZipEntryText`、`ReadBodyPrs` 三个助手），`Load` 后二次写出，断言第一个仍是 `none`、对照格仍是 `square`。转绿之后再补模型侧：声明 `false` 写得出 `none`，声明 `true` 与没说过都写 `square` 且都读回 null，第二次写出与第一次同形。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。本库 PPT→PDF 渲染器按绝对坐标逐段画行、本就不做折行，`wrap` 不参与自家渲染，这个字段只影响写出的 `.pptx` 在 PowerPoint / WPS 里的表现。
   - `PT3` 的读端补齐到这里收口为「`wrap` 已补」；主题 accent（`a:schemeClr`）、超链接、组合形状与旋转翻转仍按 `§11.13` 的排期另开条目。
+- `PT11` 线型编码（`805bfdf` + `a5c4c0e`）：条目为本轮新发现，§5 补的是同一件事的登记——`DashStyle` 把两种线型塞进了一个装不下它们的位置。
+  - 双线不是划线图案而是**复合线**，规范编码在 `a:ln@cmpd="dbl"`；`ST_PresetLineDashVal` 的取值集合里没有 `dbl`，旧写法既产出一个枚举外的值，又让读端 `MapDashStyle`（取值表里同样没有 `dbl`）回落 `Single`——双线存一次盘成单线，与 `PT3` 那批「静默改版式」同一种后果，只是这次坏在写端自己造了一个非法值。点线更直白：`sysDash` 是长划图案，点线该写 `sysDot`，画出来一直是虚线。
+  - 修法两条路径同改：形状描边 `CreateLine` 在 `Double` 时补 `cmpd="dbl"`（其余线型不写这个属性，缺省即 `sng`，实线/虚线字节不动），表格边线 `CreateCellBorder` 本就以 `cmpd="sng"` 起头，改成双线时落 `dbl`；`DashStyle` 只留 `dash` 与 `sysDot` 两档，双线返回 null。读端 `ReadOutline` 先看 `cmpd="dbl"`，`MapDashStyle` 继续把 `dbl` 认成 `Double`，为的是历史文件——1.0.2 之前存出的那份非法值读回来仍然是双线，不改掉用户的稿子。
+  - 修复前失败原文（`net8.0`，`net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a:prstDash/@val was written as "dbl", which is a compound-line value, not a dash pattern
+       at Wisdom.Office.Tests.Program.RunRemediationPptPhaseFourTest() ... RemediationPptPhaseFourTests.cs:line 28
+    ```
+
+  - 夹具是三件东西同页：双线描边矩形、点线描边矩形、一张把 `Borders.InsideHorizontal` 设成双线的表格。断言分四层——整页 `a:prstDash` 里不得出现 `dbl`（枚举外值本身就是缺陷证据，不必等读端）、双线形状的 `a:ln@cmpd` 必须是 `dbl`、点线形状的 `prstDash val` 必须落在圆点档、表格里至少一条 `a:lnL/lnR/lnT/lnB` 带 `cmpd="dbl"`；最后 `PptxReader.Load` 回读断言两个 `Outline.Style` 仍是 `Double` 与 `Dotted`。表格那一路顺便暴露一件事：单元格的 `a:lnL/lnR/lnT/lnB` 读端从不解析（`PptxReader.cs:957-960` 自己写明），所以表格边框只出不进，这条已写进「已知限制」。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
