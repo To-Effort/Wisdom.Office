@@ -326,6 +326,13 @@
 - 目标行为：四条边逐格读回 `TableCell.Borders`；`w` 转磅、颜色取 `a:solidFill`、双线看 `cmpd="dbl"`、`a:noFill` 认成 `BorderStyle.None`（「这条边不画」）而不是「没说过」；四条全未声明时 `Borders` 保持 null，让表级六向做主。第二次保存逐边字节不变。
 - 红测：两张表（六向各异的一份 + `TableBorders.None()` 只留 `Top` 的一份），`PptxReader.Load` 后逐格断言四边颜色/线型回到声明值，再把载入的稿子写出一次，逐格四条边的 `w` 与颜色签名必须与第一次一致。
 
+### PT15｜教程与导读仍写「延迟只对第一个形状有效」，动画目标也按旧属性名描述　B（文档与行为不符）
+
+- 位置：`docs/Wisdom.Ppt.Tutorial.md` 第 11 步的四条规则与其后的常见问题「形状动画没出现」、`docs/Wisdom.Office.功能导读.md` 的动画一段。
+- 后果：`a892c2e` 把 `p:timing` 重写成「触发节点 → 延迟节点 → 效果节点」三层后，每个形状自己的 `AnimationDelaySeconds` 都落在延迟节点的数值 `delay` 上，读端逐级上溯取首个数值 `delay`（`src/Wisdom.Ppt/Pptx/PptxReader.cs:647-661`），第 2 个以后的形状延迟照样写得进、读得回；文档却还写着「其余形状一律 `indef`，两个形状都设 `1.2s` 回读 `1.2 / 0`」，照旧文档判断的用户会以为多形状延迟这条路不可用，白白绕开一个已经好的功能。动画目标的属性名同样过期：写出用 `p:spTgt/@spid`，读端两种形态都认，文档仍描述成 `p:spid/@val`。
+- 目标行为：两处文档改写为「逐形状写得出、读得回，差别只在触发方式」，属性名按 `p:spTgt/@spid` 写并注明旧形态兼容；本轮无产出字节变化，纠正的是口径。
+- 取证：新增 `RunNonFirstShapeAnimationDelayTest`——四个形状 `1.2 / 0.8 / 0.4 / 0` 秒，要求 `p:cond@delay` 里出现 1200/800/400，回读逐形状相等。该测试在当前代码上直接通过，正是「代码已对、文档过期」的证据。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -491,6 +498,7 @@
 | `PD26` | 签名域在 `PdfFile.SetFormFieldValue`、`PdfFile.FillForm` 与 `PdfFormField.Value` 三条入口统一抛 `InvalidOperationException`（此前只有模型属性抛，另两条把 `/V` 的 `/Sig` 字典覆写成字符串并照样返回成功）；`PdfForm.FillableFields` 按其自身说明同时排除签名域。本库自产表单不含 `/Sig` 域，产出字节不变；带签名域的第三方稿不再被改坏，改坏的口径改为明确报错 | `src/Wisdom.Pdf/README.md` 表单一段改写拒绝口径与 `FillableFields` 取名单，「已知不支持」的表单一行改为「签名域不参与填写也不参与扁平化」；`docs/Wisdom.Pdf.Tutorial.md` 填写口径补一段、常见问题补「批量填表单抛出 Signature fields cannot be filled.」 |
 | `PD27` | 字段的可继承 `/DA` 沿父域走完仍为空时退回取 AcroForm 上那一份（本域 `/DA` 仍优先）：过去只写在表单元上的文档默认外观读成空，生成外观时字号退回自动、颜色一律黑。`FT`/`Ff`/`Q` 不参与这一层（AcroForm 字典表没有这些条目）。本库不生成新表单字段、自产稿的 `/DA` 一直写在本域上，走不到回退分支，产出字节不变；表单级 `/DA` 的第三方稿其生成外观的 `Tf` 字号与 `rg` 颜色随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行继承顺序；`docs/Wisdom.Pdf.Tutorial.md` 表单一节补一段外观取色口径、常见问题补「填进去的值生成的外观跟表单其余部分不像同一份稿子」 |
 | `PD28` | `/DA` 补认 CMYK 填充算子 `k`/`c`，按无 ICC 的减法混色近似换算成 RGB：过去这类表单生成外观时一律画黑字。分隔色与自定义色彩空间仍按黑色起排，写进「已知不支持」。本库写出的外观正文本来就用 `rg`，自产稿一字节不变；只有 `/DA` 用 CMYK 的第三方稿，其生成外观里的 `rg` 三元组由 `0 0 0` 变成换算值（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行配色算子，「已知不支持」的表单一行补配色边界；`docs/Wisdom.Pdf.Tutorial.md` 表单「外观取色」一段补同一口径 |
+| `PT15` | 产出字节不变：写端与读端维持现状，纠正的是文档里「动画延迟只对第一个形状有效」与 `p:spid/@val` 这两个过期口径；补一条测试钉住逐形状的延迟往返 | `docs/Wisdom.Ppt.Tutorial.md` 第 11 步规则与常见问题「形状动画没出现」改写；`docs/Wisdom.Office.功能导读.md` 动画一段改写 |
 
 ---
 
@@ -862,6 +870,11 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 换算按最一般的减法混色（`R = (1-C)·(1-K)` 等），没有 ICC 配置可用，因此与带配置文件的阅读器存在轻微偏差；这一偏差属于原稿声明的那个颜色，比把整片值画成黑更接近真相。口径写进 README 与教程，附带边界：分隔色 `sc`/`scn` 与自定义色彩空间仍按黑色起排。
   - `k` 与 `c` 合并成一条分支：前者是 DeviceCMYK 填充、后者是「按当前色彩空间」填充，而 `/DA` 的当前色彩空间在没有 `/CS` 选择算子时就是 DeviceCMYK；大写 `K`/`C` 是描边色，与文本填充无关，不补。
   - 字节口径：本库写出的外观正文一律用 `rg` 表达填充色，读端多认两个算子不改变自己的产出；只有 `/DA` 用 CMYK 的第三方稿，其 `GenerateFormAppearances` 产物里的 `rg` 三元组变化（变化本身就是修复）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
+- `PT15` 动画延迟的文档口径过期（`c6a42e4` 取证 + 本轮改写）：`a892c2e` 之后写端给每个形状都写了自己的延迟节点，读端逐级上溯取数值 `delay`，两处文档却还按「只有第一个形状带得上延迟，其余写成 `indef`」叙述，动画目标也仍写成 `p:spid/@val`。
+  - 取证方式是加一条当前就该通过的测试而不是红测：四个形状 `1.2 / 0.8 / 0.4 / 0` 秒，写出后要求 `p:cond@delay` 里出现 `1200`、`800`、`400`，回读逐形状一致；一次通过，说明偏差只在文档侧。
+  - 触发语义保留原样并写清楚：本页设了 `AdvanceAfterSeconds` 时第一个动画形状写成 `nodeType="afterEffect"` 自动接播，其余形状仍是 `clickEffect`，它们的延迟含义是「单击之后再等这么久」；`indefinite` 只出现在触发节点上，读端不把它当延迟。
+  - 字节口径：写出与读取都没动，产出零变化；改的是 `docs/Wisdom.Ppt.Tutorial.md` 的规则与常见问题、`docs/Wisdom.Office.功能导读.md` 的动画一段。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。

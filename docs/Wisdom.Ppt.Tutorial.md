@@ -469,8 +469,8 @@ for (int i = 0; i < motionAgain.Shapes.Count; i++)
 四条规则：
 
 - **`AnimationDurationSeconds = 0` 是"取类别默认"，不是"没有动画"。** 默认时长 FlyIn / Zoom 各 1 秒，Fade / Wipe / Split 各 0.5 秒，实测第 3 个形状没设时长也回读出 `1s`。开关只有 `Animation = SlideAnimationKind.None`。
-- **延迟只对"自动播放的那一个"有意义。** 写出器把第一个动画的形状写成 `afterEvent`（配合 `AdvanceAfterSeconds`），其余形状仍是单击触发，所以第 2–5 个形状即便设了延迟也会写成 `indef`，回读成 0（实测两个形状都设 `1.2s`，回读 `1.2 / 0`）。
-- **动画目标是 `cNvPr id`，形状名字回读是 `Shape`。** `p:timing` 用 `p:spid/@val` 指形状，模型侧不保存这个 id 与 `Name` 的关系，按 `Shapes` 顺序对位即可。
+- **每个形状的延迟都写得出、读得回。** `AnimationDelaySeconds` 落在该形状自己的延迟节点上（`stCondLst/cond/@delay` 的毫秒数），两个形状都设 `1.2s` 时回读就是 `1.2 / 1.2`。差别只在触发方式：本页设了 `AdvanceAfterSeconds` 时第一个动画形状写成 `afterEffect`（自动接播），其余形状仍是单击触发，它们的延迟是「按下单击之后再等这么久」；没给延迟的形状写 `0`，回读也是 `0`。
+- **动画目标是 `cNvPr id`，形状名字回读是 `Shape`。** `p:timing` 用 `p:spTgt/@spid` 指形状（旧稿里的 `p:spid/@val` 读端仍认），模型侧不保存这个 id 与 `Name` 的关系，按 `Shapes` 顺序对位即可。
 - **只有入场动画。** 强调、退出、路径与媒体动画写出时不生成，读取时按 `presetClass="entr"` 过滤，第三方 PPTX 里的其他动画节点直接跳过。
 
 ## 12. 主题深改与 `.potx` 模板
@@ -536,7 +536,7 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 **切换动画没生效或时长丢了。** `TransitionDuration` 单位是秒，写出为 `p14:dur`（毫秒），包在 `mc:AlternateContent` 的 `mc:Choice` 里，`mc:Fallback` 只留 `spd="med"`——不支持 p14 扩展的老版本仍有切换，只是按 `spd` 走。`SlideTransitionKind.None` 不写效果节点，但 `AdvanceAfterSeconds > 0` 时仍会写一个只带 `advTm` 的 `p:transition`，自动换页不依赖切换效果。
 
-**形状动画没出现。** 检查三件事：`Animation` 是不是 `None`、这页或前一页是否需要先手动触发（动画只在放映模式播放，编辑视图看不到）、以及是不是只有第一个形状带上了延迟（其余形状的延迟写出为 `indef`，见第 11 步）。动画节点写在 `p:timing` 里，与 `p:transition` 是两个部件。
+**形状动画没出现。** 检查三件事：`Animation` 是不是 `None`、这页或前一页是否需要先手动触发（动画只在放映模式播放，编辑视图看不到）、以及第 2 个以后的形状本来就等单击——它们的延迟是「单击之后再等这么久」，不是「自动播到那里」（见第 11 步）。动画节点写在 `p:timing` 里，与 `p:transition` 是两个部件。
 
 **形状颜色读回来是 null。** `FillColor` 是 `OfficeColor?`，null 表示继承版式/主题色，不是丢失。
 
