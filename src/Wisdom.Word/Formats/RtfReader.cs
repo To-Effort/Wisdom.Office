@@ -1482,6 +1482,11 @@ namespace Wisdom.Word
                 {
                     BuildRowCells();
                     _table.Rows.Add(_row);
+                    // `Table.RepeatHeaderRow` 只有 DOCX 部件读写，构造默认却是 true；RTF 说得出的只有
+                    // `\trhdr` 这一行是不是表头，所以按 DOCX 读取端的同一规则由首行推导。
+                    // Only DOCX reads and writes Table.RepeatHeaderRow while the constructor defaults it to true;
+                    // RTF only says whether this row is a header, so derive the flag from row zero like DOCX does.
+                    if (_table.Rows.Count == 1) _table.RepeatHeaderRow = _row.IsHeader;
                     if (_columnCount == 0 && _slots.Count > 0)
                     {
                         _columnCount = _slots.Count;

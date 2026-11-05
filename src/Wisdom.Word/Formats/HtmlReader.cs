@@ -1100,7 +1100,16 @@ namespace Wisdom.Word
                     }
                     row.IsHeader = allHeader;
                 }
-                if (row.Cells.Count > 0) table.Rows.Add(row);
+                if (row.Cells.Count > 0)
+                {
+                    table.Rows.Add(row);
+                    // `Table.RepeatHeaderRow` 只有 DOCX 部件读写，构造默认却是 true；HTML 只说得出「这一行是不是表头」，
+                    // 所以按 DOCX 读取端的同一规则由首行推导，否则转这一趟格式就凭空多出一条跨页重复。
+                    // Only DOCX reads and writes Table.RepeatHeaderRow, yet the constructor defaults it to true.
+                    // HTML can only say whether a row is a header, so derive the flag from row zero with the same
+                    // rule the DOCX reader uses; otherwise this hop gains a phantom repetition.
+                    if (table.Rows.Count == 1) table.RepeatHeaderRow = row.IsHeader;
+                }
                 maxColumns = Math.Max(maxColumns, CountEffectiveColumns(row));
             }
             if (table.Columns.Count == 0)

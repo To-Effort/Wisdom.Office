@@ -821,6 +821,11 @@ namespace Wisdom.Word
             }
 
             table.Rows.Add(row);
+            // `Table.RepeatHeaderRow` 只有 DOCX 部件读写，构造默认却是 true；ODT 的
+            // `table:table-header-rows` 只说得出哪些行是表头，所以按 DOCX 读取端的同一规则由首行推导。
+            // Only DOCX reads and writes Table.RepeatHeaderRow while the constructor defaults it to true;
+            // table:table-header-rows only names the header rows, so derive the flag from row zero like DOCX does.
+            if (table.Rows.Count == 1) table.RepeatHeaderRow = row.IsHeader;
             grid.RowIndex++;
         }
 
