@@ -35,6 +35,7 @@ namespace Wisdom.Office.Tests
             RunWritersNeverTruncateTheOriginalTest();
             RunCorruptHeaderPartIsReportedTest();
             RunOdtPageCountFieldTest();
+            RunRtfTableBorderColorSurvivesTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -415,6 +416,72 @@ namespace Wisdom.Office.Tests
             List<string> docxInstructions = FieldInstructions(docxBack);
             Require(docxInstructions.Contains("NUMPAGES"),
                 "the DOCX control stopped carrying NUMPAGES: " + Join(docxInstructions));
+        }
+
+        /// <summary>
+        /// WE13：RTF 把表格边框的颜色登记进 <c>\colortbl</c>，正文里却从不写 <c>\brdrcf</c>，
+        /// 读端又把每条边的颜色硬写成黑色——红边框存一次盘就变黑边框。
+        /// WE13: RTF registers the table border colours in <c>\colortbl</c> but never writes <c>\brdrcf</c>,
+        /// and the reader hard-codes black, so a red border turns black on the first save.
+        /// </summary>
+        private static void RunRtfTableBorderColorSurvivesTest()
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection(PageSetup.A4());
+            Table table = new Table();
+            table.Columns.Add(new TableColumn(120));
+            table.Columns.Add(new TableColumn(120));
+            TableRow row = table.AddRow();
+            row.Cells.Add(new TableCell("甲"));
+            row.Cells.Add(new TableCell("乙"));
+            TableCellBorders borders = new TableCellBorders();
+            borders.Top = new BorderLine(BorderStyle.Single, 2.0, new OfficeColor(0xC0, 0x39, 0x2B));
+            borders.Left = new BorderLine(BorderStyle.Dashed, 1.5, new OfficeColor(0x1F, 0x4E, 0xA6));
+            row.Cells[0].Borders = borders;
+            section.Blocks.Add(table);
+
+            string rtf = RtfWriter.ToRtf(document);
+            Require(rtf.IndexOf("\\brdrcf", StringComparison.Ordinal) >= 0,
+                "the border colour was registered in \\colortbl but never named by the border itself: "
+                + RtfBorderExcerpt(rtf));
+
+            Table loaded = FindFirstTable(RtfReader.Parse(rtf).Sections[0].Blocks);
+            Require(loaded != null, "the table did not survive the RTF round trip");
+            TableCellBorders back = loaded.Rows[0].Cells[0].Borders;
+            Require(back != null && back.Top != null && back.Left != null,
+                "the coloured edges disappeared entirely on read back");
+            Require(HexOf(back.Top) == "C0392B", "a 2pt red top border read back as #" + HexOf(back.Top));
+            Require(HexOf(back.Left) == "1F4EA6", "a dashed blue left border read back as #" + HexOf(back.Left));
+
+            // 线型与线宽一直是能往返的，钉住这条界，免得改动把它们带坏。
+            // Style and width always survived; pin them so this change cannot break them.
+            Require(back.Top.Style == BorderStyle.Single && Math.Abs(back.Top.Width - 2.0) < 0.01,
+                "the top border lost its style/width: " + back.Top.Style + ", " + back.Top.Width);
+            Require(back.Left.Style == BorderStyle.Dashed && Math.Abs(back.Left.Width - 1.5) < 0.01,
+                "the left border lost its style/width: " + back.Left.Style + ", " + back.Left.Width);
+
+            // 控制：默认那张全黑细边框的表不该因此多出颜色登记，产物字节口径不变。
+            // Control: an all-black default table must not gain colour references, so its bytes stay as they were.
+            OfficeDocument plain = new OfficeDocument();
+            Section plainSection = plain.AddSection(PageSetup.A4());
+            Table plainTable = new Table();
+            plainTable.Columns.Add(new TableColumn(120));
+            plainTable.AddRow().Cells.Add(new TableCell("黑"));
+            plainSection.Blocks.Add(plainTable);
+            Require(RtfWriter.ToRtf(plain).IndexOf("\\brdrcf", StringComparison.Ordinal) < 0,
+                "a plain black border gained a redundant colour reference: "
+                + RtfBorderExcerpt(RtfWriter.ToRtf(plain)));
+        }
+
+        /// <summary>截取 RTF 里第一条单元格边框控制字附近的一小段。 Trims a short window around the first cell-border control word in the RTF.</summary>
+        /// <param name="rtf">完整 RTF 文本。The full RTF text.</param>
+        /// <returns>可读摘录。A readable excerpt.</returns>
+        private static string RtfBorderExcerpt(string rtf)
+        {
+            int index = rtf.IndexOf("\\clbrdrt", StringComparison.Ordinal);
+            if (index < 0) return "<no cell border written>";
+            int end = Math.Min(rtf.Length, index + 160);
+            return rtf.Substring(index, end - index).Replace("\n", " ");
         }
 
         /// <summary>收集文档里所有域指令。 Collects every field instruction in the document.</summary>
