@@ -40,6 +40,7 @@ namespace Wisdom.Office.Tests
             RunAbbreviatedFilterKeyTest();
             RunNameEscapeRoundTripTest();
             RunSignatureFieldGuardTest();
+            RunFormDefaultAppearanceInheritanceTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -818,6 +819,109 @@ namespace Wisdom.Office.Tests
             Require(savedType != null && savedType.Value == "Sig",
                 "the signature's /V no longer resolves to a /Sig dictionary: it now reads '"
                     + (savedType == null ? Describe(rawValue) : savedType.Value) + "'");
+        }
+
+        /// <summary>
+        /// PD27：<c>/DA</c> 是表单元里登记全文档默认外观的那一层，读端只沿父域回溯，走到顶就停。
+        /// PD27: /DA also lives on the AcroForm dictionary as the document-wide default, yet the reader walks
+        /// only up the parent chain and stops there.
+        /// </summary>
+        private static void RunFormDefaultAppearanceInheritanceTest()
+        {
+            PdfFile file = PdfFile.Load(BuildWatermarkSource("[0 0 612 792]", 0));
+            PdfReference page = file.GetPageReference(0);
+
+            // 表单级默认外观写 14 号纯蓝；一个控件不带自己的 /DA，另一个带 9 号纯红。
+            // The form-level default says 14pt pure blue; one widget carries no /DA of its own, the other 9pt red.
+            PdfDictionary acroForm = new PdfDictionary();
+            acroForm.SetString("DA", "/Helv 14 Tf 0 0 1 rg");
+            PdfArray fields = new PdfArray();
+            PdfArray annots = new PdfArray();
+            fields.Add(AddFormWidget(file, page, "da.inherited", null, annots));
+            fields.Add(AddFormWidget(file, page, "da.own", "/Helv 9 Tf 1 0 0 rg", annots));
+            acroForm.Set("Fields", fields);
+            file.GetPageDictionary(0).Set("Annots", annots);
+            file.MarkModified(page.Number);
+            file.Catalog.Set("AcroForm", file.AddObjectReference(acroForm));
+            file.MarkModified(file.CatalogNumber);
+
+            PdfForm form = file.GetForm();
+            Require(form.GetField("da.inherited") != null && form.GetField("da.own") != null,
+                "both text fields must be read back from the fixture");
+            Require(form.GetField("da.inherited").DefaultAppearance == "/Helv 14 Tf 0 0 1 rg",
+                "the field without its own /DA reads the default appearance as '"
+                    + form.GetField("da.inherited").DefaultAppearance
+                    + "' instead of the AcroForm document default /Helv 14 Tf 0 0 1 rg");
+            Require(form.GetField("da.own").DefaultAppearance == "/Helv 9 Tf 1 0 0 rg",
+                "a field's own /DA must still win over the form-level default, got '"
+                    + form.GetField("da.own").DefaultAppearance + "'");
+
+            file.SetFormFieldValue("da.inherited", "Hi");
+            file.SetFormFieldValue("da.own", "Hi");
+            file.GenerateFormAppearances();
+
+            string inherited = AppearanceBodyOf(file, "da.inherited");
+            Require(inherited.IndexOf(" 14 Tf", StringComparison.Ordinal) >= 0,
+                "the inherited size is missing from the generated appearance: " + Shorten(inherited));
+            Require(inherited.IndexOf("0 0 1 rg", StringComparison.Ordinal) >= 0,
+                "the inherited colour is missing from the generated appearance: " + Shorten(inherited));
+
+            string own = AppearanceBodyOf(file, "da.own");
+            Require(own.IndexOf(" 9 Tf", StringComparison.Ordinal) >= 0 && own.IndexOf("1 0 0 rg", StringComparison.Ordinal) >= 0,
+                "the field's own size and colour are missing from its appearance: " + Shorten(own));
+        }
+
+        /// <summary>
+        /// 新建一个文本控件，<c>/DA</c> 可为 null 以模拟「只靠表单级默认外观」的第三方稿。
+        /// Creates a text widget whose /DA may be null, imitating a third-party form that relies on the
+        /// document-wide default appearance.
+        /// </summary>
+        /// <param name="file">目标文件。The target file.</param>
+        /// <param name="page">所在页引用。The page reference.</param>
+        /// <param name="name">字段名。The field name.</param>
+        /// <param name="da">本域默认外观串，null 表示不写。The field's own default appearance; null writes nothing.</param>
+        /// <param name="annots">页面注释数组。The page annotation array.</param>
+        /// <returns>新字段的引用。The reference of the new field.</returns>
+        private static PdfReference AddFormWidget(PdfFile file, PdfReference page, string name, string da, PdfArray annots)
+        {
+            PdfDictionary field = new PdfDictionary();
+            field.SetName("Type", "Annot");
+            field.SetName("Subtype", "Widget");
+            field.SetName("FT", "Tx");
+            field.SetString("T", name);
+            field.Set("Rect", Rect(72, 600, 260, 616));
+            field.Set("P", page);
+            if (da != null) field.SetString("DA", da);
+            PdfReference reference = file.AddObjectReference(field);
+            annots.Add(reference);
+            return reference;
+        }
+
+        /// <summary>取一个字段当前 <c>/AP /N</c> 正文的 ASCII 文本。Reads the ASCII body of a field's current /AP /N stream.</summary>
+        /// <param name="file">目标文件。The target file.</param>
+        /// <param name="name">字段名。The field name.</param>
+        /// <returns>正文文本，缺外观时给占位串。The body, or a placeholder when no appearance exists.</returns>
+        private static string AppearanceBodyOf(PdfFile file, string name)
+        {
+            PdfFormField field = file.GetForm().GetField(name);
+            PdfDictionary dictionary = field == null ? null : file.GetObject<PdfDictionary>(field.ObjectNumber);
+            PdfObject apObject = dictionary == null ? null : dictionary.Get("AP");
+            PdfDictionary appearance = apObject as PdfDictionary;
+            if (appearance == null && apObject != null) appearance = file.Resolve(apObject) as PdfDictionary;
+            PdfObject normal = appearance == null ? null : appearance.Get("N");
+            PdfStream stream = normal as PdfStream;
+            if (stream == null && normal != null) stream = file.Resolve(normal) as PdfStream;
+            return stream == null ? "<no appearance>" : Encoding.ASCII.GetString(stream.Data);
+        }
+
+        /// <summary>把外观正文压成一行、截到 160 字，供失败信息引用。Flattens an appearance body to one line, cut to 160 chars, for failure messages.</summary>
+        /// <param name="body">外观正文。The appearance body.</param>
+        /// <returns>单行摘录。The single-line excerpt.</returns>
+        private static string Shorten(string body)
+        {
+            string one = body.Replace("\n", " ");
+            if (one.Length > 160) one = one.Substring(0, 160) + "...";
+            return one;
         }
 
         /// <summary>拼一份目录里只挂着页面树的夹具，供名称读写。Assembles a fixture whose catalog only carries the page tree, for name round-trips.</summary>
