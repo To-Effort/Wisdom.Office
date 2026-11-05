@@ -960,18 +960,33 @@ namespace Wisdom.Ppt
                     pPr.Add(new XElement(A + "spcAft", new XElement(A + "spcPts", new XAttribute("val", IntStr(RoundToInt(paragraph.SpaceAfter * 100.0))))));
                     any = true;
                 }
-                pPr.Add(CreateBullet(paragraph.ListMarker));
-                any = true;
+                XElement bullet = CreateBullet(paragraph.ListMarker);
+                if (bullet != null)
+                {
+                    pPr.Add(bullet);
+                    any = true;
+                }
                 if (!any) return null;
                 return pPr;
             }
 
-            /// <summary>生成项目符号子元素：无序用 buChar，有序（数字开头）用 buAutoNum，无标记用 buNone。 Builds the bullet child: buChar for unordered, buAutoNum for ordered (digit-prefixed) markers, buNone when there is no marker.</summary>
+            /// <summary>
+            /// 生成项目符号子元素：无序用 buChar，有序（数字开头）用 buAutoNum；没标记时返回 null，什么都不写。
+            /// 这里不能用 a:buNone 占位——buNone 是一条「关掉上层符号」的显式指令，写进每一段就等于把
+            /// 第三方母版与版式里定义好的项目符号全数压制；而「没标记」只是模型里没有这句话，
+            /// 该让继承链自己说话。本库自建的母版与版式从不定义符号，省掉这一句对自家产物毫无影响。
+            /// Builds the bullet child: buChar for unordered, buAutoNum for ordered (digit-prefixed) markers,
+            /// null for no marker. A buNone placeholder is not an option: buNone is an explicit instruction to
+            /// switch off the level's bullet, so emitting it on every paragraph suppresses bullets defined by
+            /// third-party masters and layouts. "No marker" means the model says nothing, and the inheritance
+            /// chain should be left to speak. This library's own masters and layouts never define bullets, so
+            /// omitting the child changes nothing in self-generated decks.
+            /// </summary>
             /// <param name="marker">列表标记文本。 List marker text.</param>
-            /// <returns>bullet 元素。 The bullet element.</returns>
+            /// <returns>bullet 元素；无标记时为 null。 The bullet element, or null when there is no marker.</returns>
             private static XElement CreateBullet(string marker)
             {
-                if (string.IsNullOrEmpty(marker)) return new XElement(A + "buNone");
+                if (string.IsNullOrEmpty(marker)) return null;
                 char first = marker[0];
                 if (first >= '0' && first <= '9')
                 {
