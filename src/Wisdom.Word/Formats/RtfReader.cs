@@ -1134,10 +1134,10 @@ namespace Wisdom.Word
                     case "clvertalt": Slot().VerticalAlignment = VerticalAlignment.Top; return;
                     case "clvertalc": Slot().VerticalAlignment = VerticalAlignment.Middle; return;
                     case "clvertalb": Slot().VerticalAlignment = VerticalAlignment.Bottom; return;
-                    case "clbrdrt": _borderTarget = 1; _borderStyle = null; _borderWidth = 0.5; return;
-                    case "clbrdrb": _borderTarget = 2; _borderStyle = null; _borderWidth = 0.5; return;
-                    case "clbrdrl": _borderTarget = 3; _borderStyle = null; _borderWidth = 0.5; return;
-                    case "clbrdrr": _borderTarget = 4; _borderStyle = null; _borderWidth = 0.5; return;
+                    case "clbrdrt": _borderTarget = 1; _borderStyle = null; _borderWidth = 0.5; _borderColorIndex = 0; return;
+                    case "clbrdrb": _borderTarget = 2; _borderStyle = null; _borderWidth = 0.5; _borderColorIndex = 0; return;
+                    case "clbrdrl": _borderTarget = 3; _borderStyle = null; _borderWidth = 0.5; _borderColorIndex = 0; return;
+                    case "clbrdrr": _borderTarget = 4; _borderStyle = null; _borderWidth = 0.5; _borderColorIndex = 0; return;
                     case "brdrs": case "brdrth": case "brdrsh": SetBorder(BorderStyle.Single); return;
                     case "brdrdash": case "brdrdashsm": SetBorder(BorderStyle.Dashed); return;
                     case "brdrdot": SetBorder(BorderStyle.Dotted); return;
@@ -1147,6 +1147,13 @@ namespace Wisdom.Word
                         if (control.Parameter.HasValue)
                         {
                             _borderWidth = Math.Max(0, control.Parameter.Value / 20.0);
+                            ApplyPendingBorder();
+                        }
+                        return;
+                    case "brdrcf":
+                        if (control.Parameter.HasValue)
+                        {
+                            _borderColorIndex = control.Parameter.Value;
                             ApplyPendingBorder();
                         }
                         return;
@@ -1164,6 +1171,7 @@ namespace Wisdom.Word
             private int _borderTarget;
             private BorderStyle? _borderStyle;
             private double _borderWidth = 0.5;
+            private int _borderColorIndex;
 
             /// <summary>取得当前单元格定义槽，必要时创建。Gets the current cell-definition slot, creating it when needed.</summary>
             private CellSlot Slot()
@@ -1179,12 +1187,12 @@ namespace Wisdom.Word
                 ApplyPendingBorder();
             }
 
-            /// <summary>把当前边框目标、样式与宽度落到槽位上。Commits the current border target, style and width to the slot.</summary>
+            /// <summary>把当前边框目标、样式、宽度与颜色落到槽位上；没有 <c>\brdrcf</c> 时按自动色（黑）。Commits the current border target, style, width and colour to the slot; without <c>\brdrcf</c> the automatic colour (black) applies.</summary>
             private void ApplyPendingBorder()
             {
                 if (_borderTarget == 0) return;
                 CellSlot slot = Slot();
-                BorderLine line = new BorderLine(_borderStyle ?? BorderStyle.Single, _borderWidth, OfficeColor.Black);
+                BorderLine line = new BorderLine(_borderStyle ?? BorderStyle.Single, _borderWidth, GetColor(_borderColorIndex));
                 if (_borderTarget == 1) slot.TopBorder = line;
                 else if (_borderTarget == 2) slot.BottomBorder = line;
                 else if (_borderTarget == 3) slot.LeftBorder = line;

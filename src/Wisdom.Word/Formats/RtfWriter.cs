@@ -718,7 +718,7 @@ namespace Wisdom.Word
                 if (cell.VerticalAlignment == VerticalAlignment.Middle) props.Append("\\clvertalc");
                 else if (cell.VerticalAlignment == VerticalAlignment.Bottom) props.Append("\\clvertalb");
                 else props.Append("\\clvertalt");
-                AppendCellBorders(props, table, cell, row, column, startColumn, startRow);
+                AppendCellBorders(props, table, cell, row, column, startColumn, startRow, state);
             }
             return props.ToString();
         }
@@ -728,7 +728,7 @@ namespace Wisdom.Word
         /// Writes the cell's four borders: only the true outer edges of a merged block are drawn, internal boundaries stay empty;
         /// outer edges then follow table outer/inner lines with cell overrides applied.
         /// </summary>
-        private static void AppendCellBorders(StringBuilder props, Table table, TableCell cell, int row, int column, int startColumn, int startRow)
+        private static void AppendCellBorders(StringBuilder props, Table table, TableCell cell, int row, int column, int startColumn, int startRow, WriterState state)
         {
             int colSpan = Math.Max(1, cell.ColSpan);
             int rowSpan = Math.Max(1, cell.RowSpan);
@@ -759,14 +759,18 @@ namespace Wisdom.Word
             BorderLine right = column != endColumn ? null
                 : cell.Borders != null && cell.Borders.Right != null ? cell.Borders.Right
                 : (endColumn >= columnCount ? tableBorders.Right : tableBorders.InsideVertical);
-            AppendBorder(props, "clbrdrt", top);
-            AppendBorder(props, "clbrdrb", bottom);
-            AppendBorder(props, "clbrdrl", left);
-            AppendBorder(props, "clbrdrr", right);
+            AppendBorder(props, "clbrdrt", top, state);
+            AppendBorder(props, "clbrdrb", bottom, state);
+            AppendBorder(props, "clbrdrl", left, state);
+            AppendBorder(props, "clbrdrr", right, state);
         }
 
-        /// <summary>输出单条 RTF 单元格边框控制字。Writes one RTF cell-border control sequence.</summary>
-        private static void AppendBorder(StringBuilder props, string target, BorderLine line)
+        /// <summary>输出单条 RTF 单元格边框控制字。纯黑的边不写 <c>\brdrcf</c>：RTF 的默认边色就是黑，写上去只会让每一张默认表格的产物字节都变。</summary>
+        /// <param name="props">单元格属性串。The cell property string.</param>
+        /// <param name="target">边框控制字。The border control word.</param>
+        /// <param name="line">边框线。The border line.</param>
+        /// <param name="state">写出状态，用于登记颜色。The writer state used to register the colour.</param>
+        private static void AppendBorder(StringBuilder props, string target, BorderLine line, WriterState state)
         {
             if (line == null || line.Style == BorderStyle.None)
             {
@@ -782,6 +786,11 @@ namespace Wisdom.Word
                 default: props.Append("\\brdrs"); break;
             }
             props.Append("\\brdrw").Append(Math.Max(1, WordFormatUtil.PointsToTwips(line.Width)));
+            OfficeColor color = line.Color;
+            if (color.R != 0 || color.G != 0 || color.B != 0)
+            {
+                props.Append("\\brdrcf").Append(state.AddColor(color).ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         /// <summary>转义 RTF 正文：反斜杠、花括号、换行、制表符与非 ASCII 字符。Escapes RTF body text: backslashes, braces, newlines, tabs and non-ASCII characters.</summary>
