@@ -1233,7 +1233,7 @@ namespace Wisdom.Ppt
 
                 OfficeColor headerFill = table.HeaderColor.HasValue ? table.HeaderColor.Value : AccentColor(0);
                 double padding = model.CellPadding > 0 ? model.CellPadding : 4.0;
-                BorderLine inside = model.Borders != null ? model.Borders.InsideHorizontal : BorderLine.Thin();
+                TableBorders borders = model.Borders ?? new TableBorders();
                 int totalRows = rows.Count;
                 // 纵向合并要占住后续行：过去只写 gridSpan，续接格被整行丢掉，
                 // 于是第 2 行的数据整体左移一列。这里按网格记录每列被谁占到第几行。
@@ -1266,7 +1266,9 @@ namespace Wisdom.Ppt
                             // Continuation cell: the block's first column gets vMerge="1" and the remaining
                             // columns of the same block get hMerge="1".
                             bool blockStart = column == mergeOrigin[column];
-                            tr.Add(CreateMergedCell(blockStart, fillerFill, isHeader, padding, inside));
+                            int blockSpan = coveredUntil[column] - r + 1;
+                            tr.Add(CreateMergedCell(blockStart, fillerFill, isHeader, padding,
+                                ResolveEdges(borders, r, blockSpan, totalRows, column, 1, gridCols)));
                             column++;
                             continue;
                         }
@@ -1279,7 +1281,8 @@ namespace Wisdom.Ppt
                             // lets the tableStyleId speak.
                             tr.Add(new XElement(A + "tc", new XElement(A + "txBody",
                                 new XElement(A + "bodyPr"), new XElement(A + "lstStyle"), new XElement(A + "p")),
-                                CreateTcProperties(null, fillerFill, isHeader, padding, inside, 1)));
+                                CreateTcProperties(null, fillerFill, isHeader, padding,
+                                    ResolveEdges(borders, r, 1, totalRows, column, 1, gridCols), 1)));
                             column++;
                             continue;
                         }
@@ -1287,7 +1290,8 @@ namespace Wisdom.Ppt
                         if (cell == null) continue;
                         int span = ClampInt(cell.ColSpan, 1, gridCols - column + 1);
                         int rowSpan = ClampInt(cell.RowSpan, 1, totalRows - r);
-                        tr.Add(CreateTableCell(cell, _bodyFormat, isHeader, headerFill, padding, inside, span, rowSpan));
+                        tr.Add(CreateTableCell(cell, _bodyFormat, isHeader, headerFill, padding,
+                            ResolveEdges(borders, r, rowSpan, totalRows, column, span, gridCols), span, rowSpan));
                         for (int k = 0; k < span; k++)
                         {
                             coveredUntil[column + k] = r + rowSpan - 1;
@@ -1311,9 +1315,9 @@ namespace Wisdom.Ppt
             /// <param name="fill">底色。Fill colour.</param>
             /// <param name="header">是否表头行。Whether the row is a header row.</param>
             /// <param name="padding">内边距（磅）。Padding in points.</param>
-            /// <param name="border">默认边框线。Default border line.</param>
+            /// <param name="border">该格四边的边框线。 The four border lines for this cell.</param>
             /// <returns>a:tc 元素。 The cell element.</returns>
-            private XElement CreateMergedCell(bool blockStart, OfficeColor? fill, bool header, double padding, BorderLine border)
+            private XElement CreateMergedCell(bool blockStart, OfficeColor? fill, bool header, double padding, CellBorderEdges border)
             {
                 XElement tc = new XElement(A + "tc");
                 tc.Add(new XAttribute(blockStart ? "vMerge" : "hMerge", "1"));
@@ -1329,11 +1333,11 @@ namespace Wisdom.Ppt
             /// <param name="header">是否为表头单元格。 Whether it is a header cell.</param>
             /// <param name="headerFill">表头底色。 Header fill color.</param>
             /// <param name="padding">内边距（磅）。 Padding in points.</param>
-            /// <param name="border">边框线。 Border line.</param>
+            /// <param name="border">该格四边的边框线。 The four border lines for this cell.</param>
             /// <param name="span">横向跨度。 Horizontal span.</param>
             /// <param name="rowSpan">纵向跨度。 Vertical span.</param>
             /// <returns>a:tc 元素。 The cell element.</returns>
-            private XElement CreateTableCell(TableCell cell, TextFormat @base, bool header, OfficeColor headerFill, double padding, BorderLine border, int span, int rowSpan)
+            private XElement CreateTableCell(TableCell cell, TextFormat @base, bool header, OfficeColor headerFill, double padding, CellBorderEdges border, int span, int rowSpan)
             {
                 XElement tc = new XElement(A + "tc");
                 if (span > 1) tc.Add(new XAttribute("gridSpan", IntStr(span)));
@@ -1367,10 +1371,10 @@ namespace Wisdom.Ppt
             /// <param name="fill">底色覆盖；表头单元格使用表头色。 Fill override; header cells use the header color.</param>
             /// <param name="header">是否表头。 Whether it is a header cell.</param>
             /// <param name="padding">内边距（磅）。 Padding in points.</param>
-            /// <param name="border">默认边框线。 Default border line.</param>
+            /// <param name="border">该格四边的边框线。 The four border lines for this cell.</param>
             /// <param name="span">横向跨度。 Horizontal span.</param>
             /// <returns>tcPr 元素。 The tcPr element.</returns>
-            private XElement CreateTcProperties(TableCell cell, OfficeColor? fill, bool header, double padding, BorderLine border, int span)
+            private XElement CreateTcProperties(TableCell cell, OfficeColor? fill, bool header, double padding, CellBorderEdges border, int span)
             {
                 string inset = IntStr(Ppt.Emu(padding));
                 XElement tcPr = new XElement(A + "tcPr",
@@ -1379,7 +1383,7 @@ namespace Wisdom.Ppt
                     new XAttribute("marT", inset),
                     new XAttribute("marB", inset),
                     new XAttribute("anchor", cell != null ? CellAnchor(cell.VerticalAlignment) : "ctr"));
-                BorderLine left = border, right = border, top = border, bottom = border;
+                BorderLine left = border.Left, right = border.Right, top = border.Top, bottom = border.Bottom;
                 if (cell != null && cell.Borders != null)
                 {
                     if (cell.Borders.Left != null) left = cell.Borders.Left;
@@ -1413,6 +1417,72 @@ namespace Wisdom.Ppt
                 string dash = line == null ? null : DashStyle(line.Style);
                 if (dash != null) ln.Add(new XElement(A + "prstDash", new XAttribute("val", dash)));
                 return ln;
+            }
+
+            /// <summary>
+            /// 按单元格在网格里的位置取出它四边的线：落在外圈的那条边用 <c>TableBorders</c> 的 Top/Bottom/
+            /// Left/Right，内部的分隔用 InsideHorizontal/InsideVertical。从前这四个位置一律回落到
+            /// <c>InsideHorizontal</c>，于是另外五份声明连一个字节都没写下。
+            /// Picks the four lines for a cell by its grid position: an edge on the ring takes Top/Bottom/
+            /// Left/Right from <c>TableBorders</c>, an inner rule takes InsideHorizontal/InsideVertical.
+            /// Every edge used to fall back to <c>InsideHorizontal</c>, so the other five declarations never
+            /// reached a single byte.
+            /// </summary>
+            /// <param name="borders">表格六向边框。 The table's six-way border set.</param>
+            /// <param name="row">首行下标（0 起）。 Zero-based first row.</param>
+            /// <param name="rowSpan">纵向跨度。 Vertical span.</param>
+            /// <param name="totalRows">总行数。 Total row count.</param>
+            /// <param name="column">首列（1 起的网格列号）。 One-based first grid column.</param>
+            /// <param name="colSpan">横向跨度。 Horizontal span.</param>
+            /// <param name="gridCols">网格列数。 Grid column count.</param>
+            /// <returns>该格四边的线。 The four lines for this cell.</returns>
+            private static CellBorderEdges ResolveEdges(TableBorders borders, int row, int rowSpan, int totalRows, int column, int colSpan, int gridCols)
+            {
+                BorderLine thin = BorderLine.Thin();
+                bool firstRow = row <= 0;
+                bool lastRow = row + Math.Max(1, rowSpan) - 1 >= totalRows - 1;
+                bool firstColumn = column <= 1;
+                bool lastColumn = column + Math.Max(1, colSpan) - 1 >= gridCols;
+                return new CellBorderEdges(
+                    firstColumn ? LineOrDefault(borders.Left, thin) : LineOrDefault(borders.InsideVertical, thin),
+                    lastColumn ? LineOrDefault(borders.Right, thin) : LineOrDefault(borders.InsideVertical, thin),
+                    firstRow ? LineOrDefault(borders.Top, thin) : LineOrDefault(borders.InsideHorizontal, thin),
+                    lastRow ? LineOrDefault(borders.Bottom, thin) : LineOrDefault(borders.InsideHorizontal, thin));
+            }
+
+            /// <summary>声明过就用，没声明就退回细线。 Uses the declared line, or the thin default when none was set.</summary>
+            /// <param name="declared">声明过的边框线。 The declared border line.</param>
+            /// <param name="fallback">退回用的线。 The fallback line.</param>
+            /// <returns>要写出的边框线。 The line to write.</returns>
+            private static BorderLine LineOrDefault(BorderLine declared, BorderLine fallback)
+            {
+                return declared != null ? declared : fallback;
+            }
+
+            /// <summary>一个单元格四边各自取到的边框线。 The four border lines resolved for one cell.</summary>
+            private sealed class CellBorderEdges
+            {
+                /// <summary>左边线。 The left edge line.</summary>
+                public readonly BorderLine Left;
+                /// <summary>右边线。 The right edge line.</summary>
+                public readonly BorderLine Right;
+                /// <summary>上边线。 The top edge line.</summary>
+                public readonly BorderLine Top;
+                /// <summary>下边线。 The bottom edge line.</summary>
+                public readonly BorderLine Bottom;
+
+                /// <summary>按左右上下顺序装好四条线。 Stores the four lines in left, right, top, bottom order.</summary>
+                /// <param name="left">左边线。 The left edge line.</param>
+                /// <param name="right">右边线。 The right edge line.</param>
+                /// <param name="top">上边线。 The top edge line.</param>
+                /// <param name="bottom">下边线。 The bottom edge line.</param>
+                public CellBorderEdges(BorderLine left, BorderLine right, BorderLine top, BorderLine bottom)
+                {
+                    Left = left;
+                    Right = right;
+                    Top = top;
+                    Bottom = bottom;
+                }
             }
 
             /// <summary>单元格垂直对齐到 <c>anchor</c> 值的映射。 Maps a cell's vertical alignment to its <c>anchor</c> value.</summary>
