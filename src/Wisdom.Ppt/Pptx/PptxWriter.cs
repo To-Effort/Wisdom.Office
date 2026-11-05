@@ -623,8 +623,8 @@ namespace Wisdom.Ppt
                     new XElement(P + "spPr",
                         CreateXfrm(shape),
                         new XElement(A + "prstGeom", new XAttribute("prst", "rect"), new XElement(A + "avLst")),
-                        CreateSolidOrNoFill(shape.FillColor),
-                        CreateLine(shape.Outline)),
+                        CreateOptionalFill(shape.FillColor),
+                        CreateOptionalLine(shape.Outline)),
                     new XElement(P + "txBody",
                         new XElement(A + "bodyPr"),
                         new XElement(A + "lstStyle"),
@@ -714,9 +714,33 @@ namespace Wisdom.Ppt
                     geom.Add(new XElement(A + "avLst"));
                 }
                 spPr.Add(geom);
-                spPr.Add(CreateSolidOrNoFill(shape.FillColor));
-                spPr.Add(CreateLine(shape.Outline));
+                // 没设过填充/描边就什么都不写：补 a:noFill 等于替调用者宣布「这形状不许有底色」，
+                // 会把 p:style 与主题本来要给的外观一并抹掉。显式 BorderStyle.None 仍然写 a:ln + a:noFill。
+                // Nothing is written when neither fill nor outline was set: an a:noFill would announce "this
+                // shape may have no fill" on the caller's behalf and silence whatever p:style and the theme
+                // would supply. An explicit BorderStyle.None still reaches the file as a:ln + a:noFill.
+                XElement fill = CreateOptionalFill(shape.FillColor);
+                if (fill != null) spPr.Add(fill);
+                XElement line = CreateOptionalLine(shape.Outline);
+                if (line != null) spPr.Add(line);
                 return spPr;
+            }
+
+            /// <summary>只在调用者设过填充时返回 <c>a:solidFill</c>，否则返回 null（不写任何填充元素）。Returns <c>a:solidFill</c> only when the caller set a fill, otherwise null so no fill element is written.</summary>
+            /// <param name="color">填充色，null 表示没设过。 Fill colour; null means it was never set.</param>
+            /// <returns>填充元素或 null。 The fill element, or null.</returns>
+            private static XElement CreateOptionalFill(OfficeColor? color)
+            {
+                if (!color.HasValue) return null;
+                return new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", color.Value.ToHex())));
+            }
+
+            /// <summary>只在调用者设过描边时返回 <c>a:ln</c>，否则返回 null。Returns <c>a:ln</c> only when the caller set an outline, otherwise null.</summary>
+            /// <param name="line">描边，null 表示没设过。 The outline; null means it was never set.</param>
+            /// <returns>描边元素或 null。 The line element, or null.</returns>
+            private XElement CreateOptionalLine(BorderLine line)
+            {
+                return line == null ? null : CreateLine(line);
             }
 
             /// <summary>生成 <code>a:xfrm</code> 的位置与大小。 Builds the <code>a:xfrm</code> offset and extent.</summary>
@@ -1182,6 +1206,18 @@ namespace Wisdom.Ppt
                 double padding = model.CellPadding > 0 ? model.CellPadding : 4.0;
                 BorderLine inside = model.Borders != null ? model.Borders.InsideHorizontal : BorderLine.Thin();
                 int totalRows = rows.Count;
+                // 纵向合并要占住后续行：过去只写 gridSpan，续接格被整行丢掉，
+                // 于是第 2 行的数据整体左移一列。这里按网格记录每列被谁占到第几行。
+                // A vertical merge occupies the following rows: only gridSpan used to be written and the
+                // continuation cells were dropped, shifting the next row's data one column to the left.
+                // The grid below records, per column, which row the merge runs through and where it started.
+                int[] coveredUntil = new int[gridCols + 1];
+                int[] mergeOrigin = new int[gridCols + 1];
+                for (int c = 0; c <= gridCols; c++)
+                {
+                    coveredUntil[c] = -1;
+                    mergeOrigin[c] = 0;
+                }
                 for (int r = 0; r < totalRows; r++)
                 {
                     TableRow row = rows[r];
@@ -1189,32 +1225,73 @@ namespace Wisdom.Ppt
                     bool isHeader = styledHeader && IsHeaderRowAt(model, rows, r);
                     int h = Ppt.Emu(row.Height > 0 ? row.Height : DefaultRowHeight(table.Height, totalRows));
                     XElement tr = new XElement(A + "tr", new XAttribute("h", IntStr(Math.Max(1, h))));
-                    int placed = 0;
                     List<TableCell> cells = row.Cells ?? new List<TableCell>();
-                    for (int c = 0; c < cells.Count && placed < gridCols; c++)
+                    OfficeColor? fillerFill = isHeader ? (OfficeColor?)headerFill : null;
+                    int column = 1;
+                    int source = 0;
+                    while (column <= gridCols)
                     {
-                        TableCell cell = cells[c];
+                        if (coveredUntil[column] >= r)
+                        {
+                            // 续接格：纵向合并块的第一格写 vMerge="1"，同一块里其余列写 hMerge="1"。
+                            // Continuation cell: the block's first column gets vMerge="1" and the remaining
+                            // columns of the same block get hMerge="1".
+                            bool blockStart = column == mergeOrigin[column];
+                            tr.Add(CreateMergedCell(blockStart, fillerFill, isHeader, padding, inside));
+                            column++;
+                            continue;
+                        }
+                        if (source >= cells.Count)
+                        {
+                            // 补齐用的空格跟着所在行的待遇走：表头行里的空格借表头色，免得一条表头被补位格截成两截；
+                            // 数据行里的空格什么都不写，让 tableStyleId 说话。
+                            // A filler cell follows its row's treatment: inside a header row it takes the header
+                            // fill so the band is not cut in two, and in a data row it writes no fill at all and
+                            // lets the tableStyleId speak.
+                            tr.Add(new XElement(A + "tc", new XElement(A + "txBody",
+                                new XElement(A + "bodyPr"), new XElement(A + "lstStyle"), new XElement(A + "p")),
+                                CreateTcProperties(null, fillerFill, isHeader, padding, inside, 1)));
+                            column++;
+                            continue;
+                        }
+                        TableCell cell = cells[source++];
                         if (cell == null) continue;
-                        int span = ClampInt(cell.ColSpan, 1, gridCols - placed);
-                        tr.Add(CreateTableCell(cell, _bodyFormat, isHeader, headerFill, padding, inside, span));
-                        placed += span;
-                    }
-                    while (placed < gridCols)
-                    {
-                        // 补齐用的空格跟着所在行的待遇走：表头行里的空格借表头色，免得一条表头被补位格截成两截；
-                        // 数据行里的空格什么都不写，让 tableStyleId 说话。
-                        // A filler cell follows its row's treatment: inside a header row it takes the header
-                        // fill so the band is not cut in two, and in a data row it writes no fill at all and
-                        // lets the tableStyleId speak.
-                        OfficeColor? fillerFill = isHeader ? (OfficeColor?)headerFill : null;
-                        tr.Add(new XElement(A + "tc", new XElement(A + "txBody",
-                            new XElement(A + "bodyPr"), new XElement(A + "lstStyle"), new XElement(A + "p")),
-                            CreateTcProperties(null, fillerFill, isHeader, padding, inside, 1)));
-                        placed++;
+                        int span = ClampInt(cell.ColSpan, 1, gridCols - column + 1);
+                        int rowSpan = ClampInt(cell.RowSpan, 1, totalRows - r);
+                        tr.Add(CreateTableCell(cell, _bodyFormat, isHeader, headerFill, padding, inside, span, rowSpan));
+                        for (int k = 0; k < span; k++)
+                        {
+                            coveredUntil[column + k] = r + rowSpan - 1;
+                            mergeOrigin[column + k] = column;
+                        }
+                        column += span;
                     }
                     tbl.Add(tr);
                 }
                 return tbl;
+            }
+
+            /// <summary>
+            /// 生成一个合并续接格 <code>a:tc</code>：块首列 <c>vMerge="1"</c>，块内其余列 <c>hMerge="1"</c>，
+            /// 内容为空（内容在原格上）。缺了这些格子，后续行的真实单元格会顶到错误的列上。
+            /// Builds one merge-continuation <code>a:tc</code>: <c>vMerge="1"</c> on the block's first column and
+            /// <c>hMerge="1"</c> on the rest, with an empty body (the content lives on the origin cell). Without
+            /// these cells the following rows' real cells land on the wrong columns.
+            /// </summary>
+            /// <param name="blockStart">是否为合并块的首列。Whether this is the block's first column.</param>
+            /// <param name="fill">底色。Fill colour.</param>
+            /// <param name="header">是否表头行。Whether the row is a header row.</param>
+            /// <param name="padding">内边距（磅）。Padding in points.</param>
+            /// <param name="border">默认边框线。Default border line.</param>
+            /// <returns>a:tc 元素。 The cell element.</returns>
+            private XElement CreateMergedCell(bool blockStart, OfficeColor? fill, bool header, double padding, BorderLine border)
+            {
+                XElement tc = new XElement(A + "tc");
+                tc.Add(new XAttribute(blockStart ? "vMerge" : "hMerge", "1"));
+                tc.Add(new XElement(A + "txBody",
+                    new XElement(A + "bodyPr"), new XElement(A + "lstStyle"), new XElement(A + "p")));
+                tc.Add(CreateTcProperties(null, fill, header, padding, border, 1));
+                return tc;
             }
 
             /// <summary>生成单个表格单元格 <code>a:tc</code>。 Builds one table cell <code>a:tc</code>.</summary>
@@ -1225,11 +1302,13 @@ namespace Wisdom.Ppt
             /// <param name="padding">内边距（磅）。 Padding in points.</param>
             /// <param name="border">边框线。 Border line.</param>
             /// <param name="span">横向跨度。 Horizontal span.</param>
+            /// <param name="rowSpan">纵向跨度。 Vertical span.</param>
             /// <returns>a:tc 元素。 The cell element.</returns>
-            private XElement CreateTableCell(TableCell cell, TextFormat @base, bool header, OfficeColor headerFill, double padding, BorderLine border, int span)
+            private XElement CreateTableCell(TableCell cell, TextFormat @base, bool header, OfficeColor headerFill, double padding, BorderLine border, int span, int rowSpan)
             {
                 XElement tc = new XElement(A + "tc");
                 if (span > 1) tc.Add(new XAttribute("gridSpan", IntStr(span)));
+                if (rowSpan > 1) tc.Add(new XAttribute("rowSpan", IntStr(rowSpan)));
                 XElement txBody = new XElement(A + "txBody", new XElement(A + "bodyPr"), new XElement(A + "lstStyle"));
                 List<Paragraph> paragraphs = CollectCellParagraphs(cell);
                 TextFormat cellBase = @base;

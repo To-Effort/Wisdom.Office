@@ -22,12 +22,14 @@ namespace Wisdom.Office.Tests
             RunStyledPlaceholderSurvivesTest();
             RunPartialRunFormatStaysInheritedTest();
             RunUndeclaredTableHeaderStaysPlainTest();
+            RunUnsetShapeFillStaysInheritedTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
             RunAppPropertiesSchemaOrderTest();
             RunTimingTreeShapeTest();
             RunBaselineAndSpacingRoundTripTest();
+            RunVerticalMergeGridTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -221,6 +223,66 @@ namespace Wisdom.Office.Tests
                 "the declared header row did not survive the round trip");
             Require(!back[0].Table.Rows[0].IsHeader,
                 "the undeclared table's first row was read back as a header");
+        }
+
+        /// <summary>
+        /// PT3 结构档第二批：形状没设填充、没设描边时，写端不得替它写 <c>a:noFill</c> 与一条空 <c>a:ln</c>。
+        /// 本库自造的母版与版式压根没给占位符定义填充或线条，省略这两项与写 <c>a:noFill</c> 在自己产出的
+        /// 稿子上看起来一样；从真实文件读回的形状就不同了——读端把主题 <c>fillRef</c>、渐变、图案填充统一
+        /// 读成 null，写端却一律钉成 <c>a:noFill</c>，一次 Load+Save 就把借来的主题填充与线条抹个干净。
+        /// PT3 structure tier, second batch: a shape that sets neither fill nor outline must not leave the
+        /// file with <c>a:noFill</c> and an empty <c>a:ln</c>. The masters and layouts this library generates
+        /// define no fill or line for their placeholders, so omitting both looks the same as writing
+        /// <c>a:noFill</c> in its own decks; shapes read back from a real file are another matter — the reader
+        /// resolves theme <c>fillRef</c>, gradient and pattern fills to null, and pinning every one of them to
+        /// <c>a:noFill</c> wipes the borrowed fill and line out on the first Load+Save.
+        /// </summary>
+        private static void RunUnsetShapeFillStaysInheritedTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+
+            slide.AddShape(AutoShapeKind.Rectangle, 40, 40, 240, 100, "没设填充也没设线");
+            AutoShape filled = slide.AddShape(AutoShapeKind.Rectangle, 320, 40, 240, 100, "只设填充");
+            filled.FillColor = new OfficeColor(0x00, 0xB0, 0x50);
+            AutoShape unlined = slide.AddShape(AutoShapeKind.Ellipse, 620, 40, 160, 160, "显式无线");
+            unlined.Outline = new BorderLine(BorderStyle.None, 0, OfficeColor.Black);
+            slide.AddTextBox(40, 220, 520, 80, "文本框同样不写");
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] props = ReadShapeProperties(written, "ppt/slides/slide1.xml");
+            Require(props.Length == 4, "expected four p:sp on the slide, got " + props.Length);
+
+            Require(props[0].Element(A + "noFill") == null,
+                "a shape that never set a fill was pinned with a:noFill, silencing the inherited one");
+            Require(props[0].Element(A + "solidFill") == null,
+                "a shape that never set a fill was given a solidFill anyway");
+            Require(props[0].Element(A + "ln") == null,
+                "a shape that never set an outline still got an a:ln element");
+
+            XElement filledFill = props[1].Element(A + "solidFill");
+            XElement filledClr = filledFill == null ? null : filledFill.Element(A + "srgbClr");
+            Require(filledClr != null && (string)filledClr.Attribute("val") == "00B050",
+                "the shape with an explicit FillColor lost it — the new rule must not swallow real intent");
+
+            XElement unlinedLn = props[2].Element(A + "ln");
+            Require(unlinedLn != null && unlinedLn.Element(A + "noFill") != null,
+                "an outline explicitly set to BorderStyle.None must still reach the file as a:ln with noFill");
+
+            Require(props[3].Element(A + "noFill") == null && props[3].Element(A + "ln") == null,
+                "the text box got the same fabricated noFill and empty a:ln");
+
+            // 往返：省下来的属性读回仍是「没设过」，二次写出不得把它们补成 noFill，也不得吞掉显式那两份。
+            // Round trip: an omitted property reads back as unset, so a second write must neither invent a
+            // noFill for it nor swallow the two shapes that did state something.
+            OfficePresentation loaded = PptxReader.Load(written);
+            byte[] again = WriteToBuffer(loaded);
+            XElement[] second = ReadShapeProperties(again, "ppt/slides/slide1.xml");
+            Require(second.Length == 4, "expected four p:sp after the round trip, got " + second.Length);
+            Require(second[0].Element(A + "noFill") == null && second[0].Element(A + "ln") == null,
+                "the second write re-invented a:noFill and an empty a:ln for the untouched shape");
+            Require(second[1].Element(A + "solidFill") != null,
+                "the explicitly filled shape came back without a solidFill");
         }
 
         /// <summary>
@@ -574,6 +636,61 @@ namespace Wisdom.Office.Tests
                 "space after did not read back: " + back.SpaceAfter);
         }
 
+        /// <summary>
+        /// PT3 读端补齐（纵向合并）：写端过去只写 <c>gridSpan</c>，`RowSpan` 被完全丢掉，续接格也不占位，
+        /// 于是第二行的真实单元格顶到第一列——数据整体左移一列。现在首格写 <c>rowSpan</c>，后续行按网格
+        /// 补 <c>vMerge="1"</c>（块首列）与 <c>hMerge="1"</c>（同块其余列）。
+        /// PT3 read-side parity (vertical merge): the writer used to emit only <c>gridSpan</c>, dropping
+        /// `RowSpan` entirely and leaving no continuation cells, so the second row's real cells landed on the
+        /// first column — the data shifted one column left. The origin cell now carries <c>rowSpan</c> and the
+        /// following rows get <c>vMerge="1"</c> (block start) and <c>hMerge="1"</c> (the rest of the block).
+        /// </summary>
+        private static void RunVerticalMergeGridTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TableShape shape = slide.AddTable(40, 40, 600, 200);
+            Table table = shape.Table;
+
+            TableRow header = table.AddRow("区域", "收入");
+            header.IsHeader = true;
+            TableRow first = table.AddRow("华东");
+            first.Cells[0].RowSpan = 2;
+            first.Cells.Add(new TableCell());
+            first.Cells[1].Blocks.Add(new Paragraph("588"));
+            TableRow second = table.AddRow();                       // 只有一格：另一格被上面的纵向合并占住
+            second.Cells.Add(new TableCell());
+            second.Cells[0].Blocks.Add(new Paragraph("384"));
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] tables = ReadTables(written, "ppt/slides/slide1.xml");
+            Require(tables.Length == 1, "expected one table, got " + tables.Length);
+            XElement[] trs = tables[0].Elements(A + "tr").ToArray();
+            Require(trs.Length == 3, "expected three rows, got " + trs.Length);
+
+            XElement origin = FirstCell(trs[1]);
+            Require(origin != null && (string)origin.Attribute("rowSpan") == "2",
+                "the origin cell did not carry rowSpan=\"2\"");
+            Require((string)origin.Attribute("gridSpan") == null,
+                "a one-column cell must not carry gridSpan");
+
+            // 第二数据行：第一列是被占住的续接格，真实内容落在第二列。
+            // The second data row: the first column is the continuation cell and the real content sits in
+            // the second column.
+            XElement[] secondRowCells = trs[2].Elements(A + "tc").ToArray();
+            Require(secondRowCells.Length == 2,
+                "the continuation row should still carry two cells, got " + secondRowCells.Length);
+            Require((string)secondRowCells[0].Attribute("vMerge") == "1",
+                "the continuation cell is missing vMerge=\"1\"");
+            string[] texts = new string[secondRowCells.Length];
+            for (int i = 0; i < secondRowCells.Length; i++)
+            {
+                texts[i] = secondRowCells[i].Value;
+            }
+            Require(texts[1].IndexOf("384", StringComparison.Ordinal) >= 0,
+                "the second row's data slid into the merged column: " + string.Join(" | ", texts));
+        }
+
         /// <summary>取幻灯片部件里第一个 <c>p:transition</c>（带时长时它住在 mc:Choice 里）。 Takes the first <c>p:transition</c> in a slide part, which lives inside mc:Choice when a duration is present.</summary>
         /// <param name="archive">pptx 字节。The pptx bytes.</param>
         /// <param name="entryName">部件路径。The part path.</param>
@@ -592,6 +709,21 @@ namespace Wisdom.Office.Tests
 
         /// <summary>DrawingML 命名空间，测试里手写一份，避免依赖写端的私有常量。 The DrawingML namespace, spelled out here so the test does not lean on a writer private.</summary>
         private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+        /// <summary>取幻灯片部件里每个 <c>p:sp</c> 的 <c>p:spPr</c>，按文档顺序返回。 Collects the <c>p:spPr</c> of every <c>p:sp</c> in a slide part, in document order.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>形状属性元素列表。The shape-property elements.</returns>
+        private static XElement[] ReadShapeProperties(byte[] archive, string entryName)
+        {
+            List<XElement> found = new List<XElement>();
+            foreach (XElement sp in ReadSlideXml(archive, entryName).Descendants(P + "sp"))
+            {
+                XElement spPr = sp.Element(P + "spPr");
+                if (spPr != null) found.Add(spPr);
+            }
+            return found.ToArray();
+        }
 
         /// <summary>取幻灯片部件里的每张 <c>a:tbl</c>，按文档顺序返回。 Collects every <c>a:tbl</c> in a slide part, in document order.</summary>
         /// <param name="archive">pptx 字节。The pptx bytes.</param>
