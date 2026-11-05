@@ -277,6 +277,13 @@
 - 目标行为：`BorderStyle.None` 写 `<a:lnX w cmpd algn><a:noFill/></a:lnX>`，其余线型的字节不变。
 - 红测：一张 `Borders = TableBorders.None()`、只把 `Top` 设回细线的表，逐格断言首行 `lnT` 是黑色实线、`lnB`/`lnL`/`lnR` 都是 `a:noFill`。
 
+### PT14｜表格逐格边线只出不进，载进来的边框全丢、自己写的也活不过第二次保存　A
+
+- 位置：`src/Wisdom.Ppt/Pptx/PptxReader.cs`（`ReadTableCell` 取过 `tcPr` 的底色与 `anchor`，却从不看 `a:lnL`/`lnR`/`lnT`/`lnB`，原注释自写「不读入」）。写出侧 `PptxWriter.cs:1387-1397` 每个单元格都写四条边，`TableCellBorders` 四个字段在模型里本来就有（`DocumentModel.cs:671-681`）。同库 Word 侧早有对照：`DocxPartReader.cs:856-870` 的 `ReadCellBorders` 逐边解析、四条全缺才返回 null。
+- 后果：别人的表格载进来，外圈粗线与内部淡线一律按「没说过」处理，回写拿到 `TableBorders` 默认的 0.5 磅黑色细实线——整张表的边框排版塌回一种线；本库自己写出的逐格 `TableCell.Borders` 同样在第二次保存时被抹平。读侧不解析，往返一路连痕迹都不留，`PT11`/`PT12` 那两批只能把这条写进「已知限制」。
+- 目标行为：四条边逐格读回 `TableCell.Borders`；`w` 转磅、颜色取 `a:solidFill`、双线看 `cmpd="dbl"`、`a:noFill` 认成 `BorderStyle.None`（「这条边不画」）而不是「没说过」；四条全未声明时 `Borders` 保持 null，让表级六向做主。第二次保存逐边字节不变。
+- 红测：两张表（六向各异的一份 + `TableBorders.None()` 只留 `Top` 的一份），`PptxReader.Load` 后逐格断言四边颜色/线型回到声明值，再把载入的稿子写出一次，逐格四条边的 `w` 与颜色签名必须与第一次一致。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -410,6 +417,7 @@
 | `PT11` | 双线不再写进 `a:prstDash`（`ST_PresetLineDashVal` 没有 `dbl` 这一档），改写成 `a:ln@cmpd="dbl"`；点线从 `sysDash`（长划）改成 `sysDot`。用过这两种线型的稿件在双线/点线两处字节变化，实线与虚线不动；读端补 `cmpd` 识别，并继续认历史文件里的 `prstDash val="dbl"`，旧稿读回仍是双线 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增线型一段、「已知限制」补「表格边线只出不进」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「双线边框存一次盘变成单线」 |
 | `PT12` | 表格四条边不再一律取 `InsideHorizontal`：贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线，合并块按自身首末行列判定，`TableCell.Borders` 逐边优先。`Table()` 的默认六向同为细黑线，没动过 `Borders` 的稿子一个字节不变；只有声明过非默认方向的稿子随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格边框一段，「已知限制」的「只出不进」改写为按六向落位；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「表格外圈加粗，保存后四条边一样粗」 |
 | `PT13` | 表格的「无边框」不再补一条实线：`BorderStyle.None` 的那条边写 `a:noFill`。用过 `TableBorders.None()` 的稿子字节随之变化（变化本身就是修复），其余线型一个字节不动；形状描边一直是这个口径，两条路径由此一致 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」的表格边框一段补这句；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「`Table.Borders` 设成 `TableBorders.None()`，保存后边框还在」 |
+| `PT14` | 表格逐格四条边线从「只出不进」改为双向：读端解析 `a:lnL`/`lnR`/`lnT`/`lnB` 逐格落进 `TableCell.Borders`，`a:noFill` 认成 `BorderStyle.None`，四条全缺仍为 null。载入别人的表格再存盘不再把边框塌回默认细线，这一类稿子的字节随之变化（变化本身就是修复）；本库新建稿第二次保存逐边字节不变 | `src/Wisdom.Ppt/README.md` 表格边框一段改写为双向，「已知限制」的「只出不进」条目替换为「逐格往返、表级六向不回」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「别人的表格打开再存一次，边框全没了」，并把 `PT11`/`PT12` 两条里「只出不进」的边界句改掉 |
 
 ---
 
@@ -705,3 +713,16 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 字节口径：只有设过 `TableBorders.None()` 或某方向 `BorderStyle.None` 的稿子会变，那正是本条要修的差别；默认六向细实线的表与形状描边输出不动。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
+- `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
+  - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。
+  - 两个语义要点值得记下：`a:noFill` 必须读成 `BorderStyle.None` 而不是 null——null 在模型里是「这条边没说过」，会被表级默认线填成一条实线，正好把 `PT13` 修掉的那件事反着做一遍；`algn`、逐格 `marT`/`marB`/`marR` 不建模，读侧不取，写出仍是固定值，这条留在文档的边界句里。
+  - 修复前失败原文（`net8.0`，`net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the loaded table kept no cell borders: row 0 cell 0 has Borders=<null>
+       at Wisdom.Office.Tests.Program.RunTableCellBordersComeBackTest() ... RemediationPptPhaseFourTests.cs:line 677
+    ```
+
+  - 夹具是两张表同页：一张六向各异（外圈 3 磅四色、内部 1 磅灰/紫、`InsideVertical` 给双线），一张 `TableBorders.None()` 只留 `Top` 细线。断言分三层——载入后逐格四边的颜色与线型回到声明值（含双线 `Double` 与 `None`）、末行末列的 ring 判定边界、最后把载入的稿子再写出一次，逐格四条边的 `w` + 颜色签名必须与第一次逐字相同。最后一层才是「往返」的真正断言：只测读回来的对象等于声明，测不出写出侧会不会另取一份默认值。
+  - 字节口径：本库新建稿第二次保存逐边不变（测试直接比对两次写出的边线签名）；变化只发生在「载入别人的表格再存盘」这一类稿子上，而那正是本条要修的丢失。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。

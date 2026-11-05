@@ -154,7 +154,7 @@ table.Table.AddRow("华南", "384", "30%");
 
 线型分两处编码。`BorderLine.Style` 取 `None`、`Single`、`Dashed`、`Dotted`、`Double`：虚线与点线是**划线图案**，写进 `a:ln` 下的 `a:prstDash`（`dash` 与 `sysDot`）；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl` 这一档。从前写出器把 Double 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端又认不出来，双线边框存一次盘就静默降成单线；点线当时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线两条路径都按 `cmpd` 写双线，读端优先看 `cmpd="dbl"`，同时继续认旧文件里 `prstDash val="dbl"` 这份历史写法，早前版本存出的双线不会读成实线。单线与虚线的字节不变（`cmpd` 缺省即 `sng`，形状描边非双线时不写这个属性）。
 
-表格边框认六个方向。`Table.Borders` 的 `Top`/`Bottom`/`Left`/`Right` 管外圈那四条边，`InsideHorizontal`/`InsideVertical` 管内部的两条分隔线；写出器按单元格落在网格的哪一格来决定每条边取哪一份声明，跨多行多列的合并块按它自己的首末行列判定，`TableCell.Borders` 再逐边覆盖（四边的 `TableCellBorders` 优先于表格方向）。从前这四条边一律取 `InsideHorizontal`，另外五份声明连一个字节都写不出门——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。`TableBorders` 的六个方向默认都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。`BorderStyle.None` 是「这条边不画」，写出 `<a:lnT><a:noFill/></a:lnT>`（同库 DOCX 侧写 `w:val="nil"`，同一个意思）；从前这里不看线型，照旧补一条 `a:solidFill`，于是 `Table.Borders = TableBorders.None()` 存出门是一张满黑格的表，声明被反着执行。读端不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，所以表格边框仍是只出不进（见「已知限制」）。
+表格边框认六个方向。`Table.Borders` 的 `Top`/`Bottom`/`Left`/`Right` 管外圈那四条边，`InsideHorizontal`/`InsideVertical` 管内部的两条分隔线；写出器按单元格落在网格的哪一格来决定每条边取哪一份声明，跨多行多列的合并块按它自己的首末行列判定，`TableCell.Borders` 再逐边覆盖（四边的 `TableCellBorders` 优先于表格方向）。从前这四条边一律取 `InsideHorizontal`，另外五份声明连一个字节都写不出门——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。`TableBorders` 的六个方向默认都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。`BorderStyle.None` 是「这条边不画」，写出 `<a:lnT><a:noFill/></a:lnT>`（同库 DOCX 侧写 `w:val="nil"`，同一个意思）；从前这里不看线型，照旧补一条 `a:solidFill`，于是 `Table.Borders = TableBorders.None()` 存出门是一张满黑格的表，声明被反着执行。读端也解析这四条边线，逐格落进 `TableCell.Borders`：四条里一条都没声明的单元格保持 `null`，让表级六向继续做主。`a:noFill` 认成 `BorderStyle.None`（「这条边不画」），不是「没说过」。要说边界：`.pptx` 没有表级边框元素，六向声明本来就摊在每格的边线上，所以 `Table.Borders` 不会从文件里回来——载入别人的表格后权威在逐格那一份，整表改边框得先清掉每格的 `Borders`。划线图案的细档（`dashDot`、`lgDash` 这类）在统一模型里归成 `Dashed`，`a:lnX@algn` 与逐格的 `marT`/`marB`/`marR` 内边距不往返。
 
 ## 入场动画、自动换页与主题深改
 
@@ -267,6 +267,6 @@ OfficeConverter.DocumentToPptx(document, "from-word.pptx");    // byte[] 重载�
 - 文本换行、自动字号、形状阴影与 3D 效果由 PowerPoint / WPS 运行时决定，本包只输出对应属性，不做排版模拟。
 - 列表符号只有 `Paragraph.ListMarker` 一个字段：没有标记就不写任何 bullet 子元素，符号由母版与版式继承决定。因此「显式关掉上层符号」（`a:buNone`）与「没设置过符号」在模型里是同一个值，读入带 `buNone` 的第三方演示稿再存盘时，那份显式关闭不会被保留。隔行条纹（`bandRow`）同理没有对应字段。
 - 折行只表达「不许折行」这一档：`TextBoxShape.WrapText` 置 `false` 才写 `wrap="none"`，`true` 与 `null` 在文件里是同一个样子（都写 `square`），回读只会得到 `null`；`wrap="emergency"`（紧急收缩）本库不建模，读来当作没说过。
-- 表格边线只出不进：写出时按 `Table.Borders` 的六个方向给每个单元格写四边 `a:lnL`/`lnR`/`lnT`/`lnB`（贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线；含双线的 `cmpd="dbl"` 与点线的 `sysDot` 编码），读回不解析这些边线，所以表格边框不往返；形状描边（`a:ln`）的线型与颜色照常往返。
+- 表格边框逐格往返，表级六向不回：写出时按 `Table.Borders` 的六个方向给每个单元格写四边 `a:lnL`/`lnR`/`lnT`/`lnB`（贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线；含双线的 `cmpd="dbl"`、点线的 `sysDot` 与「无边框」的 `a:noFill` 编码），读回时这四条边逐格落进 `TableCell.Borders`。`Table.Borders` 的六向声明不从文件还原——`.pptx` 本来就没有表级边框元素，声明摊在每格的边线上；载入别人的表格后要整表改边框，得先把每格的 `Borders` 清掉。划线图案的细档（`dashDot`、`lgDash` 等）归成 `Dashed`，`a:lnX@algn` 与逐格 `marT`/`marB`/`marR` 内边距不往返。
 - 图片仅支持 PNG / JPEG。
 - 文本里 XML 1.0 不接受的字符（控制字符、未配对代理项）在写出前由 `OfficeXmlText` 剔除，避免一个脏字符让整个演示文稿保存失败；因此这类字符不会往返保留。
