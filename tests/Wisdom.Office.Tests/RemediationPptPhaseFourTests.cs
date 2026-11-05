@@ -27,6 +27,7 @@ namespace Wisdom.Office.Tests
             RunTextBoxWrapNoneSurvivesTest();
             RunDoubleBorderIsCompoundLineTest();
             RunTableBorderDirectionsLandTest();
+            RunCellBorderNoneMeansNoLineTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -593,6 +594,48 @@ namespace Wisdom.Office.Tests
             XElement edge = tcPr == null ? null : tcPr.Element(A + tag);
             string width = edge == null ? null : (string)edge.Attribute("w");
             return width ?? "<absent>";
+        }
+
+        /// <summary>
+        /// PT13：<c>BorderStyle.None</c> 是「这条边不画」，同库的 DOCX 写出器就照这个意思写
+        /// <c>w:val="nil"</c>。演示稿这边却照旧补一条 <c>a:solidFill</c>：于是
+        /// <c>Table.Borders = TableBorders.None()</c> 存出门是一张满黑格的表，与声明正相反。
+        /// PT13: <c>BorderStyle.None</c> means "draw no line here", and this library's own DOCX
+        /// writer spells it <c>w:val="nil"</c>. The PPTX cell path still emitted an
+        /// <c>a:solidFill</c> anyway, so <c>Table.Borders = TableBorders.None()</c> saved out as a
+        /// fully ruled black grid — the opposite of what was declared.
+        /// </summary>
+        private static void RunCellBorderNoneMeansNoLineTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TableShape frame = slide.AddTable(60, 60, 700, 160);
+            Table model = frame.Table;
+            model.Borders = TableBorders.None();
+            model.Borders.Top = BorderLine.Thin();
+            model.AddRow("甲", "乙");
+            model.AddRow("丙", "丁");
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] tables = ReadTables(written, "ppt/slides/slide1.xml");
+            Require(tables.Length == 1, "expected one a:tbl, got " + tables.Length);
+            XElement[] trs = tables[0].Elements(A + "tr").ToArray();
+            Require(trs.Length == 2, "expected two a:tr, got " + trs.Length);
+
+            for (int r = 0; r < trs.Length; r++)
+            {
+                XElement[] tcs = trs[r].Elements(A + "tc").ToArray();
+                for (int c = 0; c < tcs.Length; c++)
+                {
+                    XElement tcPr = tcs[c].Element(A + "tcPr");
+                    string where = "row " + r + " cell " + c + " ";
+                    Require(EdgeHex(tcPr, "lnT") == (r == 0 ? "000000" : "<noFill>"),
+                        where + "lnT was " + EdgeHex(tcPr, "lnT") + (r == 0 ? ", the declared thin ring line is gone" : ", a borderless edge still drew a line"));
+                    Require(EdgeHex(tcPr, "lnB") == "<noFill>", where + "lnB was " + EdgeHex(tcPr, "lnB"));
+                    Require(EdgeHex(tcPr, "lnL") == "<noFill>", where + "lnL was " + EdgeHex(tcPr, "lnL"));
+                    Require(EdgeHex(tcPr, "lnR") == "<noFill>", where + "lnR was " + EdgeHex(tcPr, "lnR"));
+                }
+            }
         }
 
         /// <summary>
