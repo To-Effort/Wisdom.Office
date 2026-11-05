@@ -34,6 +34,7 @@ namespace Wisdom.Office.Tests
             RunSectionHeaderLayoutSurvivesTest();
             RunAppPropertiesSchemaOrderTest();
             RunTimingTreeShapeTest();
+            RunNonFirstShapeAnimationDelayTest();
             RunBaselineAndSpacingRoundTripTest();
             RunVerticalMergeGridTest();
 
@@ -1061,6 +1062,56 @@ namespace Wisdom.Office.Tests
                 "the animation duration did not read back: " + back.AnimationDurationSeconds);
             Require(Math.Abs(back.AnimationDelaySeconds - 0.25) < 0.001,
                 "the animation delay did not read back: " + back.AnimationDelaySeconds);
+        }
+
+        /// <summary>
+        /// PT2 的连带口径：每一形状自己的 <c>AnimationDelaySeconds</c> 都要写进它那个延迟节点的数值
+        /// <c>delay</c>，读回也要逐形状对上；旧写法只让第一个（自动放映那条）带数值，其余一律
+        /// <c>indefinite</c>，回读成 0。触发节点仍是单击语义，不许把 <c>indefinite</c> 当延迟读出来。
+        /// The follow-on rule from PT2: every shape's own <c>AnimationDelaySeconds</c> must land as a numeric
+        /// <c>delay</c> on that shape's delay node and read back per shape; the old writer gave only the first
+        /// (auto-advance) shape a number and left the rest <c>indefinite</c>, which read back as 0. Trigger
+        /// nodes keep their click semantics and their <c>indefinite</c> must never be read as a delay.
+        /// </summary>
+        private static void RunNonFirstShapeAnimationDelayTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            double[] delays = new double[] { 1.2, 0.8, 0.4, 0.0 };
+            string[] expected = new string[] { "1200", "800", "400", "0" };
+            for (int i = 0; i < delays.Length; i++)
+            {
+                TextBoxShape box = slide.AddTextBox(40, 40 + i * 90, 320, 70, "形状 " + (i + 1).ToString());
+                box.Animation = SlideAnimationKind.Fade;
+                box.AnimationDelaySeconds = delays[i];
+            }
+
+            byte[] written = WriteToBuffer(deck);
+            XElement timing = ReadSlideXml(written, "ppt/slides/slide1.xml").Root.Element(P + "timing");
+            Require(timing != null, "the animated slide carries no p:timing");
+
+            List<string> values = timing.Descendants(P + "cond")
+                .Select(c => (string)c.Attribute("delay"))
+                .Where(v => v != null)
+                .ToList();
+            for (int i = 0; i < expected.Length; i++)
+            {
+                if (expected[i] == "0") continue;
+                Require(values.Contains(expected[i]),
+                    "the delay of " + expected[i] + " ms never reached the file, wrote: "
+                    + string.Join(", ", values.ToArray()));
+            }
+
+            OfficePresentation loaded = PptxReader.Load(written);
+            Require(loaded.Slides.Count == 1 && loaded.Slides[0].Shapes.Count == 4,
+                "the round trip lost shapes: " + loaded.Slides[0].Shapes.Count);
+            for (int i = 0; i < delays.Length; i++)
+            {
+                SlideShape back = loaded.Slides[0].Shapes[i];
+                Require(Math.Abs(back.AnimationDelaySeconds - delays[i]) < 0.001,
+                    "shape " + i + " delay did not read back: expected " + delays[i]
+                    + ", got " + back.AnimationDelaySeconds);
+            }
         }
 
         /// <summary>
