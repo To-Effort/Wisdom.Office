@@ -37,6 +37,7 @@ namespace Wisdom.Office.Tests
             RunAppearanceWriteBackTest();
             RunNamedCmapTextTest();
             RunInheritedResourceAliasTest();
+            RunAbbreviatedFilterKeyTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -618,6 +619,55 @@ namespace Wisdom.Office.Tests
             file.SetPageResource(0, "Font", "F1", new PdfReference(secondNumber, 0));
             Require(FontNumber(file, 1) == helvetica,
                 "page 0 re-registered /F1, but page 1's /F1 now resolves to the same object");
+        }
+
+        /// <summary>
+        /// PD24：流字典按规范认 <c>/DP</c> 缩写，却认不出同族的 <c>/F</c> 缩写——写成 <c>/F /Fl</c> 的正文
+        /// 当成未过滤的原字节交回，整页文本静默变空。
+        /// PD24: the stream decoder honours the abbreviated /DP key but not its sibling /F, so content
+        /// written as "/F /Fl" is handed back as unfiltered raw bytes and the page's text silently empties.
+        /// </summary>
+        private static void RunAbbreviatedFilterKeyTest()
+        {
+            string content = "BT /F1 12 Tf 20 700 Td (Hi) Tj ET";
+            byte[] raw = Encoding.ASCII.GetBytes(content);
+            byte[] packed = Zlib.Compress(raw);
+
+            // 用例一：/Filter 写成缩写 /F，压缩过的正文照常可读。
+            // Case one: with /Filter written as the abbreviated /F, the compressed body still has to read.
+            string text = PdfDocument.Load(BuildFilterKeyPdf("/F /Fl")).ExtractText();
+            Require(text != null && text.IndexOf("Hi", StringComparison.Ordinal) >= 0,
+                "a content stream filtered with the abbreviated /F key decoded as raw bytes, got '" + text + "'");
+
+            // 控制用例：加密转换的流字典里 /F 是一个标志整数，不能当成过滤器名认。
+            // Control: in a crypt-converted stream dictionary /F is a flags integer and must not be read as
+            // a filter name.
+            string flagsText = PdfDocument.Load(BuildFilterKeyPdf("/F 3")).ExtractText();
+            Require(flagsText != null && flagsText.IndexOf("Hi", StringComparison.Ordinal) >= 0,
+                "a plain stream whose /F holds a flags integer lost its text, got '" + flagsText + "'");
+        }
+
+        /// <summary>
+        /// 拼一页正文流，流字典里过滤器那一项由参数给定。Assembles a one-page content stream whose filter entry comes from the argument.
+        /// </summary>
+        /// <param name="filterEntry">流字典里的过滤器语句，如 <c>/F /Fl</c>。The filter clause, such as "/F /Fl".</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildFilterKeyPdf(string filterEntry)
+        {
+            string content = "BT /F1 12 Tf 20 700 Td (Hi) Tj ET";
+            byte[] packed = Zlib.Compress(Encoding.ASCII.GetBytes(content));
+            bool compressed = filterEntry.IndexOf("/Fl", StringComparison.Ordinal) >= 0;
+            byte[] body = compressed ? packed : Encoding.ASCII.GetBytes(content);
+            string[] bodies = new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+                    + "/Resources << /Font << /F1 5 0 R >> >> >>",
+                "<< " + filterEntry + " /Length " + body.Length + " >>\nstream\n",
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            };
+            return AssembleBinaryPdf(bodies, 3, body, "\nendstream");
         }
 
         /// <summary>
