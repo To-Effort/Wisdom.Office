@@ -198,6 +198,13 @@
 - 目标行为：`/Filter` 缺席时取 `/F`；取不出过滤器名（`/F` 是富文本流与加密转换里那个整数标志）即按无过滤器处理，不误认。写出端从不发缩写，产出字节不变。
 - 红测：一页正文流，字典分别写 `/F /Fl`（压缩正文，断言抽出 `Hi`）与 `/F 3`（未压缩正文，控制用例断言同样抽出 `Hi`、不被误当过滤器）。
 
+### PD25｜名称的 `#HH` 转义读写不成对：写出按 UTF-8 展开，读回按字节逐字符还原　A
+
+- 位置：`src/Wisdom.Pdf/Syntax/PdfObjects.cs` 的 `PdfNameEscape.Escape`（非 ASCII 先按 UTF-8 展开，注释自己写明）对 `src/Wisdom.Pdf/Parsing/PdfParser.cs` 的 `ReadNameRaw`（`builder.Append((char)((high << 4) | low))`，一个 `#HH` 一个字符）。
+- 后果：`/Label /#e4#b8#adA#e6#96#87` 读回成 7 个字符（`U+00E4 U+00B8 U+00AD A U+00E6 U+0096 U+0087`，三个码位变七个），载入再存盘又展开成更长的转义串，名称每往返一次变形一次；表单的勾选态名（`/V`、`/AS`、`/AP` 的键）对不上，选中态与外观随之失配。半边代理各编码成 `?`，星外字符在文件里直接丢失。
+- 目标行为：读回端攒起名称字节按 UTF-8 解码，只有能原样编回同一串字节时才采用，否则退回逐字节（历史名称把高位写成单字节，硬按 UTF-8 解会得到替换符，等于凭空造字符）；写端把成对代理当一个码位展开。
+- 红测：目录上挂 `SetName("Label", "中A文")` 存盘读回，要求值不变且文件里确实是 UTF-8 展开的转义串；再加一枚星外字符要求四个 UTF-8 字节整体展开；控制用例读 `/Marked /A#80B`，要求仍按 `A`、`U+0080`、`B` 逐字节还原。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -459,6 +466,7 @@
 | `WE14` | HTML / RTF / ODT 三个读端新增按首行 `IsHeader` 回写 `Table.RepeatHeaderRow`（此前留着构造默认的 `true`）：经这三跳再存 DOCX 的表格不再冒出 `w:tblHeader`。只有「首行不是表头」这一类表格的产物形状变化（变化本身就是修复），声明过表头的照旧；DOCX 直进直出一字节不变 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增「重复表头只有 DOCX 带得动」一段；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格设了不重复表头，转一趟格式再存成 DOCX 又开始重复」 |
 | `PD23` | 页面自身没有 `/Resources` 时，`SetPageResource` 从「就地改写继承来的那一份」改为「按页复制一份、连分类组一起脱开再写」：登记不再串页，同名条目不再相互顶替。本库新建稿每页自带 `/Resources`，走不到这条，一字节不变；只有把资源挂在 `/Pages` 上的第三方稿，其水印与外观扁平化的资源名与分组归属随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「编辑既有 PDF 与水印」新增按页脱开一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「给第三方 PDF 逐页登记资源，另一页的同名条目被顶掉了」 |
 | `PD24` | 读端补认流字典的缩写键 `/F`（`/Filter`），与既认的 `/DP` 对齐：过去写成 `<< /F /Fl >>` 的正文按原字节交回、整页文字静默为空，现在照常解码。写出端从不发缩写，产出字节不变；`/F` 是整数标志时仍按无过滤器处理 | `src/Wisdom.Pdf/README.md`「解析 PDF」新增解码链一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的 PDF 在阅读器里显示正常，抽出来却是空的」 |
+| `PD25` | 名称读回端由「一个 `#HH` 一个字符」改为「攒起字节按 UTF-8 还原」，且只在能原样编回同一串字节时才采用，否则退回逐字节（历史高位单字节名不凭空造替换符）；写端把成对代理当一个码位展开，星外字符不再各编成 `?` 而丢失。纯 ASCII 名称的产物一字节不变；带非 ASCII 名称的第三方稿载入再存盘不再逐次增长，带星外字符的名称写出字节变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「解析 PDF」新增名称转义成对一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的表单打开再存一次，选项名对不上了」 |
 
 ---
 
@@ -775,6 +783,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 只在 `/Filter` 缺席时取 `/F`，顺序按规范（全称优先）；取不出名字即 `continue`，所以富文本流与加密转换里写作 `/F` 的整数标志不会被误认成过滤器——这一头由控制用例钉住：同一段正文，字典写 `/F 3` 且不压缩，修复前后都要求抽出 `Hi`。
   - 字节口径：写出端从不发缩写键，产出与保存链路一字节不变；变化只在读端，让过去解不开的合法文件解开。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PD25` 名称的 `#HH` 转义读写不成对（`82b907e` 取证 + `0093819` 修复）：`PdfNameEscape.Escape` 按 UTF-8 展开非 ASCII，`ReadNameRaw` 却一个 `#HH` 追加一个字符，读写两侧对「名称是字节」这件事只认一边；`/Label /#e4#b8#adA#e6#96#87` 读回 3 个码位变 7 个，再存盘又展开成更长的转义串，往返一次变形一次。
+  - 修复前失败原文（两个 TFM 停在同一句，net461 只是把栈帧译成中文）。引号里的 `?` 是控制台按当前代码页对高位字符的渲染替换，实际读回的是逐字节的 7 个字符（`U+00E4 U+00B8 U+00AD A U+00E6 U+0096 U+0087`，其中两枚 C1 控制符无法显示）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a name written as /#e4#b8#adA#e6#96#87 read back as '??-A???' instead of 中A文
+      at Wisdom.Office.Tests.Program.RunNameEscapeRoundTripTest() ... RemediationPhaseFourTests.cs:line 692
+    ```
+
+  - 读端先攒字节：只有 `GetBytes(GetString(bytes))` 能原样编回同一串（长度与逐字节都相等）才采用 UTF-8 结果，否则退回逐字节。这条判定是必须的，不是保险——历史写法把高位直接落成单字节（`/A#80B`），硬按 UTF-8 解码会得到 U+FFFD，等于凭空造出原稿没有的字符；控制用例钉住它仍按 `A`、`U+0080`、`B` 三字符还原。
+  - 写端补代理对：`Escape` 遇到高位代理且后继是低位代理时按整个码位取子串再编码，此前半边代理各走 `Encoding.UTF8.GetBytes` 降级成 `?`（`0x3F`），星外字符在文件里直接丢了。
+  - 字节口径：纯 ASCII 名称不受影响，本库默认产物一字节不变；带 BMP 非 ASCII 名称的第三方稿载入再存盘不再逐次增长（转义串长度稳定），带星外字符的名称写出字节变化——过去是 `?`，现在是四个 UTF-8 字节的转义，变化本身就是修复。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
