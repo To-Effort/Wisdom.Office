@@ -263,6 +263,13 @@
 - 目标行为：`Double` 写 `cmpd="dbl"`（形状描边与表格边线两条路径同改），`Dotted` 写 `sysDot`；读端优先看 `cmpd`，同时继续认历史文件里的 `prstDash val="dbl"`，让 1.0.2 之前存出的双线仍然读得回来。实线与虚线的字节不动。
 - 红测：一份双线描边 + 点线描边 + 双线表格边线的稿子，断言文件里不出现 `prstDash val="dbl"`、双线形状的 `a:ln@cmpd="dbl"` 在位、点线落在圆点档、表格某条 `a:lnX@cmpd="dbl"` 在位，`PptxReader.Load` 回读 `Style` 仍是 `Double` 与 `Dotted`。
 
+### PT12｜`Table.Borders` 六个方向只有一个真正生效　A
+
+- 位置：`src/Wisdom.Ppt/Pptx/PptxWriter.cs:1236`（`BorderLine inside = model.Borders != null ? model.Borders.InsideHorizontal : BorderLine.Thin();`）→ `CreateTcProperties` 把四条边一并初始化成这一个对象（`:1376`），只有 `cell.Borders` 能逐边覆盖。
+- 后果：`TableBorders` 的 `Top`/`Bottom`/`Left`/`Right`/`InsideVertical` 五份声明写不出门。外圈 3 磅、内部 1 磅是演示稿表格最常见的写法，存一次盘四条边一样粗；读端从不解析 `a:lnL`/`lnR`/`lnT`/`lnB`（`PptxReader.cs:957-960` 自己写明），于是这份丢失在往返里连痕迹都不留。
+- 目标行为：每条边按单元格落在网格的哪一格取声明——贴外圈的走六个方向各自的边，内部的走两条分隔线，跨行跨列的合并块按自身首末行列判定，`TableCell.Borders` 仍逐边优先。`TableBorders` 的默认六向同为 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。
+- 红测：2 行 3 列表格，六个方向各给不同颜色与线宽，逐格断言 `a:lnT`/`lnB`/`lnL`/`lnR` 的 `srgbClr@val` 与 `w` 落在该落的那份声明上。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -394,6 +401,7 @@
 | `PT3` 结构档·段落符号 | 每段末尾的 `a:buNone` 不再无条件写出：无 `ListMarker` 时不写任何 bullet 子元素，全段无属性时连 `a:pPr` 一并省略。自家母版与版式不定义符号，故新建产物字节不变；差别在载入第三方稿再存盘——过去那份逐段压制等于关掉母版里的项目符号，现在符号继承照常生效。代价是「显式关掉符号」与「未设置」在模型里仍同一个值，来稿中的 `buNone` 存盘后不保留 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增段落属性一段（含这条边界）；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「用本库打开别人的演示稿再存盘，列表的项目符号全消失了」 |
 | `PT3` 结构档·文本框折行 | `TextBoxShape` 新增 public 可空字段 `WrapText`（纯增项，不破坏既有调用）。写端仍按「未设置 → `wrap="square"`」落，自家产物字节不变；差别在载入第三方稿：过去 `wrap="none"` 被读端完全忽略、写端一律钉成 square，那条不许折行的单行标题存一次盘就开始在框内折行。现在 `false` 写 `none`、`none` 读回 `false`；`square`/`emergency`/属性缺失一律读成 null（文件里没有任何一句「要折行」值得当成声明，`emergency` 本库模型也表达不了） | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」段落属性一段后补折行一段、「已知限制」补 `emergency` 与 true 不往返的边界；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「载入别人的稿子后那一行标题开始折行」 |
 | `PT11` | 双线不再写进 `a:prstDash`（`ST_PresetLineDashVal` 没有 `dbl` 这一档），改写成 `a:ln@cmpd="dbl"`；点线从 `sysDash`（长划）改成 `sysDot`。用过这两种线型的稿件在双线/点线两处字节变化，实线与虚线不动；读端补 `cmpd` 识别，并继续认历史文件里的 `prstDash val="dbl"`，旧稿读回仍是双线 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增线型一段、「已知限制」补「表格边线只出不进」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「双线边框存一次盘变成单线」 |
+| `PT12` | 表格四条边不再一律取 `InsideHorizontal`：贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线，合并块按自身首末行列判定，`TableCell.Borders` 逐边优先。`Table()` 的默认六向同为细黑线，没动过 `Borders` 的稿子一个字节不变；只有声明过非默认方向的稿子随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格边框一段，「已知限制」的「只出不进」改写为按六向落位；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「表格外圈加粗，保存后四条边一样粗」 |
 
 ---
 
@@ -661,5 +669,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
     ```
 
   - 夹具是三件东西同页：双线描边矩形、点线描边矩形、一张把 `Borders.InsideHorizontal` 设成双线的表格。断言分四层——整页 `a:prstDash` 里不得出现 `dbl`（枚举外值本身就是缺陷证据，不必等读端）、双线形状的 `a:ln@cmpd` 必须是 `dbl`、点线形状的 `prstDash val` 必须落在圆点档、表格里至少一条 `a:lnL/lnR/lnT/lnB` 带 `cmpd="dbl"`；最后 `PptxReader.Load` 回读断言两个 `Outline.Style` 仍是 `Double` 与 `Dotted`。表格那一路顺便暴露一件事：单元格的 `a:lnL/lnR/lnT/lnB` 读端从不解析（`PptxReader.cs:957-960` 自己写明），所以表格边框只出不进，这条已写进「已知限制」。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PT12` 表格边框方向（`32b33a4` + `ec24b6f`）：`Table.Borders` 的六个方向里只有一个真正写得出门。
+  - `CreateTableElement` 只留一条 `BorderLine inside = model.Borders.InsideHorizontal`，`CreateTcProperties` 又把 `left/right/top/bottom` 四个变量一并初始化成它，于是 `Top`/`Bottom`/`Left`/`Right`/`InsideVertical` 五份声明在文件里查无此线——外圈 3 磅、内部 1 磅这种写法存一次盘塌成四条同粗的边。它与 `PT3` 那批不同源：那里是写端替调用者多说话，这里是少说话，声明在模型里、落不进文件。
+  - 修法是按位置取边而不是加字段：新增 `ResolveEdges(borders, row, rowSpan, totalRows, column, colSpan, gridCols)` 返回一个四边对象，贴外圈的那条边用对应方向，内部用两条分隔线；合并块用 `coveredUntil` 记下块内最末一行，续接格与补齐空格也各自按所在网格位置判定，不再共用一条线。`TableCell.Borders` 的逐边覆盖照旧优先。
+  - 字节口径：`Table()` 构造器给的是 `new TableBorders()`，六个方向同为 0.5 磅黑色细实线，所以没动过 `Borders` 的稿子逐字节不变；只有声明过非默认方向的稿子开始按声明画线。读端仍不解析 `a:lnL/lnR/lnT/lnB`（`PptxReader.cs:957-960`），这条留在「已知限制」里，本批只是让写端不再丢声明。
+  - 修复前失败原文（`net8.0`，`net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: row 0 cell 0 lnT was 808080, expected FF0000
+       at Wisdom.Office.Tests.Program.RunTableBorderDirectionsLandTest() ... RemediationPptPhaseFourTests.cs:line 557
+    ```
+
+  - 夹具是一张 2 行 3 列的表，六个方向各给一种颜色与线宽（外圈 3 磅四种色、内部 1 磅两色），逐格断言 `a:lnT`/`lnB`/`lnL`/`lnR` 的 `srgbClr@val` 与该取的色一致、`w` 落在 38100 或 12700 上——一张表同时盯住「方向有没有落位」和「线宽有没有落位」，也顺便钉住首行与末行、首列与末列的判定边界。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。

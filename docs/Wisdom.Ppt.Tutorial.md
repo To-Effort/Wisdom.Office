@@ -546,6 +546,8 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 **双线边框存一次盘变成单线。** 已修。PresentationML 把线型拆在两个地方：虚线、点线是**划线图案**，写在 `a:ln` 下的 `a:prstDash`；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl`。过去写出器把 `BorderStyle.Double` 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端 `MapDashStyle` 认不出来一律回落 `Single`，双线存一次盘就降成单线；同批的还有点线，那时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线都按 `cmpd="dbl"` 写双线，点线写 `sysDot`；读端优先看 `cmpd`，并继续认旧文件里 `prstDash val="dbl"` 这份历史写法，所以早前版本存出的双线仍然读得回来。单线、虚线的字节没动（`cmpd` 缺省就是 `sng`，非双线时形状描边干脆不写这个属性）。要说边界：表格的 `a:lnL`/`lnR`/`lnT`/`lnB` 四条边线只出不进，读回不解析，所以表格边框不往返，形状描边的线型与颜色才会。
 
+**表格外圈加粗，保存后四条边一样粗。** 已修。`Table.Borders` 有六个方向：`Top`/`Bottom`/`Left`/`Right` 是外圈四条边，`InsideHorizontal`/`InsideVertical` 是内部的两条分隔线。写出器过去只读 `InsideHorizontal`，四条边一律拿它当默认，其余五份声明在文件里查无此线——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。现在按单元格落在网格哪一格决定每条边取哪份声明，合并块按它自己的首末行列判定，`TableCell.Borders` 的四边优先、逐格覆盖表格方向。默认六个方向都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。要说边界：读端不解析 `a:lnL`/`lnR`/`lnT`/`lnB`，表格边框只出不进，`Table.Borders` 不会从文件里回来。
+
 **只想改字号，保存后连字体一起被换了。** 不会。写出器只把**显式设过**的字符属性落进 `<a:rPr>`：`run.Format.FontSize = 11` 只写 `sz="1100"`，字体与颜色仍由版式、母版决定。以前 `TextFormat` 构造器预置的 Arial / 11 磅 / 黑色会被当成调用者的意图，于是母版里 18pt 的主题字体被一个显式 `a:latin` 压成 11pt Arial。判定依据是 `TextFormat` 的三个只读标记 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor`：`new TextFormat()` 的预置值不点亮它们，`new TextFormat("Calibri", 18)` 三项都点亮。第 2 步里那句 `Format.FontSize = 11` 因此只影响字号，读回来的 `FontSize` 仍是 11（没写进文件的属性按模型默认值读回）。
 
 **图片读回来字节不对 / 打不开。** 只支持 PNG 与 JPEG；`.emf`、`.svg`、`.gif` 不解析。教程里那颗 1 x 1 的 PNG（70 字节）就是最省事的自造图片。
