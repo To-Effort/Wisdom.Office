@@ -38,6 +38,7 @@ namespace Wisdom.Office.Tests
             RunNamedCmapTextTest();
             RunInheritedResourceAliasTest();
             RunAbbreviatedFilterKeyTest();
+            RunNameEscapeRoundTripTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -668,6 +669,99 @@ namespace Wisdom.Office.Tests
                 "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
             };
             return AssembleBinaryPdf(bodies, 3, body, "\nendstream");
+        }
+
+        /// <summary>
+        /// PD25：名称的 <c>#HH</c> 转义在两端不成对——写出端把非 ASCII 按 UTF-8 展开，读回端一个字节还原一个字符，
+        /// 载进来再存一次盘，名称逐次变形；代理对更惨，两半各退化成一个 <c>?</c>。
+        /// PD25: the #HH escaping of names is unpaired across the two ends — the writer expands non-ASCII as
+        /// UTF-8 while the reader turns every byte back into one character, so a load-and-save cycle rewrites
+        /// the name each time; a surrogate pair is worse, its halves each collapse into a "?".
+        /// </summary>
+        private static void RunNameEscapeRoundTripTest()
+        {
+            PdfFile file = PdfFile.Load(BuildCatalogNameFixture());
+            file.Catalog.SetName("Label", "中A文");
+            byte[] saved = file.SaveToBytes();
+            string written = Encoding.ASCII.GetString(saved);
+            Require(written.IndexOf("/Label /#e4#b8#adA#e6#96#87", StringComparison.Ordinal) >= 0,
+                "PD25 control failed: the writer no longer expands a name as UTF-8, file holds '"
+                    + NameClause(written, "/Label") + "'");
+
+            PdfName label = PdfFile.Load(saved).Catalog.Get("Label") as PdfName;
+            Require(label != null && label.Value == "中A文",
+                "a name written as /#e4#b8#adA#e6#96#87 read back as '"
+                    + (label == null ? "<missing>" : label.Value) + "' instead of 中A文");
+
+            // 成对代理必须按整个码位展开；一半一半地编码会得到两个问号。
+            // A surrogate pair has to expand as the whole code point; encoding each half alone yields a pair
+            // of question marks.
+            PdfFile starFile = PdfFile.Load(BuildCatalogNameFixture());
+            starFile.Catalog.SetName("Star", "★😀x");
+            byte[] starSaved = starFile.SaveToBytes();
+            string starWritten = Encoding.ASCII.GetString(starSaved);
+            Require(starWritten.IndexOf("/Star /#e2#98#85#f0#9f#98#80x", StringComparison.Ordinal) >= 0,
+                "the astral character did not survive as its four UTF-8 bytes, file holds '"
+                    + NameClause(starWritten, "/Star") + "'");
+            PdfName star = PdfFile.Load(starSaved).Catalog.Get("Star") as PdfName;
+            Require(star != null && star.Value == "★😀x",
+                "the astral name read back as '" + (star == null ? "<missing>" : star.Value) + "' instead of ★😀x");
+
+            // 控制用例：单个高位字节不是合法的 UTF-8 起始串，只能按历史口径逐字节还原，
+            // 不能凭空造出替换符——旧稿的名称本来就是这个样子。
+            // Control: a lone high byte is not a valid UTF-8 sequence, so it must still come back byte per
+            // char the legacy way instead of being invented as a replacement character.
+            byte[] legacy = AssembleClassicPdf(new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R /Marked /A#80B >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+            }, 1, null);
+            PdfName legacyName = PdfFile.Load(legacy).Catalog.Get("Marked") as PdfName;
+            Require(legacyName != null && legacyName.Value.Length == 3
+                && legacyName.Value[0] == 0x41 && legacyName.Value[1] == 0x80 && legacyName.Value[2] == 0x42,
+                "a legacy one-byte name came back as '"
+                    + (legacyName == null ? "<missing>" : EscapeForMessage(legacyName.Value))
+                    + "' instead of A\\u0080B byte for byte");
+        }
+
+        /// <summary>拼一份目录里只挂着页面树的夹具，供名称读写。Assembles a fixture whose catalog only carries the page tree, for name round-trips.</summary>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildCatalogNameFixture()
+        {
+            return AssembleClassicPdf(new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+            }, 1, null);
+        }
+
+        /// <summary>取出文件里某个名称键后面那一句，便于失败信息点名。Pulls the clause written after one name key out of the file for the failure message.</summary>
+        /// <param name="fileText">保存结果的 ASCII 文本。The ASCII text of the saved file.</param>
+        /// <param name="key">带斜杠的名称键。The name key with its slash.</param>
+        /// <returns>该句文本，找不到时给占位串。The clause, or a placeholder when absent.</returns>
+        private static string NameClause(string fileText, string key)
+        {
+            int at = fileText.IndexOf(key, StringComparison.Ordinal);
+            if (at < 0) return "<" + key + " missing>";
+            int end = at;
+            while (end < fileText.Length && fileText[end] != '\n' && fileText[end] != '>') end++;
+            return fileText.Substring(at, end - at);
+        }
+
+        /// <summary>把名称里的不可见字符显形。Makes the invisible characters of a name visible.</summary>
+        /// <param name="value">名称正文。The name body.</param>
+        /// <returns>可打印的描述。A printable description.</returns>
+        private static string EscapeForMessage(string value)
+        {
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] >= 32 && value[i] < 127) builder.Append(value[i]);
+                else builder.Append("\\u").Append(((int)value[i]).ToString("x4", CultureInfo.InvariantCulture));
+            }
+            return builder.ToString();
         }
 
         /// <summary>
