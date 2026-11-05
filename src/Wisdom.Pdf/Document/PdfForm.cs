@@ -307,7 +307,9 @@ namespace Wisdom.Pdf
             set { _onState = value; }
         }
 
-        /// <summary>生效默认外观串（<c>/DA</c>）。The effective default appearance string (<c>/DA</c>).</summary>
+        /// <summary>生效的默认外观串（<c>/DA</c>）：本域缺失时沿父域回溯，再退回 AcroForm 上的文档默认。
+        /// The effective default appearance string (<c>/DA</c>): up the parent chain, then the AcroForm's
+        /// document-wide default.</summary>
         public string DefaultAppearance { get { return _defaultAppearance; } }
 
         /// <summary>生效对齐方式（<c>/Q</c>）：0 左、1 中、2 右。The effective alignment (<c>/Q</c>): 0 left, 1 centre, 2 right.</summary>

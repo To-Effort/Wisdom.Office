@@ -291,7 +291,7 @@ namespace Wisdom.Pdf
                     PdfReference reference = roots[i] as PdfReference;
                     PdfDictionary dictionary = Resolve(roots[i]) as PdfDictionary;
                     if (dictionary == null || reference == null) continue;
-                    BuildFormField(dictionary, reference.Number, null, visited, fields);
+                    BuildFormField(dictionary, reference.Number, null, acroForm, visited, fields);
                 }
             }
 
@@ -306,6 +306,7 @@ namespace Wisdom.Pdf
         /// <param name="dictionary">字段字典。The field dictionary.</param>
         /// <param name="number">字段对象号。The field object number.</param>
         /// <param name="parent">父字段。The parent field.</param>
+        /// <param name="acroForm">AcroForm 字典，供 <c>/DA</c> 这一层文档默认回退。The AcroForm dictionary, the last stop for the document-wide /DA.</param>
         /// <param name="visited">已访问对象号，防环。Visited object numbers, guarding against loops.</param>
         /// <param name="all">输出字段列表。The output field list.</param>
         /// <returns>新建的字段节点；重复访问时返回 null。The created node, or null when the object was already visited.</returns>
@@ -313,6 +314,7 @@ namespace Wisdom.Pdf
             PdfDictionary dictionary,
             int number,
             PdfFormField parent,
+            PdfDictionary acroForm,
             HashSet<int> visited,
             List<PdfFormField> all)
         {
@@ -321,7 +323,13 @@ namespace Wisdom.Pdf
             string name = PdfFormReader.ReadString(this, dictionary.Get("T"));
             string fieldType = PdfFormReader.GetNameChain(this, dictionary, "FT");
             int flags = PdfFormReader.GetInheritedInt(this, dictionary, "Ff", 0);
+            // 可继承条目回溯的终点是 AcroForm：/DA 常只写在表单元上（Acrobat 就这么存），
+            // 只沿父域走到顶的读法会把全文档默认外观读成空。
+            // Inheritance for field entries ends at the AcroForm dictionary: /DA is routinely declared only there
+            // (that is how Acrobat stores it), and a chain that stops at the root field reads the document-wide
+            // default appearance as empty.
             string defaultAppearance = PdfFormReader.GetStringChain(this, dictionary, "DA");
+            if (string.IsNullOrEmpty(defaultAppearance)) defaultAppearance = PdfFormReader.GetString(this, acroForm, "DA");
             int quadding = PdfFormReader.GetInheritedInt(this, dictionary, "Q", 0);
 
             PdfFormField field = new PdfFormField(this, dictionary, number, parent, name, fieldType, flags,
@@ -349,7 +357,7 @@ namespace Wisdom.Pdf
                         if (field.RectValue.IsEmpty) field.RectValue = PdfFormReader.ReadRect(this, kid);
                         continue;
                     }
-                    PdfFormField child = BuildFormField(kid, reference.Number, field, visited, all);
+                    PdfFormField child = BuildFormField(kid, reference.Number, field, acroForm, visited, all);
                     if (child != null) field.AddChild(child);
                 }
             }
