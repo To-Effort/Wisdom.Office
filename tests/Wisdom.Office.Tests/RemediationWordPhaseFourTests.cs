@@ -34,6 +34,7 @@ namespace Wisdom.Office.Tests
             RunWritersTolerateNullModelFieldsTest();
             RunWritersNeverTruncateTheOriginalTest();
             RunCorruptHeaderPartIsReportedTest();
+            RunOdtPageCountFieldTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -361,6 +362,123 @@ namespace Wisdom.Office.Tests
             // and "broken" really are distinguishable.
             OfficeDocument ok = WordFormatConverter.Load(clean, WordDocumentFormat.Docx);
             Require(ok.Warnings.Count == 0, "a clean document reported " + ok.Warnings.Count + " downgrade notice(s)");
+        }
+
+        /// <summary>
+        /// WE12：ODT 写出器用 <c>Instruction.IndexOf("PAGE")</c> 认页码域，<c>NUMPAGES</c> 里就含
+        /// 「PAGE」这四个字母，于是「共 8 页」被写成 <c>&lt;text:page-number&gt;</c>——LibreOffice 在每一页
+        /// 把它渲染成当前页码，页脚变成「第 3 页 共 3 页」。ODF 本有 <c>&lt;text:page-count&gt;</c>，
+        /// 本库既不写也不读。另外三个写出器都把指令原样带过去，这条只在 ODT 上塌。
+        /// WE12: the ODT writer recognised page fields with <c>Instruction.IndexOf("PAGE")</c>, and
+        /// "NUMPAGES" contains those four letters, so "of 8 pages" went out as
+        /// <c>&lt;text:page-number&gt;</c> — LibreOffice renders that as the current page, turning the footer
+        /// into "page 3 of 3". ODF has <c>&lt;text:page-count&gt;</c>; this library neither wrote nor read it.
+        /// The other three writers carry the instruction verbatim, so only the ODT path collapsed.
+        /// </summary>
+        private static void RunOdtPageCountFieldTest()
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection(PageSetup.A4());
+            Paragraph footer = section.AddParagraph(string.Empty);
+            footer.AddText("第 ");
+            footer.Inlines.Add(new FieldRun("PAGE", "1", new TextFormat()));
+            footer.AddText(" 页　共 ");
+            footer.Inlines.Add(new FieldRun("NUMPAGES", "8", new TextFormat()));
+            footer.AddText(" 页");
+
+            byte[] odt = OdtWriter.Write(document);
+            string content;
+            using (MemoryStream buffer = new MemoryStream(odt))
+            using (ZipArchive archive = new ZipArchive(buffer, ZipArchiveMode.Read))
+            {
+                content = ReadZipEntryText(archive, "content.xml");
+            }
+
+            Require(content.IndexOf("text:page-count", StringComparison.Ordinal) >= 0,
+                "NUMPAGES wrote no text:page-count, so the total is drawn as a page number: "
+                + FieldExcerpt(content));
+            Require(CountOf(content, "<text:page-number") == 1,
+                "expected exactly one text:page-number (the PAGE field), found "
+                + CountOf(content, "<text:page-number") + ": " + FieldExcerpt(content));
+
+            OfficeDocument loaded = OdtReader.Load(odt);
+            List<string> instructions = FieldInstructions(loaded);
+            Require(instructions.Contains("PAGE"), "the PAGE field did not come back: " + Join(instructions));
+            Require(instructions.Contains("NUMPAGES"),
+                "the NUMPAGES field did not come back: " + Join(instructions));
+
+            // 控制：DOCX 一侧本来就把指令原样写读，证明这份信息在模型里是有家的。
+            // Control: the DOCX path already carries the instruction both ways, so the model has a home
+            // for this information and only ODT was dropping it.
+            byte[] docx = DocxWriter.Write(document);
+            OfficeDocument docxBack = DocxReader.Load(docx);
+            List<string> docxInstructions = FieldInstructions(docxBack);
+            Require(docxInstructions.Contains("NUMPAGES"),
+                "the DOCX control stopped carrying NUMPAGES: " + Join(docxInstructions));
+        }
+
+        /// <summary>收集文档里所有域指令。 Collects every field instruction in the document.</summary>
+        /// <param name="document">待检查的文档。The document to inspect.</param>
+        /// <returns>域指令列表。The instruction list.</returns>
+        private static List<string> FieldInstructions(OfficeDocument document)
+        {
+            List<string> found = new List<string>();
+            foreach (Section section in document.Sections)
+            {
+                CollectFieldInstructions(section.Blocks, found);
+                if (section.Footer != null) CollectFieldInstructions(section.Footer.Blocks, found);
+                if (section.Header != null) CollectFieldInstructions(section.Header.Blocks, found);
+            }
+            return found;
+        }
+
+        /// <summary>递归收集块里的域指令。 Recursively collects field instructions from a block list.</summary>
+        /// <param name="blocks">块列表。The block list.</param>
+        /// <param name="found">累加的指令列表。The accumulator.</param>
+        private static void CollectFieldInstructions(List<Block> blocks, List<string> found)
+        {
+            if (blocks == null) return;
+            foreach (Block block in blocks)
+            {
+                Paragraph paragraph = block as Paragraph;
+                if (paragraph != null)
+                {
+                    foreach (Inline inline in paragraph.Inlines)
+                    {
+                        FieldRun field = inline as FieldRun;
+                        if (field != null) found.Add(field.Instruction ?? string.Empty);
+                    }
+                    continue;
+                }
+                Table table = block as Table;
+                if (table != null)
+                {
+                    foreach (TableRow row in table.Rows)
+                    {
+                        foreach (TableCell cell in row.Cells) CollectFieldInstructions(cell.Blocks, found);
+                    }
+                }
+            }
+        }
+
+        /// <summary>截出含 page 字样的片段供失败消息使用。 Trims the page-field excerpt for the failure message.</summary>
+        /// <param name="content">content.xml 文本。The content.xml text.</param>
+        /// <returns>摘录。The excerpt.</returns>
+        private static string FieldExcerpt(string content)
+        {
+            int index = content.IndexOf("text:page", StringComparison.Ordinal);
+            if (index < 0) return "<no page field in content.xml>";
+            int start = Math.Max(0, index - 40);
+            int length = Math.Min(content.Length - start, 200);
+            return "…" + content.Substring(start, length).Replace("\n", " ") + "…";
+        }
+
+        /// <summary>把列表拼成一行。 Joins a list for a failure message.</summary>
+        /// <param name="items">列表项。The items.</param>
+        /// <returns>一行文本。One line of text.</returns>
+        private static string Join(List<string> items)
+        {
+            return string.Join("|", items.ToArray());
         }
 
         /// <summary>在内存里重打包，替换指定条目的内容；其余条目原样复制。 Repackages in memory, replacing the named entry and copying every other entry as-is.</summary>
