@@ -955,4 +955,6 @@ Console.WriteLine(fromOdt.GetPlainText());
 
 **「第 X 页 共 N 页」存成 ODT 变成两个页码。** 已修。ODT 写出时按整词认域指令：`PAGE` 写 `text:page-number`，`NUMPAGES` / `PAGES` 写 `text:page-count`，载入时各自回到 `PAGE` / `NUMPAGES`。从前判的是 `IndexOf("PAGE")`，而 `NUMPAGES` 里就含 `PAGE` 四个字母，总页数被画成当前页码。DOCX / RTF / HTML 把指令原样带过去，从未受这条影响；代价是 ODT 也只认这两个指令，其它指令（如 `SECTIONPAGES`、`DATE`）写出的是域的显示文本而不是指令本身，载回后不再是一个域。
 
+**表格边框的颜色存成 RTF 就变黑了。** 已修。RTF 用 `\brdrcf<颜色表索引>` 说边框颜色，写出端从前只把六个方向的颜色登记进 `\colortbl`、正文里从不引用，读端又把每条边钉成黑色，2 磅红边框存一次盘就成了黑边框。现在非纯黑的边会写 `\brdrcf`，读端按索引回到 `TableCell.Borders`；纯黑沿用 RTF 的自动色，默认表格的产物字节不变。RTF 本身没有表级边框，读回的权威在逐格那一份，`Table.Borders` 的六个方向不回。
+
 **模板占位符没被替换。** 先用 `DocxReader.ExtractText` 确认模板里确实是 `{{key}}`（全角花括号、多余空格都会导致不匹配），再用 `TemplateEngine.ContainsToken` 快速判断某个字符串是否含占位符。

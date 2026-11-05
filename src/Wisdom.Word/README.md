@@ -734,6 +734,8 @@ WordDocumentFormat format = WordFormatConverter.DetectFormat("report.odt");   //
 
 页码与总页数在 ODT 里分属两种域：写出时按整词识别指令，`PAGE` 写 `text:page-number`，`NUMPAGES` 或 `PAGES` 写 `text:page-count`；载入时 `text:page-number` 回到 `PAGE`、`text:page-count` 回到 `NUMPAGES`。从前这里判的是 `IndexOf("PAGE")`，而 `NUMPAGES` 里正含 `PAGE` 四个字母，「第 X 页 共 N 页」在 ODT 里会画成两个当前页码；DOCX、RTF、HTML 把指令原样带过去，从未受这条影响。ODT 也只认这两个指令——其它指令（如 `SECTIONPAGES`、`DATE`）写出的是域的显示文本而不是指令本身，载回后不再是一个域。
 
+RTF 的表格边框颜色走 `\brdrcf<颜色表索引>`：写出时非纯黑的那条边才登记并引用颜色表，纯黑沿用 RTF 的自动色，默认表格的产物字节因此不变；载入时按索引回到 `TableCell.Borders`，索引缺失或越界回自动色。从前这条路径只把六个方向的颜色登记进 `\colortbl`，正文里从不引用，读端又把每条边钉成黑色，2 磅红边框存一次盘就成黑边框。RTF 本身没有表级边框，读回的权威在逐格那一份，`Table.Borders` 的六向不回。
+
 ODT 读取端给跨行 / 跨列单元格的覆盖登记设了单表槽位上限：畸形跨度（例如 4096 × 4096 的乘积）在预算用完之后停止登记覆盖，声明的 `RowSpan` / `ColSpan` 原样保留，原本被它"盖住"的单元格按正常单元格读出。这样一份畸形文件不会把加载拖成假死或 OOM，代价是超大跨度之后的网格对齐不再保证精确。
 
 ## 模板填充

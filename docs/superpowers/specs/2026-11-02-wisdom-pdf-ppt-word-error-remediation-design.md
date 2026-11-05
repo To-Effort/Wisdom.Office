@@ -352,6 +352,14 @@
 - 目标行为：按整词判定——`NUMPAGES`/`PAGES` 写 `text:page-count`，整词 `PAGE` 写 `text:page-number`；读端补 `text:page-count` → `NUMPAGES`。`FieldRun.Instruction` 本来就存着指令，模型无需改动。
 - 红测：一段里放 `PAGE` 与 `NUMPAGES` 两个域写 ODT，断言 `content.xml` 出现 `text:page-count` 且 `text:page-number` 只出现一次；回读断言指令含 PAGE 与 NUMPAGES；DOCX 同稿作对照。
 
+### WE13｜RTF 表格边框颜色只进 `\colortbl` 不进边框，读端把每条边钉成黑色　A
+
+- 位置：`src/Wisdom.Word/Formats/RtfWriter.cs:769`（改前 `AppendBorder` 只写 `\brdrs`/`\brdrdash` 等线型与 `\brdrw`，从不写 `\brdrcf`）；`src/Wisdom.Word/Formats/RtfReader.cs:1187`（改前 `new BorderLine(_borderStyle ?? BorderStyle.Single, _borderWidth, OfficeColor.Black)`）。
+- 对照：同文件 `CollectBorderColors`（`RtfWriter.cs:186-195`）早已把六个方向的 `BorderLine.Color` 逐个 `state.AddColor` 登记进颜色表——颜色进了表，正文里却没有一处引用它，等于白登记。
+- 后果：给单元格或表格设过有色边框（例如 2 磅红上边框）之后存成 RTF，回读得到的是同线型同宽度但纯黑的边；`TableCell.Borders` 的颜色在 RTF 这一路单向丢失，DOCX 侧 `w:tcBorders/@w:color` 一直是双向的。
+- 目标行为：写端补 `\brdrcf<颜色表索引>`（索引复用 `AddColor` 的去重结果），读端新增 `brdrcf` 分支按 `_context.Colors` 回色，索引缺失或越界仍回自动色。
+- 红测：两列表格，首格给红实线上边框与蓝虚线左边框，`RtfWriter.ToRtf` 断言出现 `\brdrcf`，`RtfReader.Parse` 断言两处颜色原值与线型线宽；控制项断言默认全黑表格的 RTF 不含 `\brdrcf`（产物字节口径不变）。
+
 ---
 
 ## 7. P2 与 P3
@@ -426,6 +434,7 @@
 | `PT13` | 表格的「无边框」不再补一条实线：`BorderStyle.None` 的那条边写 `a:noFill`。用过 `TableBorders.None()` 的稿子字节随之变化（变化本身就是修复），其余线型一个字节不动；形状描边一直是这个口径，两条路径由此一致 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」的表格边框一段补这句；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「`Table.Borders` 设成 `TableBorders.None()`，保存后边框还在」 |
 | `PT14` | 表格逐格四条边线从「只出不进」改为双向：读端解析 `a:lnL`/`lnR`/`lnT`/`lnB` 逐格落进 `TableCell.Borders`，`a:noFill` 认成 `BorderStyle.None`，四条全缺仍为 null。载入别人的表格再存盘不再把边框塌回默认细线，这一类稿子的字节随之变化（变化本身就是修复）；本库新建稿第二次保存逐边字节不变 | `src/Wisdom.Ppt/README.md` 表格边框一段改写为双向，「已知限制」的「只出不进」条目替换为「逐格往返、表级六向不回」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「别人的表格打开再存一次，边框全没了」，并把 `PT11`/`PT12` 两条里「只出不进」的边界句改掉 |
 | `WE12` | ODT 页码域从 `IndexOf("PAGE")` 改为整词判定：`NUMPAGES`/`PAGES` 写 `text:page-count`、整词 `PAGE` 写 `text:page-number`，读端新增 `text:page-count` → `NUMPAGES`（此前没有这一分支）。同时用到两个域的 ODT 产物在总页数那一处字节变化（变化本身就是修复），只用 `PAGE` 的稿子一个字节不动 | `src/Wisdom.Word/README.md`「在格式之间保留什么」的页码一行改为「页码与总页数域」并新增一段说明 ODT 只认这两个指令、其余指令写的是显示文本；`docs/Wisdom.Word.Tutorial.md` 常见问题补「『第 X 页 共 N 页』存成 ODT 变成两个页码」 |
+| `WE13` | RTF 表格边框补写 `\brdrcf`，读端按颜色表回色：有色边框的 RTF 产物在颜色那一句字节变化（变化本身就是修复），纯黑的边沿用 RTF 自动色不写引用，默认表格产物一字节不变。读端此前没有 `brdrcf` 分支，边框颜色一律读成黑色 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增 RTF 边框颜色一段（含「RTF 没有表级边框、`Table.Borders` 六向不回」这条边界）；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格边框的颜色存成 RTF 就变黑了」 |
 
 ---
 
@@ -745,4 +754,17 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 只有 ODT 这一路塌：DOCX / RTF / HTML 三个写出器都把 `FieldRun.Instruction` 原样带出去，`FieldRun` 本来就存着指令，所以本轮不动模型；测试用同一份稿子的 DOCX 做对照，断言它读回 PAGE 与 NUMPAGES 两条指令，把「模型没丢」和「ODT 写错了」分开。
   - 顺手记下的边界：ODT 只认这两个指令，其它指令（`SECTIONPAGES`、`DATE` 之类）写出的是域的显示文本而不是指令本身，载回后不再是一个域；`OdtReader` 有 `text:date`/`text:time` 分支而 `OdtWriter` 不产它们，这条读写不对称留给后续条目。
   - 字节口径：只用 `PAGE` 的稿子输出不变（那一条元素的文本与属性都没动），差别只在同时出现总页数的 ODT。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE13` RTF 表格边框颜色（`3d300a4` 取证 + `441479e` 修复）：`CollectBorderColors` 把六个方向的 `BorderLine.Color` 都 `AddColor` 进了 `\colortbl`，可 `AppendBorder` 只写线型与 `\brdrw`，全文不出现 `\brdrcf`；读端 `ApplyPendingBorder` 又固定 `new BorderLine(..., OfficeColor.Black)`。颜色因此在 RTF 这一路单向丢失——登记了却没人引用，读了却一律是黑。
+  - 修复前失败原文：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the border colour was registered in \colortbl but never named by the border itself: \clbrdrt\brdrs\brdrw40\clbrdrb\brdrs\brdrw10\clbrdrl\brdrdash\brdrw30\clbrdrr\brdrs\brdrw10\cellx2400 \clvertalt\clbrdrt\brdrs\brdrw10\clbrdrb\brdrs\brdrw10\clb
+    at Wisdom.Office.Tests.Program.RunRtfTableBorderColorSurvivesTest() ... RemediationWordPhaseFourTests.cs:line 444
+    ```
+
+  - 写端 `AppendBorder` 多收一个 `WriterState`，索引复用 `AddColor` 的去重结果；纯黑不写 `\brdrcf`——RTF 的默认边色就是自动黑，给每一条边都补一句会让所有默认表格的 RTF 产物字节整体变化，而这条改动并不改变任何可观测行为。
+  - 读端新增 `_borderColorIndex`，四条 `clbrdr*` 各自把它复位（否则上一条边的颜色会渗到下一条），`brdrcf` 落值后立即 `ApplyPendingBorder`；回色走既有的 `GetColor`，缺失或越界仍是自动色。
+  - 线型与线宽本来就往返，测试把这两项一起钉住，防止改动带坏；另有一条控制断言默认全黑表格的 RTF 不含 `\brdrcf`。
+  - 顺带记下的边界：RTF 没有表级边框元素，读回的权威在逐格那一份，`Table.Borders` 的六向不回（`RtfReader.cs:1430` 建树时先给 `TableBorders.None()`）。这与 PPT 侧 `PT14` 的结论同形，文档已按同一口径写。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
