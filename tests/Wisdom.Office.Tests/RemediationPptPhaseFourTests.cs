@@ -23,6 +23,7 @@ namespace Wisdom.Office.Tests
             RunPartialRunFormatStaysInheritedTest();
             RunUndeclaredTableHeaderStaysPlainTest();
             RunUnsetShapeFillStaysInheritedTest();
+            RunUnmarkedParagraphDoesNotSuppressBulletsTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -283,6 +284,64 @@ namespace Wisdom.Office.Tests
                 "the second write re-invented a:noFill and an empty a:ln for the untouched shape");
             Require(second[1].Element(A + "solidFill") != null,
                 "the explicitly filled shape came back without a solidFill");
+        }
+
+        /// <summary>
+        /// PT3 结构档第三批：段落没给列表标记时，写端不得替它写 <c>a:buNone</c>，也不该为塞这句谎话而
+        /// 恒产出一个 <c>a:pPr</c>。<c>buNone</c> 在 PresentationML 里是显式的「本段不要项目符号」，会把母版
+        /// 与版式本来要给的符号压掉。本库自造的母版没定义任何符号，自家稿子上看不出差别；但第三方稿子
+        /// 的正文段落走一遍 Load+Save，母版项目符号就被逐段取消了——模型里从没说过「不要符号」。
+        /// PT3 structure tier, third batch: a paragraph with no list marker must not leave the file carrying
+        /// <c>a:buNone</c>, and the writer must not fabricate an <c>a:pPr</c> just to house that lie.
+        /// <c>buNone</c> is PresentationML for "this paragraph takes no bullet", which suppresses whatever the
+        /// master or layout would supply. The masters this library generates define no bullet at all, so its
+        /// own decks look identical either way; but body paragraphs read back from a third-party file lose the
+        /// master's bullets one by one on the first Load+Save — the model never said "no bullet".
+        /// </summary>
+        private static void RunUnmarkedParagraphDoesNotSuppressBulletsTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TextBoxShape body = slide.AddTextBox(40, 40, 700, 260, "带标记的一段");
+            body.Paragraphs[0].ListMarker = "•";
+            Paragraph bare = body.AddParagraph(string.Empty);
+            bare.AddText("既没标记也没别的属性");
+            Paragraph aligned = body.AddParagraph(string.Empty);
+            aligned.AddText("只设了居中");
+            aligned.Alignment = ParagraphAlignment.Center;
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] paragraphs = ReadParagraphElements(written, "ppt/slides/slide1.xml");
+            Require(paragraphs.Length == 3, "expected three a:p on the slide, got " + paragraphs.Length);
+
+            XElement markedPr = paragraphs[0].Element(A + "pPr");
+            Require(markedPr != null && markedPr.Element(A + "buChar") != null,
+                "the control failed: a declared marker must still reach the file as buChar");
+
+            Require(paragraphs[1].Element(A + "pPr") == null,
+                "a paragraph that set nothing still got an a:pPr, housing a fabricated a:buNone");
+
+            XElement alignedPr = paragraphs[2].Element(A + "pPr");
+            Require(alignedPr != null && (string)alignedPr.Attribute("algn") == "ctr",
+                "the paragraph that set alignment lost it — the new rule must not swallow real intent");
+            Require(alignedPr != null && alignedPr.Element(A + "buNone") == null
+                && alignedPr.Element(A + "buChar") == null && alignedPr.Element(A + "buAutoNum") == null,
+                "an unmarked paragraph was told to suppress the inherited bullet");
+
+            // 往返：标记仍要读得回来，省下的那两处不能在第二次写出时补回去。
+            // Round trip: the declared marker still has to come back, and the two omissions must not be
+            // patched in by the second write.
+            OfficePresentation loaded = PptxReader.Load(written);
+            Require(ReadFirstMarker(loaded) == "•",
+                "the declared marker did not survive the round trip");
+            byte[] again = WriteToBuffer(loaded);
+            XElement[] second = ReadParagraphElements(again, "ppt/slides/slide1.xml");
+            Require(second.Length == 3, "expected three a:p after the round trip, got " + second.Length);
+            Require(second[1].Element(A + "pPr") == null,
+                "the second write invented an a:pPr for the paragraph that sets nothing");
+            Require(second[2].Element(A + "pPr") != null
+                && second[2].Element(A + "pPr").Element(A + "buNone") == null,
+                "the second write suppressed the inherited bullet again");
         }
 
         /// <summary>
@@ -709,6 +768,32 @@ namespace Wisdom.Office.Tests
 
         /// <summary>DrawingML 命名空间，测试里手写一份，避免依赖写端的私有常量。 The DrawingML namespace, spelled out here so the test does not lean on a writer private.</summary>
         private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+        /// <summary>取幻灯片部件里的每个 <c>a:p</c>，按文档顺序返回。 Collects every <c>a:p</c> in a slide part, in document order.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>段落元素列表。The paragraph elements.</returns>
+        private static XElement[] ReadParagraphElements(byte[] archive, string entryName)
+        {
+            List<XElement> found = new List<XElement>();
+            foreach (XElement p in ReadSlideXml(archive, entryName).Descendants(A + "p")) found.Add(p);
+            return found.ToArray();
+        }
+
+        /// <summary>取第一页第一个文本框首段的项目符号标记。 Reads the list marker of the first paragraph of the first text box on slide one.</summary>
+        /// <param name="presentation">回读的演示文稿。The reloaded presentation.</param>
+        /// <returns>标记文本，没有则 null。The marker text, or null when absent.</returns>
+        private static string ReadFirstMarker(OfficePresentation presentation)
+        {
+            foreach (SlideShape shape in presentation.Slides[0].Shapes)
+            {
+                TextBoxShape box = shape as TextBoxShape;
+                if (box == null) continue;
+                if (box.Paragraphs.Count == 0) continue;
+                return box.Paragraphs[0].ListMarker;
+            }
+            return null;
+        }
 
         /// <summary>取幻灯片部件里每个 <c>p:sp</c> 的 <c>p:spPr</c>，按文档顺序返回。 Collects the <c>p:spPr</c> of every <c>p:sp</c> in a slide part, in document order.</summary>
         /// <param name="archive">pptx 字节。The pptx bytes.</param>
