@@ -79,6 +79,8 @@ namespace Wisdom.Pdf
         /// Writing flips <c>/NeedAppearances</c> to true so viewers stop showing the stale appearance; to render the
         /// new value everywhere (including viewers that only read appearance streams) call
         /// <see cref="GenerateFormAppearances"/>, or use <see cref="FillForm(IDictionary{string,string})"/> instead.</remarks>
+        /// <exception cref="InvalidOperationException">目标字段是签名域时抛出，本库不填签名域。Thrown for a signature
+        /// field, which this library never fills.</exception>
         public bool SetFormFieldValue(string fullyQualifiedName, string value)
         {
             PdfForm form = GetForm();
@@ -107,8 +109,13 @@ namespace Wisdom.Pdf
         /// <param name="values">完全限定名到值的映射。The map of names to values.</param>
         /// <param name="generateAppearances">true 表示写入完成后统一生成外观。True regenerates appearances once after all values are set.</param>
         /// <returns>实际写入的字段数。The number of fields actually written.</returns>
-        /// <remarks>批量生成比逐字段生成更省：字体子集在整批里只嵌一份。
-        /// Batching is cheaper than per-field regeneration because the font subset is embedded once for the whole batch.</remarks>
+        /// <remarks>批量生成比逐字段生成更省：字体子集在整批里只嵌一份。签名域请从
+        /// <see cref="PdfForm.FillableFields"/> 取名单——那份清单本来就不含签名域与按钮。
+        /// Batching is cheaper than per-field regeneration because the font subset is embedded once for the whole
+        /// batch. Build the map from <see cref="PdfForm.FillableFields"/>, which omits signature and push-button
+        /// fields.</remarks>
+        /// <exception cref="InvalidOperationException">映射里含签名域时抛出，此时先前各域已写入但尚未保存。Thrown when
+        /// the map names a signature field; fields written before it are in memory but unsaved.</exception>
         public int FillForm(IDictionary<string, string> values, bool generateAppearances)
         {
             if (values == null) throw new ArgumentNullException("values");
@@ -917,10 +924,19 @@ namespace Wisdom.Pdf
         /// </summary>
         /// <param name="field">目标字段。The target field.</param>
         /// <param name="value">新值。The new value.</param>
+        /// <exception cref="InvalidOperationException">字段是签名域时抛出：它的 <c>/V</c> 是一份 <c>/Sig</c> 字典。
+        /// Thrown for a signature field, whose <c>/V</c> is a <c>/Sig</c> dictionary.</exception>
         internal void WriteFieldValue(PdfFormField field, string value)
         {
             PdfDictionary dictionary = field.Dictionary;
             string fieldType = field.FieldType;
+
+            // 签名域的 /V 是一份 /Sig 字典，配合域上的 /ByteRange 与 /Contents 标定签名在文件里的字节区间。
+            // 写进一个字符串等于把签好名的文档改坏，所以这里拒绝——填写、批量填写与模型属性三条入口同一口径。
+            // A signature's /V is a /Sig dictionary that pairs with the field's /ByteRange and /Contents to locate
+            // the signed byte range; replacing it with a string breaks an already-signed document. Fill, bulk fill
+            // and the model property therefore refuse the same way.
+            if (fieldType == "Sig") throw new InvalidOperationException("Signature fields cannot be filled.");
 
             if (fieldType == "Tx")
             {

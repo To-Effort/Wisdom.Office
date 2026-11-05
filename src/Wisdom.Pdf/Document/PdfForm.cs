@@ -71,6 +71,9 @@ namespace Wisdom.Pdf
         public IReadOnlyList<PdfFormField> Fields { get { return _fields; } }
 
         /// <summary>可填写的叶子字段（不含父域与签名/按钮）。Fillable terminal fields, excluding parents, signature and push buttons.</summary>
+        /// <remarks>签名域列在这里只会害了调用者：名单的用途就是「照着填保证写得进去」，而本库从不填签名域。
+        /// Listing signature fields here would defeat the point: the list means "fill these and the write lands",
+        /// and this library never fills a signature field.</remarks>
         public IEnumerable<PdfFormField> FillableFields
         {
             get
@@ -78,7 +81,9 @@ namespace Wisdom.Pdf
                 for (int i = 0; i < _fields.Count; i++)
                 {
                     PdfFormField item = _fields[i];
-                    if (item.IsTerminal && !item.IsReadOnly && item.Kind != PdfFormFieldKind.PushButton) yield return item;
+                    if (!item.IsTerminal || item.IsReadOnly) continue;
+                    if (item.Kind == PdfFormFieldKind.PushButton || item.Kind == PdfFormFieldKind.Signature) continue;
+                    yield return item;
                 }
             }
         }
@@ -315,8 +320,10 @@ namespace Wisdom.Pdf
         /// 当前值：文本域返回文本，复选框/单选/选项域返回状态名；未填写时返回 null。
         /// The current value: text for text fields, the state name for check, radio and choice fields, null when unset.
         /// </summary>
-        /// <remarks>读取时按 <c>/V</c> → <c>/DV</c> 的顺序取值，与阅读器显示默认值的行为一致。
-        /// Values fall back from <c>/V</c> to <c>/DV</c>, matching how viewers display the default value.</remarks>
+        /// <remarks>读取时按 <c>/V</c> → <c>/DV</c> 的顺序取值，与阅读器显示默认值的行为一致；签名域不可写入。
+        /// Values fall back from <c>/V</c> to <c>/DV</c>, matching how viewers display the default value; a
+        /// signature field refuses writes because its <c>/V</c> is the <c>/Sig</c> dictionary itself.</remarks>
+        /// <exception cref="InvalidOperationException">签名域写入时抛出。Thrown when writing to a signature field.</exception>
         public string Value
         {
             get
@@ -327,7 +334,6 @@ namespace Wisdom.Pdf
             }
             set
             {
-                if (_fieldType == "Sig") throw new InvalidOperationException("Signature fields cannot be filled.");
                 _file.WriteFieldValue(this, value);
             }
         }
