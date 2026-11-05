@@ -1174,7 +1174,7 @@ namespace Wisdom.Ppt
                 return "1.";
             }
 
-            /// <summary>读取 a:ln 描边：w 转磅、solidFill 取色、prstDash 映射线型；noFill 或缺失时返回 null。Reads the a:ln outline: w becomes points, solidFill provides the colour and prstDash maps the style; noFill or a missing element yields null.</summary>
+            /// <summary>读取 a:ln 描边：w 转磅、solidFill 取色、prstDash 映射线型，双线看 <c>cmpd="dbl"</c>；noFill 或缺失时返回 null。Reads the a:ln outline: w becomes points, solidFill provides the colour, prstDash maps the style and a double line is read from <c>cmpd="dbl"</c>; noFill or a missing element yields null.</summary>
             /// <param name="spPr">p:spPr 元素。The p:spPr element.</param>
             /// <returns>边框线描述或 null。The border line, or null when there is no outline.</returns>
             private BorderLine ReadOutline(XElement spPr)
@@ -1184,15 +1184,20 @@ namespace Wisdom.Ppt
                 // a:ln 缺省线宽为 1 磅。The implicit a:ln width is one point.
                 double width = Ppt.ToPoints(ParseLong(Ppt.Attribute(ln, "w"), 12700));
                 OfficeColor? color = _session.ReadFill(ln);
-                return new BorderLine(MapDashStyle(Ppt.Attribute(Ppt.DrawingChild(ln, "prstDash"), "val")), width, color ?? OfficeColor.Black);
+                BorderStyle style = MapDashStyle(Ppt.Attribute(Ppt.DrawingChild(ln, "prstDash"), "val"));
+                // 双线是复合线，记在 a:ln@cmpd 上，不在 prstDash 的取值集合里。
+                // A double line is a compound line recorded on a:ln@cmpd, never inside the prstDash value set.
+                if (string.Equals(Ppt.Attribute(ln, "cmpd"), "dbl", StringComparison.Ordinal)) style = BorderStyle.Double;
+                return new BorderLine(style, width, color ?? OfficeColor.Black);
             }
 
-            /// <summary>把预设线型映射到统一模型线型（预置名不含下划线）。Maps a preset dash name onto the unified border style (preset names contain no underscores).</summary>
+            /// <summary>把预设线型映射到统一模型线型（预置名不含下划线）。dbl 只可能来自旧版本写出的文件，一并认成双线（Maps a preset dash name onto the unified border style; preset names contain no underscores. A dbl can only come from a file written by an earlier version, so it still reads as double）。</summary>
             /// <param name="value">prstDash 的 val 属性。The val attribute of prstDash.</param>
             /// <returns>统一模型线型。The unified border style.</returns>
             private static BorderStyle MapDashStyle(string value)
             {
                 if (string.IsNullOrEmpty(value) || value == "solid") return BorderStyle.Single;
+                if (value == "dbl") return BorderStyle.Double;
                 if (value == "sysDot" || value == "lnDot" || value == "systDot" || value == "dot" || value == "roundDot") return BorderStyle.Dotted;
                 if (value == "sysDash" || value == "dash" || value == "dashDot" || value == "lgDash" || value == "lgDashDot" || value == "lgDashDotDot") return BorderStyle.Dashed;
                 if (value == "longDashDash") return BorderStyle.Dashed;

@@ -783,7 +783,7 @@ namespace Wisdom.Ppt
                 return new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", color.Value.ToHex())));
             }
 
-            /// <summary>生成 <code>a:ln</code> 描边：无线输出 noFill，其余按线型加 prstDash。 Builds the <code>a:ln</code> outline: noFill when line-less, otherwise width, fill and prstDash.</summary>
+            /// <summary>生成 <code>a:ln</code> 描边：无线输出 noFill，其余按线型加 prstDash，双线改用 <c>cmpd="dbl"</c>。 Builds the <code>a:ln</code> outline: noFill when line-less, otherwise width, fill and prstDash; a double line becomes <c>cmpd="dbl"</c> instead.</summary>
             /// <param name="outline">描边描述。 Outline description.</param>
             /// <returns>ln 元素。 The ln element.</returns>
             private XElement CreateLine(BorderLine outline)
@@ -795,22 +795,28 @@ namespace Wisdom.Ppt
                     return ln;
                 }
                 ln.Add(new XAttribute("w", IntStr(Math.Max(1, Ppt.Emu(outline.Width)))));
+                if (outline.Style == BorderStyle.Double) ln.Add(new XAttribute("cmpd", "dbl"));
                 ln.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", outline.Color.ToHex()))));
                 string dash = DashStyle(outline.Style);
                 if (dash != null) ln.Add(new XElement(A + "prstDash", new XAttribute("val", dash)));
                 return ln;
             }
 
-            /// <summary>线型到 <c>prstDash</c> 值的映射，实线返回 null。 Maps a border style to a <c>prstDash</c> value; solid lines return null.</summary>
+            /// <summary>
+            /// 线型到 <c>prstDash</c> 值的映射。双线不是虚线图案，<c>ST_PresetLineDashVal</c> 里没有 dbl 这一档，
+            /// 它靠 <c>a:ln@cmpd="dbl"</c> 表达，所以这里返回 null；实线同样返回 null（缺省即 solid）。
+            /// Maps a border style to a <c>prstDash</c> value. A double line is not a dash pattern —
+            /// <c>ST_PresetLineDashVal</c> has no dbl, it lives on <c>a:ln@cmpd="dbl"</c> — so it returns null here,
+            /// and so does a solid line (the implicit value).
+            /// </summary>
             /// <param name="style">边框线型。 Border style.</param>
-            /// <returns>dprstDash 值或 null。 The prstDash value or null.</returns>
+            /// <returns>prstDash 值或 null。 The prstDash value or null.</returns>
             private static string DashStyle(BorderStyle style)
             {
                 switch (style)
                 {
                     case BorderStyle.Dashed: return "dash";
-                    case BorderStyle.Dotted: return "sysDash";
-                    case BorderStyle.Double: return "dbl";
+                    case BorderStyle.Dotted: return "sysDot";
                     default: return null;
                 }
             }
@@ -1392,7 +1398,7 @@ namespace Wisdom.Ppt
                 return tcPr;
             }
 
-            /// <summary>生成单元格的单边线元素（lnL/lnR/lnT/lnB）。 Builds one cell border edge element (lnL/lnR/lnT/lnB).</summary>
+            /// <summary>生成单元格的单边线元素（lnL/lnR/lnT/lnB）。双线走 <c>cmpd="dbl"</c>，不是 prstDash 取值。 Builds one cell border edge element (lnL/lnR/lnT/lnB). A double line goes on <c>cmpd="dbl"</c>, never on prstDash.</summary>
             /// <param name="tag">边元素标签。 Edge element tag.</param>
             /// <param name="line">边线描述。 Border line.</param>
             /// <returns>边线元素。 The border element.</returns>
@@ -1400,7 +1406,8 @@ namespace Wisdom.Ppt
             {
                 XElement ln = new XElement(A + tag);
                 ln.Add(new XAttribute("w", IntStr(Math.Max(1, Ppt.Emu(line != null && line.Width > 0 ? line.Width : 0.5)))));
-                ln.Add(new XAttribute("cmpd", "sng"), new XAttribute("algn", "ctr"));
+                bool compound = line != null && line.Style == BorderStyle.Double;
+                ln.Add(new XAttribute("cmpd", compound ? "dbl" : "sng"), new XAttribute("algn", "ctr"));
                 OfficeColor color = line != null ? line.Color : OfficeColor.Gray;
                 ln.Add(new XElement(A + "solidFill", new XElement(A + "srgbClr", new XAttribute("val", color.ToHex()))));
                 string dash = line == null ? null : DashStyle(line.Style);
