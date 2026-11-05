@@ -425,6 +425,10 @@ Console.WriteLine(filled);                          // 4
 批量填写的映射里点了签名域同样抛，抛出时先前各域已写进内存但尚未保存。名单从 `form.FillableFields` 取，
 父域、只读域、普通按钮与签名域都不在里面，照着它填保证写得进去。
 
+外观的字号与配色取自 `/DA`，顺序是本域 → 父域 → AcroForm：Acrobat 生成的表单常只在 AcroForm 上写一份文档级默认外观
+（如 `/Helv 14 Tf 0 0 1 rg`），字段本域不再重复，这一份同样参与生成外观。`/DA` 里字号写 0 表示由阅读器按控件矩形自动定，
+本库按同一口径从默认字号往下缩到放得下为止。
+
 只想写值、把排版交给阅读器时用 `file.FillForm(values, false)`——此时 `/NeedAppearances` 会被置为 `true`，
 避免"值已改、外观还是旧的"被阅读器显示成旧值；随后调用 `GenerateFormAppearances()` 会生成外观并把它复位。
 
@@ -540,6 +544,8 @@ Console.WriteLine($"{pagesWithHeader}/{check.PageCount}");
 **加密 PDF 读不了。** 口令与权限加密走标准安全处理器：`PdfFile.Load(path, "口令")` 可开 RC4 40/128、AES-128、AES-256（R5 与 R6）的文档，口令错时抛 `PdfPasswordException`；写出时 `PdfEncryptionAlgorithm.Aes256` 生成 R6，四种算法都已与第三方阅读器双向验证。有些工具把 `/P` 写成 `4294967292` 这样的无符号值，读取端会按低 32 位还原，不影响开箱。只支持标准处理器，公钥加密与 Adobe 自定义安全处理器不在范围内。
 
 **填了值但阅读器里看不到。** 三种原因：文档是混合表单（带 `/XFA`），阅读器按 XFA 模板渲染，`RemoveFormXfa()` 剥离即可；只调 `FillForm(values, false)` 且阅读器不重建外观，本库已把 `/NeedAppearances` 置为 `true`，个别阅读器仍会忽略，此时改用 `FillForm(values)` 或显式 `GenerateFormAppearances()`；字段是密码域，外观按规范留空，值只在 `/V` 里。
+
+**填进去的值生成的外观跟表单其余部分不像同一份稿子（字号偏小、颜色发黑）。** 已修。这类表单的 `/DA` 只写在 AcroForm 上作全文档默认，字段本域没有；读端过去沿父域走到顶就停，把这份默认读成空，于是生成外观时字号退回自动、颜色一律黑。现在按本域 → 父域 → AcroForm 取，`field.DefaultAppearance` 也一并返回继承来的那一份。
 
 **单选组填了值但没有任何一项被选中。** 传入的必须是某一项的勾选态名（`/AP /N` 里的键）、选项部分名，或 1 起的序号；本库不会猜中文标签，遍历 `Children` 取 `OnState`（为空时退回 `Name`）就能列出合法取值。
 

@@ -212,6 +212,13 @@
 - 目标行为：拒绝移到唯一收口 `WriteFieldValue`，三条入口同一口径抛 `InvalidOperationException`，模型属性里的重复判定随之删除；`FillableFields` 按自身说明同时排除签名域。批量映射含签名域时抛出，先前各域已写进内存但尚未保存——这一点写进文档，不留「返回计数少一个」那种静默口径。
 - 红测：一页挂一个文本域与一份真稿形状的签名域（`/FT /Sig`、`/V` 指向 `/Sig` 字典、域上带 `/ByteRange` 与 `/Contents`）。控制用例先钉住文本域照常填得进去、模型属性本就拒绝写入；再要求 `SetFormFieldValue` 与 `FillForm` 同样抛出，存盘读回后 `/V` 仍解析成 `/Type /Sig` 字典，且 `FillableFields` 里查不到签名域。
 
+### PD27｜`/DA` 的可继承链走到父域顶端即停，挂在 AcroForm 上的文档默认外观读成空　A
+
+- 位置：`src/Wisdom.Pdf/Document/PdfFile.Forms.cs` 的 `BuildFormField`（`PdfFormReader.GetStringChain(this, dictionary, "DA")`，该链只经 `GetParent` 回溯字段层级）；`/DA` 在 AcroForm 字典表里是正式条目，Acrobat 生成的表单常只写这一份。
+- 后果：字段本域与父域都没有 `/DA` 时，`PdfFormField.DefaultAppearance` 读成空串，`ParseDefaultAppearance` 只能给出「字号 0、颜色黑」——`GenerateFormAppearances` 于是按自动字号起排、一律画黑字，填进去的值与表单其余部分（14 号蓝）不像同一份稿子；同一份稿子在阅读器里按 `/NeedAppearances` 自行排版时又是另一种样子。
+- 目标行为：可继承条目沿父域走完仍为空时，退回取 AcroForm 上的 `/DA`；本域 `/DA` 仍然优先。只补 `/DA` 这一条——AcroForm 的字典表里没有 `FT`、`Ff`、`Q`，把它们也接到表单元上是凭空造规则。
+- 红测：AcroForm 写 `/DA "/Helv 14 Tf 0 0 1 rg"`，一个文本控件不带本域 `/DA`、另一个自带 `/DA "/Helv 9 Tf 1 0 0 rg"` 作对照；要求前者读出表单级默认、生成的外观正文里出现 " 14 Tf" 与 "0 0 1 rg"，后者仍按本域出 " 9 Tf" 与 "1 0 0 rg"。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -475,6 +482,7 @@
 | `PD24` | 读端补认流字典的缩写键 `/F`（`/Filter`），与既认的 `/DP` 对齐：过去写成 `<< /F /Fl >>` 的正文按原字节交回、整页文字静默为空，现在照常解码。写出端从不发缩写，产出字节不变；`/F` 是整数标志时仍按无过滤器处理 | `src/Wisdom.Pdf/README.md`「解析 PDF」新增解码链一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的 PDF 在阅读器里显示正常，抽出来却是空的」 |
 | `PD25` | 名称读回端由「一个 `#HH` 一个字符」改为「攒起字节按 UTF-8 还原」，且只在能原样编回同一串字节时才采用，否则退回逐字节（历史高位单字节名不凭空造替换符）；写端把成对代理当一个码位展开，星外字符不再各编成 `?` 而丢失。纯 ASCII 名称的产物一字节不变；带非 ASCII 名称的第三方稿载入再存盘不再逐次增长，带星外字符的名称写出字节变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「解析 PDF」新增名称转义成对一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的表单打开再存一次，选项名对不上了」 |
 | `PD26` | 签名域在 `PdfFile.SetFormFieldValue`、`PdfFile.FillForm` 与 `PdfFormField.Value` 三条入口统一抛 `InvalidOperationException`（此前只有模型属性抛，另两条把 `/V` 的 `/Sig` 字典覆写成字符串并照样返回成功）；`PdfForm.FillableFields` 按其自身说明同时排除签名域。本库自产表单不含 `/Sig` 域，产出字节不变；带签名域的第三方稿不再被改坏，改坏的口径改为明确报错 | `src/Wisdom.Pdf/README.md` 表单一段改写拒绝口径与 `FillableFields` 取名单，「已知不支持」的表单一行改为「签名域不参与填写也不参与扁平化」；`docs/Wisdom.Pdf.Tutorial.md` 填写口径补一段、常见问题补「批量填表单抛出 Signature fields cannot be filled.」 |
+| `PD27` | 字段的可继承 `/DA` 沿父域走完仍为空时退回取 AcroForm 上那一份（本域 `/DA` 仍优先）：过去只写在表单元上的文档默认外观读成空，生成外观时字号退回自动、颜色一律黑。`FT`/`Ff`/`Q` 不参与这一层（AcroForm 字典表没有这些条目）。本库不生成新表单字段、自产稿的 `/DA` 一直写在本域上，走不到回退分支，产出字节不变；表单级 `/DA` 的第三方稿其生成外观的 `Tf` 字号与 `rg` 颜色随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行继承顺序；`docs/Wisdom.Pdf.Tutorial.md` 表单一节补一段外观取色口径、常见问题补「填进去的值生成的外观跟表单其余部分不像同一份稿子」 |
 
 ---
 
@@ -822,6 +830,19 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 批量映射含签名域时选择抛出，而不是静默少计一个：`FillForm` 的返回值语义是「实际写入的字段数」，静默跳过会让调用者以为整批落地。抛出时先前各域已写进内存但尚未保存，这个中间态写进 README 与教程，不留悬念。
   - 字节口径：本库自己生成的表单从不产出 `/FT /Sig` 域，默认产物一字节不变；带签名域的第三方稿过去一次填写就被改坏，现在 `/V` 原样保留——不再产出签名校验失败的 PDF 本身就是修复。
   - 验证：修复后 `net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（红测只在 `net8.0` 取证，两条断言由同一次运行先后挡下）。
+- `PD27` 表单级 `/DA` 不参与继承（`69421c4` 取证 + `23f9253` 修复）：`GetStringChain` 只经 `GetParent` 在字段层级里回溯，走到根字段即停，而规范把 `/DA` 也列为 AcroForm 字典的条目——Acrobat 生成的表单正是只在这里写一份。
+  - 修复前失败原文（net8.0）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the field without its own /DA reads the default appearance as '' instead of the AcroForm document default /Helv 14 Tf 0 0 1 rg
+      at Wisdom.Office.Tests.Program.RunFormDefaultAppearanceInheritanceTest() ... RemediationPhaseFourTests.cs:line 851
+    ```
+
+  - 落点是 `BuildFormField` 多接一个 AcroForm 字典参数并在父域链走完仍为空时取 `GetString(this, acroForm, "DA")`，而不是把 `GetStringChain` 改成"再往上找一层"：该助手同时被 `AS` 这类不属于 AcroForm 的条目使用，把表单元塞进通用链会一并改掉那些语义。
+  - `/DA` 为空的字段在修复后走的是「按文档默认起排」这条路，字号与颜色都来自那一份 `/DA`；本域带 `/DA` 的字段一条字节都不变，红测里 `da.own` 就是这个对照。
+  - 没有顺手把 `FT`、`Ff`、`Q` 也接到 AcroForm：AcroForm 的字典表里没有这三项，父域继承维持原样——宁可少补，不凭空造规则。
+  - 字节口径：本库不生成新的表单字段（README「已知不支持」里有这一条），自产稿的 `/DA` 恒写在各字段本域上，走不到回退分支，产出不变；只有把 `/DA` 挂在 AcroForm 上的第三方稿，其 `GenerateFormAppearances` 产出的外观流里 `Tf` 字号与 `rg` 颜色变化（变化本身就是修复）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（红测在 `net8.0` 取证）。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
   - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。
