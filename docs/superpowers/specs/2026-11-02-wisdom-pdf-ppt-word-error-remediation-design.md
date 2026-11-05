@@ -219,6 +219,13 @@
 - 目标行为：可继承条目沿父域走完仍为空时，退回取 AcroForm 上的 `/DA`；本域 `/DA` 仍然优先。只补 `/DA` 这一条——AcroForm 的字典表里没有 `FT`、`Ff`、`Q`，把它们也接到表单元上是凭空造规则。
 - 红测：AcroForm 写 `/DA "/Helv 14 Tf 0 0 1 rg"`，一个文本控件不带本域 `/DA`、另一个自带 `/DA "/Helv 9 Tf 1 0 0 rg"` 作对照；要求前者读出表单级默认、生成的外观正文里出现 " 14 Tf" 与 "0 0 1 rg"，后者仍按本域出 " 9 Tf" 与 "1 0 0 rg"。
 
+### PD28｜`/DA` 只认 DeviceRGB 与灰度两个填充算子，CMYK 上色读成黑色　B
+
+- 位置：`src/Wisdom.Pdf/Document/PdfFile.Forms.cs` 的 `ParseDefaultAppearance`——算子表只有 `Tf`、`rg`、`g`，每个不认识的操作符之后一律 `numbers.Clear()`。
+- 后果：`/DA` 写成 `"0 0.75 0.75 0.25 k"`（印刷向稿与 Adobe 系工具生成的表单常见）时颜色停在默认的黑色，`GenerateFormAppearances` 把填进去的值一律画成黑字，与原稿其余部分的配色对不上；这是静默的配色失真，文件仍然合法可开。
+- 目标行为：补认 `k`（DeviceCMYK 填充）与 `c`（按当前色彩空间的填充），按无 ICC 配置的减法混色近似换算成 RGB；分隔色 `sc`/`scn` 与自定义色彩空间仍认不出，按黑色起排并写进「已知不支持」。写出端本来就用 `rg` 表示填充色，自己的产出不受影响。
+- 红测：两个文本控件，本域 `/DA` 分别写 `"/Helv 12 Tf 0 0.75 0.75 0.25 k"` 与控制用例 `"/Helv 12 Tf 0.2 0.6 0.9 rg"`，填值并生成外观后读各自 `/AP /N` 正文里第一条 `rg` 的三个分量，容差 0.01。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -483,6 +490,7 @@
 | `PD25` | 名称读回端由「一个 `#HH` 一个字符」改为「攒起字节按 UTF-8 还原」，且只在能原样编回同一串字节时才采用，否则退回逐字节（历史高位单字节名不凭空造替换符）；写端把成对代理当一个码位展开，星外字符不再各编成 `?` 而丢失。纯 ASCII 名称的产物一字节不变；带非 ASCII 名称的第三方稿载入再存盘不再逐次增长，带星外字符的名称写出字节变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「解析 PDF」新增名称转义成对一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的表单打开再存一次，选项名对不上了」 |
 | `PD26` | 签名域在 `PdfFile.SetFormFieldValue`、`PdfFile.FillForm` 与 `PdfFormField.Value` 三条入口统一抛 `InvalidOperationException`（此前只有模型属性抛，另两条把 `/V` 的 `/Sig` 字典覆写成字符串并照样返回成功）；`PdfForm.FillableFields` 按其自身说明同时排除签名域。本库自产表单不含 `/Sig` 域，产出字节不变；带签名域的第三方稿不再被改坏，改坏的口径改为明确报错 | `src/Wisdom.Pdf/README.md` 表单一段改写拒绝口径与 `FillableFields` 取名单，「已知不支持」的表单一行改为「签名域不参与填写也不参与扁平化」；`docs/Wisdom.Pdf.Tutorial.md` 填写口径补一段、常见问题补「批量填表单抛出 Signature fields cannot be filled.」 |
 | `PD27` | 字段的可继承 `/DA` 沿父域走完仍为空时退回取 AcroForm 上那一份（本域 `/DA` 仍优先）：过去只写在表单元上的文档默认外观读成空，生成外观时字号退回自动、颜色一律黑。`FT`/`Ff`/`Q` 不参与这一层（AcroForm 字典表没有这些条目）。本库不生成新表单字段、自产稿的 `/DA` 一直写在本域上，走不到回退分支，产出字节不变；表单级 `/DA` 的第三方稿其生成外观的 `Tf` 字号与 `rg` 颜色随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行继承顺序；`docs/Wisdom.Pdf.Tutorial.md` 表单一节补一段外观取色口径、常见问题补「填进去的值生成的外观跟表单其余部分不像同一份稿子」 |
+| `PD28` | `/DA` 补认 CMYK 填充算子 `k`/`c`，按无 ICC 的减法混色近似换算成 RGB：过去这类表单生成外观时一律画黑字。分隔色与自定义色彩空间仍按黑色起排，写进「已知不支持」。本库写出的外观正文本来就用 `rg`，自产稿一字节不变；只有 `/DA` 用 CMYK 的第三方稿，其生成外观里的 `rg` 三元组由 `0 0 0` 变成换算值（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行配色算子，「已知不支持」的表单一行补配色边界；`docs/Wisdom.Pdf.Tutorial.md` 表单「外观取色」一段补同一口径 |
 
 ---
 
@@ -843,6 +851,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 没有顺手把 `FT`、`Ff`、`Q` 也接到 AcroForm：AcroForm 的字典表里没有这三项，父域继承维持原样——宁可少补，不凭空造规则。
   - 字节口径：本库不生成新的表单字段（README「已知不支持」里有这一条），自产稿的 `/DA` 恒写在各字段本域上，走不到回退分支，产出不变；只有把 `/DA` 挂在 AcroForm 上的第三方稿，其 `GenerateFormAppearances` 产出的外观流里 `Tf` 字号与 `rg` 颜色变化（变化本身就是修复）。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`（红测在 `net8.0` 取证）。
+- `PD28` `/DA` 的 CMYK 填充算子不认（`b18d1d6` 取证 + `32a7a8a` 修复）：同一个循环里 `Tf`/`rg`/`g` 之外一律 `numbers.Clear()`，`k` 与 `c` 落进「不认」这一堆，颜色停在默认的黑色。
+  - 修复前失败原文（net8.0，DeviceRGB 控制用例先过）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a CMYK default appearance of 0 0.75 0.75 0.25 k painted 0 0 0 instead of the brick red it describes
+      at Wisdom.Office.Tests.Program.RunDefaultAppearanceCmykTest() ... RemediationPhaseFourTests.cs:line 962
+    ```
+
+  - 换算按最一般的减法混色（`R = (1-C)·(1-K)` 等），没有 ICC 配置可用，因此与带配置文件的阅读器存在轻微偏差；这一偏差属于原稿声明的那个颜色，比把整片值画成黑更接近真相。口径写进 README 与教程，附带边界：分隔色 `sc`/`scn` 与自定义色彩空间仍按黑色起排。
+  - `k` 与 `c` 合并成一条分支：前者是 DeviceCMYK 填充、后者是「按当前色彩空间」填充，而 `/DA` 的当前色彩空间在没有 `/CS` 选择算子时就是 DeviceCMYK；大写 `K`/`C` 是描边色，与文本填充无关，不补。
+  - 字节口径：本库写出的外观正文一律用 `rg` 表达填充色，读端多认两个算子不改变自己的产出；只有 `/DA` 用 CMYK 的第三方稿，其 `GenerateFormAppearances` 产物里的 `rg` 三元组变化（变化本身就是修复）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
   - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。

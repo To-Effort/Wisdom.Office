@@ -427,7 +427,9 @@ Console.WriteLine(filled);                          // 4
 
 外观的字号与配色取自 `/DA`，顺序是本域 → 父域 → AcroForm：Acrobat 生成的表单常只在 AcroForm 上写一份文档级默认外观
 （如 `/Helv 14 Tf 0 0 1 rg`），字段本域不再重复，这一份同样参与生成外观。`/DA` 里字号写 0 表示由阅读器按控件矩形自动定，
-本库按同一口径从默认字号往下缩到放得下为止。
+本库按同一口径从默认字号往下缩到放得下为止。配色认 `rg`、灰度 `g` 与 CMYK 的 `k`／`c`：印刷向的稿子常写
+`/Helv 12 Tf 0 0.75 0.75 0.25 k`，本库按无 ICC 配置的减法混色换算成 RGB 再写进外观；分隔色（`sc`／`scn`）与自定义
+色彩空间认不出来，此时按黑色起排。
 
 只想写值、把排版交给阅读器时用 `file.FillForm(values, false)`——此时 `/NeedAppearances` 会被置为 `true`，
 避免"值已改、外观还是旧的"被阅读器显示成旧值；随后调用 `GenerateFormAppearances()` 会生成外观并把它复位。
