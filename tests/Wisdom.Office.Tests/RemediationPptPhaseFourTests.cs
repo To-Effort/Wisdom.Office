@@ -26,6 +26,7 @@ namespace Wisdom.Office.Tests
             RunUnmarkedParagraphDoesNotSuppressBulletsTest();
             RunTextBoxWrapNoneSurvivesTest();
             RunDoubleBorderIsCompoundLineTest();
+            RunTableBorderDirectionsLandTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -512,6 +513,86 @@ namespace Wisdom.Office.Tests
             BorderLine dotBack = loaded.Slides[0].Shapes[1].Outline;
             Require(dotBack != null && dotBack.Style == BorderStyle.Dotted,
                 "the dotted outline read back as " + (dotBack == null ? "<null>" : dotBack.Style.ToString()));
+        }
+
+        /// <summary>
+        /// PT12：<c>Table.Borders</c> 有六个方向，写出器只认其中一个——<c>InsideHorizontal</c> 被当作
+        /// 四条边共用的默认线，<c>Top</c>/<c>Bottom</c>/<c>Left</c>/<c>Right</c>/<c>InsideVertical</c>
+        /// 五份声明在文件里查无此线。外圈加粗、内部变淡是演示稿表格最常见的写法，存一次盘全部塌回一种线。
+        /// PT12: <c>Table.Borders</c> carries six directions and the writer reads exactly one of them —
+        /// <c>InsideHorizontal</c> becomes the shared default for every edge, so the other five declarations
+        /// leave no trace in the file. A bold ring with lighter inner rules, the most common deck-table
+        /// idiom, collapsed into a single line style on save.
+        /// </summary>
+        private static void RunTableBorderDirectionsLandTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            TableShape frame = slide.AddTable(60, 60, 700, 160);
+            Table model = frame.Table;
+            model.Borders.Top = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0xFF, 0x00, 0x00));
+            model.Borders.Bottom = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0x00, 0x00, 0xFF));
+            model.Borders.Left = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0x00, 0xFF, 0x00));
+            model.Borders.Right = new BorderLine(BorderStyle.Single, 3.0, new OfficeColor(0xFF, 0x80, 0x00));
+            model.Borders.InsideHorizontal = new BorderLine(BorderStyle.Single, 1.0, new OfficeColor(0x80, 0x80, 0x80));
+            model.Borders.InsideVertical = new BorderLine(BorderStyle.Single, 1.0, new OfficeColor(0x80, 0x00, 0x80));
+            model.AddRow("甲", "乙", "丙");
+            model.AddRow("丁", "戊", "己");
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] tables = ReadTables(written, "ppt/slides/slide1.xml");
+            Require(tables.Length == 1, "expected one a:tbl, got " + tables.Length);
+            XElement[] trs = tables[0].Elements(A + "tr").ToArray();
+            Require(trs.Length == 2, "expected two a:tr, got " + trs.Length);
+
+            for (int r = 0; r < trs.Length; r++)
+            {
+                XElement[] tcs = trs[r].Elements(A + "tc").ToArray();
+                Require(tcs.Length == 3, "row " + r + " carries " + tcs.Length + " cells, expected 3");
+                for (int c = 0; c < tcs.Length; c++)
+                {
+                    XElement tcPr = tcs[c].Element(A + "tcPr");
+                    Require(tcPr != null, "row " + r + " cell " + c + " was written without a:tcPr");
+                    string where = "row " + r + " cell " + c + " ";
+                    Require(EdgeHex(tcPr, "lnT") == (r == 0 ? "FF0000" : "808080"),
+                        where + "lnT was " + EdgeHex(tcPr, "lnT") + ", expected " + (r == 0 ? "FF0000" : "808080"));
+                    Require(EdgeHex(tcPr, "lnB") == (r == trs.Length - 1 ? "0000FF" : "808080"),
+                        where + "lnB was " + EdgeHex(tcPr, "lnB"));
+                    Require(EdgeHex(tcPr, "lnL") == (c == 0 ? "00FF00" : "800080"),
+                        where + "lnL was " + EdgeHex(tcPr, "lnL"));
+                    Require(EdgeHex(tcPr, "lnR") == (c == tcs.Length - 1 ? "FF8000" : "800080"),
+                        where + "lnR was " + EdgeHex(tcPr, "lnR"));
+                    Require(EdgeWidth(tcPr, "lnT") == (r == 0 ? "38100" : "12700"),
+                        where + "lnT width was " + EdgeWidth(tcPr, "lnT"));
+                    Require(EdgeWidth(tcPr, "lnL") == (c == 0 ? "38100" : "12700"),
+                        where + "lnL width was " + EdgeWidth(tcPr, "lnL"));
+                }
+            }
+        }
+
+        /// <summary>取单元格某条边线的颜色十六进制，缺什么就报什么形状。 Reads one cell edge's colour hex, naming whatever is missing.</summary>
+        /// <param name="tcPr">a:tcPr 元素。 The a:tcPr element.</param>
+        /// <param name="tag">边线标签（lnL/lnR/lnT/lnB）。 The edge tag.</param>
+        /// <returns>十六进制或说明性占位。 The hex value or a descriptive placeholder.</returns>
+        private static string EdgeHex(XElement tcPr, string tag)
+        {
+            XElement edge = tcPr == null ? null : tcPr.Element(A + tag);
+            if (edge == null) return "<no edge>";
+            XElement srgb = edge.Element(A + "solidFill");
+            srgb = srgb == null ? null : srgb.Element(A + "srgbClr");
+            if (srgb != null) return (string)srgb.Attribute("val") ?? "<no val>";
+            return edge.Element(A + "noFill") != null ? "<noFill>" : "<no color>";
+        }
+
+        /// <summary>取单元格某条边线的 <c>w</c> 属性（EMU 文本）。 Reads one cell edge's <c>w</c> attribute as EMU text.</summary>
+        /// <param name="tcPr">a:tcPr 元素。 The a:tcPr element.</param>
+        /// <param name="tag">边线标签。 The edge tag.</param>
+        /// <returns>EMU 文本或占位说明。 The EMU text or a placeholder.</returns>
+        private static string EdgeWidth(XElement tcPr, string tag)
+        {
+            XElement edge = tcPr == null ? null : tcPr.Element(A + tag);
+            string width = edge == null ? null : (string)edge.Attribute("w");
+            return width ?? "<absent>";
         }
 
         /// <summary>
