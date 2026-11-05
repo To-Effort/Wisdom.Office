@@ -39,6 +39,7 @@ namespace Wisdom.Office.Tests
             RunInheritedResourceAliasTest();
             RunAbbreviatedFilterKeyTest();
             RunNameEscapeRoundTripTest();
+            RunSignatureFieldGuardTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -723,6 +724,100 @@ namespace Wisdom.Office.Tests
                 "a legacy one-byte name came back as '"
                     + (legacyName == null ? "<missing>" : EscapeForMessage(legacyName.Value))
                     + "' instead of A\\u0080B byte for byte");
+        }
+
+        /// <summary>
+        /// PD26：签名域的 <c>/V</c> 是一份 <c>/Sig</c> 字典，<see cref="PdfFile.SetFormFieldValue"/> 与
+        /// <see cref="PdfFile.FillForm(IDictionary{string,string})"/> 却按普通文本域直接覆写它。
+        /// PD26: a signature field's /V is a /Sig dictionary, yet SetFormFieldValue and FillForm overwrite it
+        /// the way they would a text field.
+        /// </summary>
+        private static void RunSignatureFieldGuardTest()
+        {
+            PdfFile file = PdfFile.Load(BuildWatermarkSource("[0 0 612 792]", 0));
+            PdfReference page = file.GetPageReference(0);
+            PdfArray fields = new PdfArray();
+            PdfArray annots = new PdfArray();
+            fields.Add(AddWidget(file, page, "form.name", "Tx", 0, Rect(72, 600, 260, 616), annots));
+
+            // 签名域照真稿的形状搭：/V 指向一份 /Sig 字典，域上另挂 /ByteRange 与 /Contents。
+            // The signature field is built the way a real one looks: /V points at a /Sig dictionary while the
+            // field itself carries /ByteRange and /Contents.
+            PdfDictionary signature = new PdfDictionary();
+            signature.SetName("Type", "Sig");
+            signature.SetString("Name", "YF");
+            signature.SetString("M", "D:20261105090000+08'00'");
+            int signatureNumber = file.AddObject(signature);
+
+            PdfDictionary sigField = new PdfDictionary();
+            sigField.SetName("Type", "Annot");
+            sigField.SetName("Subtype", "Widget");
+            sigField.SetName("FT", "Sig");
+            sigField.SetString("T", "form.sig");
+            sigField.Set("V", new PdfReference(signatureNumber, 0));
+            sigField.Set("ByteRange", new PdfArray().AddNumber(0).AddNumber(8192).AddNumber(9216).AddNumber(1024));
+            sigField.Set("Rect", Rect(72, 520, 260, 560));
+            sigField.Set("P", page);
+            int sigNumber = file.AddObject(sigField);
+            fields.Add(new PdfReference(sigNumber, 0));
+            annots.Add(new PdfReference(sigNumber, 0));
+
+            PdfDictionary acroForm = new PdfDictionary();
+            acroForm.Set("Fields", fields);
+            acroForm.SetString("DA", "/Helv 12 Tf 0 g");
+            file.GetPageDictionary(0).Set("Annots", annots);
+            file.MarkModified(page.Number);
+            file.Catalog.Set("AcroForm", file.AddObjectReference(acroForm));
+            file.MarkModified(file.CatalogNumber);
+
+            PdfFormField sig = file.GetForm().GetField("form.sig");
+            Require(sig != null && sig.Kind == PdfFormFieldKind.Signature,
+                "the fixture's /Sig field is not seen as a signature field");
+
+            // 控制用例：文本域照常填得进去，签名域在模型属性上本来就是拒绝的。
+            // Control: a text field still fills, and the model property already refuses signature fields.
+            Require(file.FillForm(new Dictionary<string, string> { { "form.name", "Zhang" } }, false) == 1,
+                "the plain text field next to the signature must still take a value");
+            Require(file.GetForm().GetField("form.name").Value == "Zhang",
+                "the text field reads back '" + file.GetForm().GetField("form.name").Value + "' instead of Zhang");
+            bool modelRefused = false;
+            try { sig.Value = "hacked"; }
+            catch (InvalidOperationException) { modelRefused = true; }
+            Require(modelRefused, "PdfFormField.Value accepted a write on a signature field");
+
+            bool fileRefused = false;
+            try { file.SetFormFieldValue("form.sig", "hacked"); }
+            catch (InvalidOperationException) { fileRefused = true; }
+            Require(fileRefused,
+                "PdfFile.SetFormFieldValue wrote straight through to a /Sig field instead of refusing the way "
+                    + "PdfFormField.Value does: the library promises signature fields are never filled");
+
+            bool bulkRefused = false;
+            try { file.FillForm(new Dictionary<string, string> { { "form.sig", "hacked" } }, false); }
+            catch (InvalidOperationException) { bulkRefused = true; }
+            Require(bulkRefused,
+                "PdfFile.FillForm counted a /Sig field among the fields it filled instead of refusing it");
+
+            // 可填写清单的说明自己写着「不含父域与签名/按钮」，枚举里却留着签名域：照着说明批量填的调用者
+            // 会得到一份「保证填得进去」的名单，名单上第一条就撞进拒绝写入。
+            // FillableFields documents itself as excluding parents, signature and push-button fields yet still
+            // yields the signature field, so a caller that fills exactly the list it promises throws on it.
+            bool listed = false;
+            foreach (PdfFormField item in file.GetForm().FillableFields)
+            {
+                if (item.Kind == PdfFormFieldKind.Signature) listed = true;
+            }
+            Require(!listed,
+                "PdfForm.FillableFields yields a signature field although its own summary says it excludes them");
+
+            PdfFile back = PdfFile.Load(file.SaveToBytes());
+            PdfDictionary saved = back.GetObject<PdfDictionary>(sig.ObjectNumber);
+            PdfObject rawValue = saved == null ? null : saved.Get("V");
+            PdfDictionary savedSignature = rawValue == null ? null : back.Resolve(rawValue) as PdfDictionary;
+            PdfName savedType = savedSignature == null ? null : savedSignature.Get("Type") as PdfName;
+            Require(savedType != null && savedType.Value == "Sig",
+                "the signature's /V no longer resolves to a /Sig dictionary: it now reads '"
+                    + (savedType == null ? Describe(rawValue) : savedType.Value) + "'");
         }
 
         /// <summary>拼一份目录里只挂着页面树的夹具，供名称读写。Assembles a fixture whose catalog only carries the page tree, for name round-trips.</summary>
