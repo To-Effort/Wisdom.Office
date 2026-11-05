@@ -827,11 +827,19 @@ namespace Wisdom.Ppt
                     new XAttribute("rIns", IntStr(Ppt.Emu(shape.MarginRight))),
                     new XAttribute("bIns", IntStr(Ppt.Emu(shape.MarginBottom))),
                     new XAttribute("anchor", AnchorValue(shape.VerticalAlignment)),
-                    new XAttribute("wrap", "square"));
+                    new XAttribute("wrap", WrapValue(shape.WrapText)));
                 if (shape.ShrinkToFit) bodyPr.Add(new XElement(A + "normAutofit"));
                 XElement txBody = new XElement(P + "txBody", bodyPr, new XElement(A + "lstStyle"));
                 AppendParagraphs(txBody, shape.Paragraphs, @base);
                 return txBody;
+            }
+
+            /// <summary>折行开关到 <c>wrap</c> 值的映射：只有显式「不折行」写成 none，其余（含未设置）都是 square——那正是 PowerPoint 自己不写这个属性时的行为。 Maps the wrapping switch onto <c>wrap</c>: only an explicit "do not fold" becomes none, everything else (including unset) is square, which is what PowerPoint itself means when the attribute is absent.</summary>
+            /// <param name="wrap">模型里的折行开关。 The model's wrapping switch.</param>
+            /// <returns>none 或 square。 Either none or square.</returns>
+            private static string WrapValue(bool? wrap)
+            {
+                return wrap == false ? "none" : "square";
             }
 
             /// <summary>垂直对齐到 <c>anchor</c> 值的映射。 Maps the vertical anchor to its <c>anchor</c> value.</summary>

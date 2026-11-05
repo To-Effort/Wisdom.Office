@@ -999,7 +999,7 @@ namespace Wisdom.Ppt
                 if (margin > 0) table.Table.CellPadding = Ppt.ToPoints(margin);
             }
 
-            /// <summary>读取 a:bodyPr 的垂直对齐、内边距与自动缩放。Reads the vertical anchor, insets and autofit from a:bodyPr.</summary>
+            /// <summary>读取 a:bodyPr 的垂直对齐、内边距、自动缩放与折行开关。Reads the vertical anchor, insets, autofit and wrapping switch from a:bodyPr.</summary>
             /// <param name="txBody">p:txBody 元素。The p:txBody element.</param>
             /// <param name="box">目标文本框。The target text box.</param>
             private void ReadBodyProperties(XElement txBody, TextBoxShape box)
@@ -1017,6 +1017,25 @@ namespace Wisdom.Ppt
                 if (top >= 0) box.MarginTop = Ppt.ToPoints(top);
                 if (bottom >= 0) box.MarginBottom = Ppt.ToPoints(bottom);
                 if (Ppt.DrawingChild(bodyPr, "normAutofit") != null) box.ShrinkToFit = true;
+                box.WrapText = MapWrap(Ppt.Attribute(bodyPr, "wrap"));
+            }
+
+            /// <summary>
+            /// 把 <c>a:bodyPr@wrap</c> 还原成折行开关：只有 <c>none</c> 是一条真话说得出「不折行」；
+            /// <c>square</c>、<c>emergency</c> 与属性缺失都记成 null——文件里没有任何一句说「要折行」，
+            /// 前者只是默认值的另一种写法，后者是本库模型无法表达的紧急收缩。读成 null 才让写端回到原生默认，
+            /// 而不是替调用者猜出一个他没说过的声明。
+            /// Restores the wrapping switch from <c>a:bodyPr@wrap</c>: only <c>none</c> actually says
+            /// "do not fold". <c>square</c>, <c>emergency</c> and an absent attribute all become null — nothing
+            /// in the file ever says "fold"; the first is just the default spelled out and the second is a
+            /// shrink the model cannot carry. Reading them as null sends the writer back to the native default
+            /// instead of inventing a declaration the caller never made.
+            /// </summary>
+            /// <param name="value">wrap 属性文本。The wrap attribute text.</param>
+            /// <returns>不折行为 false，其余为 null。False for do-not-fold, null for everything else.</returns>
+            private static bool? MapWrap(string value)
+            {
+                return string.Equals(value, "none", StringComparison.Ordinal) ? (bool?)false : null;
             }
 
             /// <summary>读取文本部件的全部段落。Reads every paragraph of a text body element.</summary>

@@ -261,6 +261,17 @@ namespace Wisdom.Office.Core
         public double MarginBottom { get; set; }
         /// <summary>是否在内容超出时自动缩放文字。Whether the text shrinks to fit the shape.</summary>
         public bool ShrinkToFit { get; set; }
+        /// <summary>
+        /// 文本是否在框宽处折行：<c>false</c> 不折行（单行标题、竖排标签用这一档，超出的部分照样画出去），
+        /// <c>null</c> 与 <c>true</c> 都交给原生默认（折行）——文件里 <c>wrap="square"</c> 本来就是这个默认，
+        /// 所以 <c>true</c> 不会被读回成声明，只想「不折行」这一件事值得进模型。
+        /// Whether the text folds at the box width: <c>false</c> does not fold (the setting behind a
+        /// single-line title or a vertical label, whose text keeps running past the edge), while <c>null</c>
+        /// and <c>true</c> both defer to the native default of folding — <c>wrap="square"</c> in the file is
+        /// that default already, so <c>true</c> never reads back as a declaration. Only "do not fold" is
+        /// worth carrying in the model.
+        /// </summary>
+        public bool? WrapText { get; set; }
 
         /// <summary>创建空文本框。Creates an empty text box.</summary>
         public TextBoxShape()

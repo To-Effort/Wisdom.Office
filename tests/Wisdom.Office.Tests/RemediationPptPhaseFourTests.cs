@@ -392,6 +392,54 @@ namespace Wisdom.Office.Tests
                 + ": the box that must not fold started folding");
             Require((string)after[1].Attribute("wrap") == "square",
                 "the control box changed too: " + (string)after[1].Attribute("wrap"));
+
+            // 读端必须把这件事交到模型上，否则第二次写出只能靠猜。
+            // The reader has to hand this to the model, otherwise the second write can only guess.
+            TextBoxShape foldedBack = loaded.Slides[0].Shapes[0] as TextBoxShape;
+            Require(foldedBack != null && foldedBack.WrapText == false,
+                "the reader left wrap=\"none\" unset in the model: "
+                + (foldedBack == null ? "<not a text box>" : foldedBack.WrapText.ToString()));
+
+            // 本库自己的写出：显式不折行才写 none，显式折行与「没说过」都落 square（PowerPoint 的原生默认）。
+            // Our own write: only an explicit no-fold becomes none; an explicit fold and an unset box both
+            // land on square, PowerPoint's native default.
+            OfficePresentation declared = OfficePresentation.Widescreen();
+            Slide page = declared.AddSlide(SlideLayoutKind.Blank);
+            TextBoxShape single = page.AddTextBox(40, 40, 380, 40, "不许折行的长标题");
+            single.WrapText = false;
+            TextBoxShape folding = page.AddTextBox(40, 120, 380, 100, "显式要折行");
+            folding.WrapText = true;
+            TextBoxShape quiet = page.AddTextBox(40, 260, 380, 100, "没提过折行");
+            byte[] own = WriteToBuffer(declared);
+            XElement[] ownPrs = ReadBodyPrs(own, "ppt/slides/slide1.xml");
+            Require(ownPrs.Length == 3, "expected three a:bodyPr, got " + ownPrs.Length);
+            Require((string)ownPrs[0].Attribute("wrap") == "none",
+                "the declared no-fold box wrote " + (string)ownPrs[0].Attribute("wrap"));
+            Require((string)ownPrs[1].Attribute("wrap") == "square",
+                "the declared fold box wrote " + (string)ownPrs[1].Attribute("wrap"));
+            Require((string)ownPrs[2].Attribute("wrap") == "square",
+                "the box that never spoke changed its written default: " + (string)ownPrs[2].Attribute("wrap"));
+
+            OfficePresentation ownBack = PptxReader.Load(own);
+            TextBoxShape[] boxes = new TextBoxShape[3];
+            for (int i = 0; i < 3; i++) boxes[i] = ownBack.Slides[0].Shapes[i] as TextBoxShape;
+            Require(boxes[0] != null && boxes[1] != null && boxes[2] != null,
+                "the three boxes did not come back as text boxes");
+            Require(boxes[0].WrapText == false,
+                "the no-fold setting did not read back: " + boxes[0].WrapText);
+            // square 就是默认值的另一种写法，文件里没有任何一句「要折行」值得当成声明：读回 null。
+            // square is only the default spelled out; nothing in the file declares "fold", so it reads back null.
+            Require(boxes[1].WrapText == null,
+                "the fold box came back with a declaration it never made: " + boxes[1].WrapText);
+            Require(boxes[2].WrapText == null,
+                "the box that never spoke gained a setting: " + boxes[2].WrapText);
+            byte[] third = WriteToBuffer(ownBack);
+            XElement[] thirdPrs = ReadBodyPrs(third, "ppt/slides/slide1.xml");
+            Require(thirdPrs.Length == 3
+                && (string)thirdPrs[0].Attribute("wrap") == "none"
+                && (string)thirdPrs[1].Attribute("wrap") == "square"
+                && (string)thirdPrs[2].Attribute("wrap") == "square",
+                "the second write did not reproduce the first one's wrapping");
         }
 
         /// <summary>
