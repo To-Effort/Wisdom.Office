@@ -224,7 +224,7 @@
 - 后果分档：`rowSpan`/`vMerge` 还额外造成**列错位**——补位空格一律追加到行尾（`PptxWriter.cs:1166-1170`）而不是按列游标插入，第 2 行数据整体左移一列；主题色被替换会让品牌模板在二次保存后全部配色走样。
 - 目标行为（分档）：
   1. 结构错误先修（`PT1`、`PT2`、列错位补位）。
-  2. 写端不要伪造模型未表达的意图（三档均已落地：表头一档 `04ff01b`、形状填充与描边一档 `6dce2b6`、项目符号与 `pPr` 一档 `adb0f30`）：未显式声明表头就不写 `firstRow`/`bandRow` 与逐格填充（让 `tableStyleId` 生效）；无标记时不写 `buNone`，一段连对齐缩进行距都没设时 `a:pPr` 整个省略；`p:style` 未解析出的填充描边要区分「未设置」与「显式无填充」，不能一律 `a:noFill`。
+  2. 写端不要伪造模型未表达的意图（四档均已落地：表头一档 `04ff01b`、形状填充与描边一档 `6dce2b6`、项目符号与 `pPr` 一档 `adb0f30`、文本框折行一档 `5f15d03`）：未显式声明表头就不写 `firstRow`/`bandRow` 与逐格填充（让 `tableStyleId` 生效）；无标记时不写 `buNone`，一段连对齐缩进行距都没设时 `a:pPr` 整个省略；`p:style` 未解析出的填充描边要区分「未设置」与「显式无填充」，不能一律 `a:noFill`；`a:bodyPr@wrap` 只有 `none` 是一句真话，square 与缺失都算「没说过」。
   3. 读端补齐可对称的字段（`lnSpc`/`spcBef`/`spcAft`、`wrap`、`baseline`、`rowSpan`/`vMerge`、主题 accent），模型补 `Hyperlink`、`WordWrap`/`AutoFit`、`GroupShape` 与旋转翻转属里程碑级改造，单独排期。
   4. 不可还原部件（图表、连线、外链图片、被跳过的畸形页）必须**可见**：提供未知部件透传或返回 skipped-parts 清单，禁止把「跳过」变成「删除」。`PptxReader.cs:1726`、`:1733-1736` 现在遇到悬空 `r:id` 或畸形幻灯片直接 `continue`，页数无声缩水，随后 `Save` 把该页彻底写没。
 
@@ -385,6 +385,7 @@
 | `PT5` | 输出 `a:rPr` 的形状改变：字号、颜色、字体三项只在**显式设过**时才写，只加粗的 run 从 `sz="1100"` + `a:solidFill` + `a:latin`/`a:ea` 缩成只剩 `b="1"`；这类稿子二次写出（Load+Save）的字节随之变化，渲染改由版式与母版继承决定 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」写明这条规则与 `TextFormat` 新增的三个只读标记；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「只想改字号，保存后连字体一起被换了」 |
 | `PT3` 结构档 | `a:tblPr` 从每张表恒写 `firstRow="1" bandRow="1"` 改为只在声明过表头（某行 `IsHeader` 或给过 `HeaderColor`）时写 `firstRow`，`bandRow` 因模型没有带状行字段而不再输出；未设底色的单元格从写 `a:noFill` 改为不写填充，补齐用的空格在数据行也不再写白色，`tableStyleId` 本该生效的整表外观因此重新可见。新写出的无人声明表头的表格字节随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格结构档一段；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节注意事项补「表头要声明才有表头」一条、常见问题补「表格首行没有表头的样子」；读端新增把 `a:tblPr@firstRow` 读回 `TableRow.IsHeader`，旧形状（恒写 firstRow 的历史文件）照常读取，其首行按表头认，二次写出不掉样式 |
 | `PT3` 结构档·段落符号 | 每段末尾的 `a:buNone` 不再无条件写出：无 `ListMarker` 时不写任何 bullet 子元素，全段无属性时连 `a:pPr` 一并省略。自家母版与版式不定义符号，故新建产物字节不变；差别在载入第三方稿再存盘——过去那份逐段压制等于关掉母版里的项目符号，现在符号继承照常生效。代价是「显式关掉符号」与「未设置」在模型里仍同一个值，来稿中的 `buNone` 存盘后不保留 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增段落属性一段（含这条边界）；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「用本库打开别人的演示稿再存盘，列表的项目符号全消失了」 |
+| `PT3` 结构档·文本框折行 | `TextBoxShape` 新增 public 可空字段 `WrapText`（纯增项，不破坏既有调用）。写端仍按「未设置 → `wrap="square"`」落，自家产物字节不变；差别在载入第三方稿：过去 `wrap="none"` 被读端完全忽略、写端一律钉成 square，那条不许折行的单行标题存一次盘就开始在框内折行。现在 `false` 写 `none`、`none` 读回 `false`；`square`/`emergency`/属性缺失一律读成 null（文件里没有任何一句「要折行」值得当成声明，`emergency` 本库模型也表达不了） | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」段落属性一段后补折行一段、「已知限制」补 `emergency` 与 true 不往返的边界；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「载入别人的稿子后那一行标题开始折行」 |
 
 ---
 
@@ -627,4 +628,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 夹具是一个文本框三段：第一段声明 `ListMarker = "•"`（对照组，必须仍然写得出 `buChar`）、第二段什么都不设、第三段只设居中正。断言三件事——对照组符号仍在、第二段连 `a:pPr` 都不出现、第三段有 `algn="ctr"` 却没有任何 bullet 子元素；再 `Load` 回读断言标记仍是 `"•"`，二次写出不得把丢掉的 `pPr`/`buNone` 补回来。
   - 已知边界（写进 README 与教程 FAQ）：`Paragraph.ListMarker` 一个值承载两种意思，「显式关掉符号」与「没想过」不可分，载入带 `buNone` 的外来稿再存盘时那份显式关闭不被保留；建模它需要新字段，属 Phase 5 的读端补齐与模型扩展（与 `lnSpc`/`wrap`/`baseline`/`rowSpan` 同批）。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`[remediation] ppt phase-four shapes and media ok`、`[ppt-anim]`、`[ppt-theme]` 与 PPT 往返套件全绿，说明自家产物的段落属性写出与回读未受影响。
+- `PT3` 读端补齐·文本框折行（`d836400` + `5f15d03`）：`a:bodyPr@wrap` 从「写端钉死 square、读端从不看」变成一句可以往返的声明。
+  - 这一档与前三档的病因不同：缺的不是「少写了一句」，而是模型里没地方放。`wrap` 的两种真实取值里，`none`（不许折行——单行标题、竖排标签就是这么写的）在 `TextBoxShape` 上没有任何字段承载，读端读到也只能丢。所以先补一个 public 可空字段 `WrapText`（纯增项，不破坏既有调用），再把两侧接线。
+  - 读端只把 `none` 当成一句话：`square` 与属性缺失在文件里都表示「按默认折行」，把它读成 `true` 等于替调用者造一条他没做过的声明（正是 `PT5` 那条教训的形状），一律记 null；`emergency`（紧急收缩）模型无法表达，同样 null 并写进「已知限制」。
+  - 写端维持「未设置就写 square」不动——那正是 PowerPoint 自己在属性缺失时的行为，自家产物一个字节都没变。与 `buNone` 那档必须改字节的情形不同，这里「省略」与「写默认值」等价，选了风险低的写法。
+  - 修复前失败原文（`net8.0` 与 `net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: wrap="none" was flattened to square: the box that must not fold started folding
+       at Wisdom.Office.Tests.Program.RunTextBoxWrapNoneSurvivesTest() ... RemediationPptPhaseFourTests.cs:line 390
+    ```
+
+  - 夹具做法：新 API 在修复前不存在，红测不能靠「引用一个还不存在的字段」，于是从文件侧取证——写一份两个文本框的稿子，把第一个 `bodyPr` 的属性原文改成 `none`（内存重打包，新增 `SlideEntryText`、`RewriteZipEntryText`、`ReadBodyPrs` 三个助手），`Load` 后二次写出，断言第一个仍是 `none`、对照格仍是 `square`。转绿之后再补模型侧：声明 `false` 写得出 `none`，声明 `true` 与没说过都写 `square` 且都读回 null，第二次写出与第一次同形。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。本库 PPT→PDF 渲染器按绝对坐标逐段画行、本就不做折行，`wrap` 不参与自家渲染，这个字段只影响写出的 `.pptx` 在 PowerPoint / WPS 里的表现。
+  - `PT3` 的读端补齐到这里收口为「`wrap` 已补」；主题 accent（`a:schemeClr`）、超链接、组合形状与旋转翻转仍按 `§11.13` 的排期另开条目。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
