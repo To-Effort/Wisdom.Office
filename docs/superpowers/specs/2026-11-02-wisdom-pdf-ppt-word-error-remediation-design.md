@@ -345,6 +345,13 @@
 - 目标行为：改为跳过该图并记告警，总量保护交给 `OfficePackageLimits` 的 `_totalBytes` 预算。
 - 红测：内存构造超限图的 ODT，断言正文仍可读且带告警。
 
+### WE12｜ODT 页码域按 `IndexOf("PAGE")` 判定，`NUMPAGES` 被写成当前页码　A
+
+- 位置：`src/Wisdom.Word/Formats/OdtWriter.cs:545`（改前是 `field.Instruction.IndexOf("PAGE", StringComparison.OrdinalIgnoreCase) >= 0`）；读端 `src/Wisdom.Word/Formats/OdtReader.cs:559` 有 `text:page-number` 分支，没有 `text:page-count` 分支。
+- 后果：`NUMPAGES` 这个词里正含 `PAGE` 四个字母，所以「第 X 页 共 N 页」（`src/Wisdom.Word/README.md` 页脚示例的写法）写成 ODT 是两个 `<text:page-number text:select-page="current"/>`，总页数被画成当前页码，LibreOffice 打开即见错值；载入再存一次也修不回来，因为指令在这一路已经被丢掉。DOCX（`src/Wisdom.Word/Docx/DocxWriter.cs:1534`）、RTF（`src/Wisdom.Word/Formats/RtfWriter.cs:465`）、HTML（`src/Wisdom.Word/Formats/HtmlWriter.cs:309`）都把 `FieldRun.Instruction` 原样带出去，只有 ODT 塌。
+- 目标行为：按整词判定——`NUMPAGES`/`PAGES` 写 `text:page-count`，整词 `PAGE` 写 `text:page-number`；读端补 `text:page-count` → `NUMPAGES`。`FieldRun.Instruction` 本来就存着指令，模型无需改动。
+- 红测：一段里放 `PAGE` 与 `NUMPAGES` 两个域写 ODT，断言 `content.xml` 出现 `text:page-count` 且 `text:page-number` 只出现一次；回读断言指令含 PAGE 与 NUMPAGES；DOCX 同稿作对照。
+
 ---
 
 ## 7. P2 与 P3
@@ -418,6 +425,7 @@
 | `PT12` | 表格四条边不再一律取 `InsideHorizontal`：贴外圈的那条边取 `Top`/`Bottom`/`Left`/`Right`，内部取两条分隔线，合并块按自身首末行列判定，`TableCell.Borders` 逐边优先。`Table()` 的默认六向同为细黑线，没动过 `Borders` 的稿子一个字节不变；只有声明过非默认方向的稿子随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格边框一段，「已知限制」的「只出不进」改写为按六向落位；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「表格外圈加粗，保存后四条边一样粗」 |
 | `PT13` | 表格的「无边框」不再补一条实线：`BorderStyle.None` 的那条边写 `a:noFill`。用过 `TableBorders.None()` 的稿子字节随之变化（变化本身就是修复），其余线型一个字节不动；形状描边一直是这个口径，两条路径由此一致 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」的表格边框一段补这句；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「`Table.Borders` 设成 `TableBorders.None()`，保存后边框还在」 |
 | `PT14` | 表格逐格四条边线从「只出不进」改为双向：读端解析 `a:lnL`/`lnR`/`lnT`/`lnB` 逐格落进 `TableCell.Borders`，`a:noFill` 认成 `BorderStyle.None`，四条全缺仍为 null。载入别人的表格再存盘不再把边框塌回默认细线，这一类稿子的字节随之变化（变化本身就是修复）；本库新建稿第二次保存逐边字节不变 | `src/Wisdom.Ppt/README.md` 表格边框一段改写为双向，「已知限制」的「只出不进」条目替换为「逐格往返、表级六向不回」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「别人的表格打开再存一次，边框全没了」，并把 `PT11`/`PT12` 两条里「只出不进」的边界句改掉 |
+| `WE12` | ODT 页码域从 `IndexOf("PAGE")` 改为整词判定：`NUMPAGES`/`PAGES` 写 `text:page-count`、整词 `PAGE` 写 `text:page-number`，读端新增 `text:page-count` → `NUMPAGES`（此前没有这一分支）。同时用到两个域的 ODT 产物在总页数那一处字节变化（变化本身就是修复），只用 `PAGE` 的稿子一个字节不动 | `src/Wisdom.Word/README.md`「在格式之间保留什么」的页码一行改为「页码与总页数域」并新增一段说明 ODT 只认这两个指令、其余指令写的是显示文本；`docs/Wisdom.Word.Tutorial.md` 常见问题补「『第 X 页 共 N 页』存成 ODT 变成两个页码」 |
 
 ---
 
@@ -725,4 +733,16 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 夹具是两张表同页：一张六向各异（外圈 3 磅四色、内部 1 磅灰/紫、`InsideVertical` 给双线），一张 `TableBorders.None()` 只留 `Top` 细线。断言分三层——载入后逐格四边的颜色与线型回到声明值（含双线 `Double` 与 `None`）、末行末列的 ring 判定边界、最后把载入的稿子再写出一次，逐格四条边的 `w` + 颜色签名必须与第一次逐字相同。最后一层才是「往返」的真正断言：只测读回来的对象等于声明，测不出写出侧会不会另取一份默认值。
   - 字节口径：本库新建稿第二次保存逐边不变（测试直接比对两次写出的边线签名）；变化只发生在「载入别人的表格再存盘」这一类稿子上，而那正是本条要修的丢失。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE12` ODT 页码与总页数域（`fbd2c6e` 取证 + `f5bbd98` 修复）：`OdtWriter` 认页码用的是 `Instruction.IndexOf("PAGE")`，而 `NUMPAGES` 里正含 `PAGE` 四个字母——`第 X 页 共 N 页` 这份最常见的页脚写成 ODT 就成了两个当前页码。改成整词判定：`PageFieldTokens` 把指令按字母成词切出并大写，`NUMPAGES`/`PAGES` 先认走写 `text:page-count`，剩下整词 `PAGE` 写 `text:page-number`；`OdtReader` 补 `text:page-count` → `NUMPAGES`。
+  - 修复前失败原文：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: NUMPAGES wrote no text:page-count, so the total is drawn as a page number: ...<text:page-number text:select-page="current"/>...<text:page-number text:select-page="current"/>...
+    at Wisdom.Office.Tests.Program.RunOdtPageCountFieldTest() ... RemediationWordPhaseFourTests.cs:line 397
+    ```
+
+  - 只有 ODT 这一路塌：DOCX / RTF / HTML 三个写出器都把 `FieldRun.Instruction` 原样带出去，`FieldRun` 本来就存着指令，所以本轮不动模型；测试用同一份稿子的 DOCX 做对照，断言它读回 PAGE 与 NUMPAGES 两条指令，把「模型没丢」和「ODT 写错了」分开。
+  - 顺手记下的边界：ODT 只认这两个指令，其它指令（`SECTIONPAGES`、`DATE` 之类）写出的是域的显示文本而不是指令本身，载回后不再是一个域；`OdtReader` 有 `text:date`/`text:time` 分支而 `OdtWriter` 不产它们，这条读写不对称留给后续条目。
+  - 字节口径：只用 `PAGE` 的稿子输出不变（那一条元素的文本与属性都没动），差别只在同时出现总页数的 ODT。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。

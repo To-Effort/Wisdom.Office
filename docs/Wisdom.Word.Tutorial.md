@@ -953,4 +953,6 @@ Console.WriteLine(fromOdt.GetPlainText());
 
 **页码没出现。** 本包写的是 `PAGE` / `NUMPAGES` 域，真实数字由 Word 打开时计算；导成 PDF 时才会由渲染器替换成实际页码。
 
+**「第 X 页 共 N 页」存成 ODT 变成两个页码。** 已修。ODT 写出时按整词认域指令：`PAGE` 写 `text:page-number`，`NUMPAGES` / `PAGES` 写 `text:page-count`，载入时各自回到 `PAGE` / `NUMPAGES`。从前判的是 `IndexOf("PAGE")`，而 `NUMPAGES` 里就含 `PAGE` 四个字母，总页数被画成当前页码。DOCX / RTF / HTML 把指令原样带过去，从未受这条影响；代价是 ODT 也只认这两个指令，其它指令（如 `SECTIONPAGES`、`DATE`）写出的是域的显示文本而不是指令本身，载回后不再是一个域。
+
 **模板占位符没被替换。** 先用 `DocxReader.ExtractText` 确认模板里确实是 `{{key}}`（全角花括号、多余空格都会导致不匹配），再用 `TemplateEngine.ContainsToken` 快速判断某个字符串是否含占位符。
