@@ -24,6 +24,7 @@ namespace Wisdom.Office.Tests
             RunUndeclaredTableHeaderStaysPlainTest();
             RunUnsetShapeFillStaysInheritedTest();
             RunUnmarkedParagraphDoesNotSuppressBulletsTest();
+            RunTextBoxWrapNoneSurvivesTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -342,6 +343,55 @@ namespace Wisdom.Office.Tests
             Require(second[2].Element(A + "pPr") != null
                 && second[2].Element(A + "pPr").Element(A + "buNone") == null,
                 "the second write suppressed the inherited bullet again");
+        }
+
+        /// <summary>
+        /// PT3 读端补齐（wrap 一档）：文本框「不换行」是 PowerPoint 里单行标题与竖排标签的常态写法
+        /// <c>&lt;a:bodyPr wrap="none"/&gt;</c>。写端过去无论模型说没说都钉一个 <c>wrap="square"</c>，
+        /// 读端从不看这个属性，于是载入别人的演示稿再存盘一次，那行标题就开始在框内折行——
+        /// 版式被静默改掉，形状数、文本一个字都没少，肉眼只能在放映时才发现。
+        /// PT3 read parity (the wrap case): "do not wrap" is how PowerPoint spells a single-line title or a
+        /// vertical label — <c>&lt;a:bodyPr wrap="none"/&gt;</c>. The writer pinned <c>wrap="square"</c>
+        /// whatever the model said and the reader never looked at the attribute, so loading someone else's
+        /// deck and saving it once made that title start folding inside the box. Nothing is lost textually;
+        /// only the layout silently changes, which is exactly what a round trip must not do.
+        /// </summary>
+        private static void RunTextBoxWrapNoneSurvivesTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            slide.AddTextBox(40, 40, 380, 40, "一行到底、不许折行的长标题，超出右边界也照样继续排下去");
+            slide.AddTextBox(40, 120, 380, 200, "这段照常按框宽折行，作为对照组");
+
+            // 夹具：把第一个文本框写成 wrap="none"，第二个留作 square 对照。
+            // Fixture: spell the first box as wrap="none" and keep the second one as the square control.
+            byte[] written = WriteToBuffer(deck);
+            string slideXml = SlideEntryText(written, "ppt/slides/slide1.xml");
+            int first = slideXml.IndexOf("wrap=\"square\"", StringComparison.Ordinal);
+            Require(first > 0, "the fixture found no wrap attribute to rewrite");
+            string patched = slideXml.Remove(first, "wrap=\"square\"".Length)
+                .Insert(first, "wrap=\"none\"");
+            Require(!patched.Contains("wrap=\"emergency\""), "the fixture edit ran away");
+            byte[] source = RewriteZipEntryText(written, "ppt/slides/slide1.xml", patched);
+
+            XElement[] before = ReadBodyPrs(source, "ppt/slides/slide1.xml");
+            Require(before.Length == 2, "expected two a:bodyPr in the fixture, got " + before.Length);
+            Require((string)before[0].Attribute("wrap") == "none",
+                "the fixture did not carry wrap=\"none\": " + (string)before[0].Attribute("wrap"));
+            Require((string)before[1].Attribute("wrap") == "square",
+                "the fixture's control box lost its wrap=\"square\"");
+
+            OfficePresentation loaded = PptxReader.Load(source);
+            Require(loaded.Slides[0].Shapes.Count == 2,
+                "the round trip changed the shape count: " + loaded.Slides[0].Shapes.Count);
+            byte[] again = WriteToBuffer(loaded);
+            XElement[] after = ReadBodyPrs(again, "ppt/slides/slide1.xml");
+            Require(after.Length == 2, "expected two a:bodyPr after the round trip, got " + after.Length);
+            Require((string)after[0].Attribute("wrap") == "none",
+                "wrap=\"none\" was flattened to " + (string)after[0].Attribute("wrap")
+                + ": the box that must not fold started folding");
+            Require((string)after[1].Attribute("wrap") == "square",
+                "the control box changed too: " + (string)after[1].Attribute("wrap"));
         }
 
         /// <summary>
@@ -837,6 +887,71 @@ namespace Wisdom.Office.Tests
                     return XDocument.Parse(reader.ReadToEnd());
                 }
             }
+        }
+
+        /// <summary>按原文读出幻灯片部件的文本，用于构造夹具。 Reads a slide part verbatim so a fixture can edit it as text.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>部件文本。The part text.</returns>
+        private static string SlideEntryText(byte[] archive, string entryName)
+        {
+            using (ZipArchive zip = new ZipArchive(new MemoryStream(archive), ZipArchiveMode.Read))
+            {
+                ZipArchiveEntry entry = zip.GetEntry(entryName);
+                Require(entry != null, "slide part missing: " + entryName);
+                using (Stream stream = entry.Open())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+        }
+
+        /// <summary>在内存里重打包，替换指定条目的文本，其余条目原样复制。 Repackages in memory, replacing one entry's text and copying the rest as-is.</summary>
+        /// <param name="package">原包字节。The original package bytes.</param>
+        /// <param name="entryName">要替换的条目名。The entry to replace.</param>
+        /// <param name="content">新的条目文本。The new entry text.</param>
+        /// <returns>重打包后的字节。The repackaged bytes.</returns>
+        private static byte[] RewriteZipEntryText(byte[] package, string entryName, string content)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(content);
+            using (MemoryStream buffer = new MemoryStream())
+            {
+                using (ZipArchive source = new ZipArchive(new MemoryStream(package), ZipArchiveMode.Read))
+                using (ZipArchive target = new ZipArchive(buffer, ZipArchiveMode.Create, true))
+                {
+                    foreach (ZipArchiveEntry entry in source.Entries)
+                    {
+                        ZipArchiveEntry copy = target.CreateEntry(entry.FullName, CompressionLevel.Optimal);
+                        using (Stream output = copy.Open())
+                        {
+                            if (string.Equals(entry.FullName, entryName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                output.Write(bytes, 0, bytes.Length);
+                            }
+                            else
+                            {
+                                using (Stream input = entry.Open())
+                                {
+                                    input.CopyTo(output);
+                                }
+                            }
+                        }
+                    }
+                }
+                return buffer.ToArray();
+            }
+        }
+
+        /// <summary>取幻灯片部件里每个 <c>a:bodyPr</c>，按文档顺序返回。 Collects every <c>a:bodyPr</c> in a slide part, in document order.</summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>bodyPr 元素列表。The bodyPr elements.</returns>
+        private static XElement[] ReadBodyPrs(byte[] archive, string entryName)
+        {
+            List<XElement> found = new List<XElement>();
+            foreach (XElement bodyPr in ReadSlideXml(archive, entryName).Descendants(A + "bodyPr")) found.Add(bodyPr);
+            return found.ToArray();
         }
 
         /// <summary>取表格的首行 <c>a:tr</c>。 Takes a table's first <c>a:tr</c>.</summary>
