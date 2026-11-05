@@ -542,7 +542,12 @@ namespace Wisdom.Word
             FieldRun field = inline as FieldRun;
             if (field != null)
             {
-                if (field.Instruction != null && field.Instruction.IndexOf("PAGE", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (IsPageCountField(field.Instruction))
+                {
+                    xml.Append("<text:page-count/>");
+                    return;
+                }
+                if (IsPageNumberField(field.Instruction))
                 {
                     xml.Append("<text:page-number text:select-page=\"current\"/>");
                     return;
@@ -564,6 +569,58 @@ namespace Wisdom.Word
                     .Append(Convert.ToBase64String(image.Image.Data))
                     .Append("</office:binary-data></draw:image></draw:frame>");
             }
+        }
+
+        /// <summary>
+        /// 域指令是否指向总页数：整词匹配 NUMPAGES 与 PAGES。从前这里用 <c>IndexOf("PAGE")</c>，
+        /// 而 "NUMPAGES" 里正含 "PAGE" 四个字母，总页数于是被写成当前页码。
+        /// Whether the instruction names the page total, matching NUMPAGES and PAGES as whole words. This
+        /// used to be <c>IndexOf("PAGE")</c>, and "NUMPAGES" contains those very letters, so the total was
+        /// written as a page number.
+        /// </summary>
+        /// <param name="instruction">域指令文本。The field instruction text.</param>
+        /// <returns>是总页数。True for the page-count field.</returns>
+        private static bool IsPageCountField(string instruction)
+        {
+            foreach (string token in PageFieldTokens(instruction))
+            {
+                if (token == "NUMPAGES" || token == "PAGES") return true;
+            }
+            return false;
+        }
+
+        /// <summary>域指令是否指向当前页码（整词 PAGE，总页数已由 <see cref="IsPageCountField"/> 先认走）。Whether the instruction names the current page as the whole word PAGE; the page total is claimed first by <see cref="IsPageCountField"/>.</summary>
+        /// <param name="instruction">域指令文本。The field instruction text.</param>
+        /// <returns>是当前页码域。True for the page-number field.</returns>
+        private static bool IsPageNumberField(string instruction)
+        {
+            foreach (string token in PageFieldTokens(instruction))
+            {
+                if (token == "PAGE") return true;
+            }
+            return false;
+        }
+
+        /// <summary>拆出域指令里的字母词并大写，空白、反斜杠与花括号一律是分隔符。Splits the letter words of a field instruction and upper-cases them; whitespace, backslashes and braces are separators.</summary>
+        /// <param name="instruction">域指令文本。The field instruction text.</param>
+        /// <returns>大写词列表。The upper-cased tokens.</returns>
+        private static List<string> PageFieldTokens(string instruction)
+        {
+            List<string> tokens = new List<string>();
+            if (string.IsNullOrEmpty(instruction)) return tokens;
+            StringBuilder current = new StringBuilder();
+            for (int i = 0; i < instruction.Length; i++)
+            {
+                char value = instruction[i];
+                if (value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z') current.Append(char.ToUpperInvariant(value));
+                else if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+                    current.Length = 0;
+                }
+            }
+            if (current.Length > 0) tokens.Add(current.ToString());
+            return tokens;
         }
 
         /// <summary>把文本编码为 ODF 行内标记：多空格写成 text:s、制表符与换行写成对应元素。Encodes text into ODF inline markup: space runs become text:s, tabs and newlines become their elements.</summary>

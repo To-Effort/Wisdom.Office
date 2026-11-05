@@ -561,6 +561,11 @@ namespace Wisdom.Word
                     paragraph.Inlines.Add(new FieldRun("PAGE", "1", format.Clone()));
                     continue;
                 }
+                if (name == TextNs + "page-count")
+                {
+                    paragraph.Inlines.Add(new FieldRun("NUMPAGES", "1", format.Clone()));
+                    continue;
+                }
                 if (name == TextNs + "date" || name == TextNs + "time")
                 {
                     string display = element.Value;
