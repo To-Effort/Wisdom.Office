@@ -146,6 +146,8 @@ table.Table.AddRow("华南", "384", "30%");
 
 文本运行只写你**显式设过**的字符属性。`new TextFormat()` 预置的 Arial、11 磅、黑色是模型内置默认值，不算意图：一个只设了 `Bold = true` 的 run 写出的是 `<a:rPr b="1"/>`，字号、字体、颜色都留给版式与母版的继承链，不会被钉成 11 磅的 Calibri。`TextFormat` 上的 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor` 三个只读标记就是这条判定，赋过值才点亮；`new TextFormat("Calibri", 18)` 这类显式构造则三项都算设过。整段没有任何格式的文本沿用演示文稿的默认字体（`DefaultTextFormat` / `DefaultTitleFormat`，未显式设置时取主题主/次字体）。
 
+段落属性走的是同一条规矩：`a:pPr` 里只装模型说过的话，一段什么都没设时整个 `a:pPr` 省略不写。项目符号最要紧——`a:buNone` 不是「没有符号」的留空，而是一条**关掉本层符号**的显式指令，从前无条件跟在每段后面，等于把加载进来的第三方母版与版式里定义好的符号逐段压制掉。现在只有 `ListMarker` 非空才写 `buChar`（数字开头写 `buAutoNum`），没标记就不写符号子元素，让继承链自己说话；本库自建的母版与版式从不定义符号，自家产物因此字节不变。代价是模型里「显式关掉符号」与「没想过这件事」仍是同一个值（读取端把 `buNone` 读回 `null`），载入带 `buNone` 的外来稿再存盘时那份显式关闭不会被保留。
+
 表格的结构开关同样只写模型里说过的话。`a:tblPr@firstRow` 只在**声明过**表头时写——判据是某一行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`；两者都没有时首行按普通数据行走，不会凭空加粗、变白。读回时 `firstRow` 被还原成首行的 `IsHeader`，所以声明过的表头能活过第二次保存（模型里没有第二个字段承载这件事）。隔行条纹（`bandRow`）在统一模型里没有对应字段，写出时不再恒带；单元格没设底色时也不补 `a:noFill`——那等于替调用者宣布「这格不许有底色」，会把 `tableStyleId` 本来要给的外观一并抹掉。列宽之外的整表样式（`tableStyleId`）固定为内置的一套，不开放选择。
 
 ## 入场动画、自动换页与主题深改
@@ -257,5 +259,6 @@ OfficeConverter.DocumentToPptx(document, "from-word.pptx");    // byte[] 重载�
 - 不处理图表、SmartArt 与嵌入 OLE 对象；读取时忽略这些部件，写出时不生成。动画只支持入场类别（`p:timing` 主序列），强调、退出、路径与媒体动画不建模；读取时只识别入场节点，其余 timing 节点跳过。
 - 版式与主题底稿由本库生成一套固定的 `slideMaster` / `slideLayout` / `theme`，深改经 `PresentationTheme` 显式覆盖六个色板阶段与主/次字体；`.potx` 模板可读写，但不继承第三方母版的精确占位符坐标（占位符位置仍按幻灯片尺寸等比推算）。
 - 文本换行、自动字号、形状阴影与 3D 效果由 PowerPoint / WPS 运行时决定，本包只输出对应属性，不做排版模拟。
+- 列表符号只有 `Paragraph.ListMarker` 一个字段：没有标记就不写任何 bullet 子元素，符号由母版与版式继承决定。因此「显式关掉上层符号」（`a:buNone`）与「没设置过符号」在模型里是同一个值，读入带 `buNone` 的第三方演示稿再存盘时，那份显式关闭不会被保留。隔行条纹（`bandRow`）同理没有对应字段。
 - 图片仅支持 PNG / JPEG。
 - 文本里 XML 1.0 不接受的字符（控制字符、未配对代理项）在写出前由 `OfficeXmlText` 剔除，避免一个脏字符让整个演示文稿保存失败；因此这类字符不会往返保留。

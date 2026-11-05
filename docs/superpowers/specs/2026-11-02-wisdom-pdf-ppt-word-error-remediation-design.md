@@ -224,7 +224,7 @@
 - 后果分档：`rowSpan`/`vMerge` 还额外造成**列错位**——补位空格一律追加到行尾（`PptxWriter.cs:1166-1170`）而不是按列游标插入，第 2 行数据整体左移一列；主题色被替换会让品牌模板在二次保存后全部配色走样。
 - 目标行为（分档）：
   1. 结构错误先修（`PT1`、`PT2`、列错位补位）。
-  2. 写端不要伪造模型未表达的意图：未显式声明表头就不写 `firstRow`/`bandRow` 与逐格填充（让 `tableStyleId` 生效）；无标记时不写 `buNone`（`PptxWriter.cs:942`，配合 `:932` 的 `any = true` 使 `pPr` 恒被写出）；`p:style` 未解析出的填充描边要区分「未设置」与「显式无填充」，不能一律 `a:noFill`。
+  2. 写端不要伪造模型未表达的意图（三档均已落地：表头一档 `04ff01b`、形状填充与描边一档 `6dce2b6`、项目符号与 `pPr` 一档 `adb0f30`）：未显式声明表头就不写 `firstRow`/`bandRow` 与逐格填充（让 `tableStyleId` 生效）；无标记时不写 `buNone`，一段连对齐缩进行距都没设时 `a:pPr` 整个省略；`p:style` 未解析出的填充描边要区分「未设置」与「显式无填充」，不能一律 `a:noFill`。
   3. 读端补齐可对称的字段（`lnSpc`/`spcBef`/`spcAft`、`wrap`、`baseline`、`rowSpan`/`vMerge`、主题 accent），模型补 `Hyperlink`、`WordWrap`/`AutoFit`、`GroupShape` 与旋转翻转属里程碑级改造，单独排期。
   4. 不可还原部件（图表、连线、外链图片、被跳过的畸形页）必须**可见**：提供未知部件透传或返回 skipped-parts 清单，禁止把「跳过」变成「删除」。`PptxReader.cs:1726`、`:1733-1736` 现在遇到悬空 `r:id` 或畸形幻灯片直接 `continue`，页数无声缩水，随后 `Save` 把该页彻底写没。
 
@@ -384,6 +384,7 @@
 | `PT6` | 空占位符的省略条件从「占位符且无文本」收窄为「本库按版式补出、且到写出时仍没有任何可见效果」；从文件读回的空占位符与调用方自建的空框现在照常写出，往返形状数与层叠次序稳定 | `src/Wisdom.Ppt/README.md`「版式与占位符」补了省略规则与新增的来源标记 `SlideShape.IsGeneratedPlaceholder`（public 读、internal 写）；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节「空框叠在表格上」的说法按新规则重写过 |
 | `PT5` | 输出 `a:rPr` 的形状改变：字号、颜色、字体三项只在**显式设过**时才写，只加粗的 run 从 `sz="1100"` + `a:solidFill` + `a:latin`/`a:ea` 缩成只剩 `b="1"`；这类稿子二次写出（Load+Save）的字节随之变化，渲染改由版式与母版继承决定 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」写明这条规则与 `TextFormat` 新增的三个只读标记；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「只想改字号，保存后连字体一起被换了」 |
 | `PT3` 结构档 | `a:tblPr` 从每张表恒写 `firstRow="1" bandRow="1"` 改为只在声明过表头（某行 `IsHeader` 或给过 `HeaderColor`）时写 `firstRow`，`bandRow` 因模型没有带状行字段而不再输出；未设底色的单元格从写 `a:noFill` 改为不写填充，补齐用的空格在数据行也不再写白色，`tableStyleId` 本该生效的整表外观因此重新可见。新写出的无人声明表头的表格字节随之变化 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增表格结构档一段；`docs/Wisdom.Ppt.Tutorial.md` 第 3 节注意事项补「表头要声明才有表头」一条、常见问题补「表格首行没有表头的样子」；读端新增把 `a:tblPr@firstRow` 读回 `TableRow.IsHeader`，旧形状（恒写 firstRow 的历史文件）照常读取，其首行按表头认，二次写出不掉样式 |
+| `PT3` 结构档·段落符号 | 每段末尾的 `a:buNone` 不再无条件写出：无 `ListMarker` 时不写任何 bullet 子元素，全段无属性时连 `a:pPr` 一并省略。自家母版与版式不定义符号，故新建产物字节不变；差别在载入第三方稿再存盘——过去那份逐段压制等于关掉母版里的项目符号，现在符号继承照常生效。代价是「显式关掉符号」与「未设置」在模型里仍同一个值，来稿中的 `buNone` 存盘后不保留 | `src/Wisdom.Ppt/README.md`「文本、图形、图片与表格」新增段落属性一段（含这条边界）；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「用本库打开别人的演示稿再存盘，列表的项目符号全消失了」 |
 
 ---
 
@@ -612,5 +613,18 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 断言分正反两面：未声明的那张既不得出现 `firstRow`/`bandRow`，首格也既无 `a:solidFill` 也无 `a:noFill`，运行不带 `b="1"`；设了 `HeaderColor` 的那张必须写得出 `firstRow="1"`、`1F3A5F` 底色与加粗表头——把「不伪造」做成「该写的还写得出」的反证，避免修复退化成整段不写样式。再加一条往返：`PptxReader.Load` 后声明过的首行 `IsHeader` 仍在，未声明的仍是普通行。夹具继续走内存流，`a:tbl` 从 zip 部件按文档顺序取。
   - `§9` 单独补一行（原先与 `PT1`/`PT2` 合并一行）：输出形状变了，`tableStyleId` 的话头重新生效。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`PptMarkdownTests` 的表格往返断言（`HeaderColor` + 三行，回读 3 行、单元格文本 `"华东"`）与 Word 侧共用表格夹具的套件全绿，说明声明过表头的常用写法输出不变。
-  - 同批目标 2 还剩两项未动，各自需要独立红测：段落没有任何项目符号标记时 `pPr` 仍恒被写出（`any = true` 那条）并带 `buNone`；`p:style` 未解析出的填充与描边一律落成 `a:noFill`（`PptxWriter.cs:757`、`:769`）。
+  - 同批目标 2 还剩两项的收口：`p:style` 未解析出的填充与描边一律落成 `a:noFill`（`PptxWriter.cs:757`、`:769`）已由 `6dce2b6` 落地为「未设置就不写、显式 `BorderStyle.None` 才写空描边」；段落无标记仍恒写 `pPr` 与 `buNone` 一档见下一条。
+- `PT3` 结构档·项目符号（`19cee6b` + `adb0f30`）：目标 2 的第三档——`a:buNone` 不再占位，全段无属性的 `a:pPr` 随之省略。
+  - `CreateParagraphProperties` 结尾两行是 `pPr.Add(CreateBullet(paragraph.ListMarker)); any = true;`，而 `CreateBullet` 对空标记返回 `a:buNone`：任何段落都带 `pPr`，任何段落都带一条「关掉本层符号」。`buNone` 不是留白而是显式指令，本库自建的母版与版式从不定义符号所以自家产物看不出问题，一旦 `PptxReader.Load` 别人的稿子再 `Write` 回去，母版与版式里定义好的项目符号被逐段压掉——这与 `a:tcPr` 那档「未设置写成显式无填充」是同一个病。
+  - 修法只在写端：`CreateBullet` 无标记返回 `null`，调用点判空才 `Add` 并置 `any`；`pPr` 的「什么都没有就返回 null」从此真的成立（方法文档早就这么承诺，调用点 `CreateParagraph:875-876` 也一直容忍 null）。读端不动：`ReadListMarker` 把 `buNone` 映射成 `null`，往返稳定。
+  - 修复前失败原文（`net8.0` 与 `net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a paragraph that set nothing still got an a:pPr, housing a fabricated a:buNone
+       at Wisdom.Office.Tests.Program.RunUnmarkedParagraphDoesNotSuppressBulletsTest() ... RemediationPptPhaseFourTests.cs:line 321
+    ```
+
+  - 夹具是一个文本框三段：第一段声明 `ListMarker = "•"`（对照组，必须仍然写得出 `buChar`）、第二段什么都不设、第三段只设居中正。断言三件事——对照组符号仍在、第二段连 `a:pPr` 都不出现、第三段有 `algn="ctr"` 却没有任何 bullet 子元素；再 `Load` 回读断言标记仍是 `"•"`，二次写出不得把丢掉的 `pPr`/`buNone` 补回来。
+  - 已知边界（写进 README 与教程 FAQ）：`Paragraph.ListMarker` 一个值承载两种意思，「显式关掉符号」与「没想过」不可分，载入带 `buNone` 的外来稿再存盘时那份显式关闭不被保留；建模它需要新字段，属 Phase 5 的读端补齐与模型扩展（与 `lnSpc`/`wrap`/`baseline`/`rowSpan` 同批）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`[remediation] ppt phase-four shapes and media ok`、`[ppt-anim]`、`[ppt-theme]` 与 PPT 往返套件全绿，说明自家产物的段落属性写出与回读未受影响。
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。

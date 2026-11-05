@@ -540,6 +540,8 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 **形状颜色读回来是 null。** `FillColor` 是 `OfficeColor?`，null 表示继承版式/主题色，不是丢失。
 
+**用本库打开别人的演示稿再存盘，列表的项目符号全消失了。** 已修。写出器过去给每一段无条件补一条 `<a:buNone/>`，而 `a:buNone` 不是「这里没有符号」的留空，是一条**关掉本层符号**的显式指令——跟在每段后面，等于把人家母版与版式里定义好的符号逐段压制掉。现在只有 `ListMarker` 非空才写 `buChar`（数字开头写 `buAutoNum`），没有标记就不写符号子元素，让继承链自己说话；一段连对齐、缩进、行距都没设时，连 `a:pPr` 整个省略。本库自建的母版与版式从不定义符号，自家生成的 `.pptx` 字节不变。要说边界：`Paragraph.ListMarker` 只有一个值，「显式关掉符号」与「没想过这件事」在模型里仍是同一件事（读取端把 `buNone` 读回 `null`），载入带 `buNone` 的外来稿再存盘时那份显式关闭不会被保留。
+
 **只想改字号，保存后连字体一起被换了。** 不会。写出器只把**显式设过**的字符属性落进 `<a:rPr>`：`run.Format.FontSize = 11` 只写 `sz="1100"`，字体与颜色仍由版式、母版决定。以前 `TextFormat` 构造器预置的 Arial / 11 磅 / 黑色会被当成调用者的意图，于是母版里 18pt 的主题字体被一个显式 `a:latin` 压成 11pt Arial。判定依据是 `TextFormat` 的三个只读标记 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor`：`new TextFormat()` 的预置值不点亮它们，`new TextFormat("Calibri", 18)` 三项都点亮。第 2 步里那句 `Format.FontSize = 11` 因此只影响字号，读回来的 `FontSize` 仍是 11（没写进文件的属性按模型默认值读回）。
 
 **图片读回来字节不对 / 打不开。** 只支持 PNG 与 JPEG；`.emf`、`.svg`、`.gif` 不解析。教程里那颗 1 x 1 的 PNG（70 字节）就是最省事的自造图片。
