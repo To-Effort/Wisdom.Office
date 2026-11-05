@@ -45,6 +45,7 @@ namespace Wisdom.Office.Tests
             RunRemediationPhaseTwoTest(pdfPath, outputDirectory);
             RunRemediationPhaseThreeTest();
             RunRemediationPhaseFourTest();
+            RunRemediationExcelTest();
 
             string fixtureDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "fixtures"));
             string chromePdfPath = Path.Combine(fixtureDirectory, "chrome-print.pdf");
@@ -87,6 +88,7 @@ namespace Wisdom.Office.Tests
             RunWordFormatTest(outputDirectory);
             RunWordRevisionTest(outputDirectory);
             RunWordBookmarkTest(outputDirectory);
+            RunWordStructureFidelityTest(outputDirectory);
             RunWordLabelsAndPropertiesTest(outputDirectory);
             RunComplexReportTest(outputDirectory);
             RunComplexExcelTest(outputDirectory);
@@ -110,6 +112,8 @@ namespace Wisdom.Office.Tests
             RunBatchConversionTest(outputDirectory);
             RunOutputHardeningTest(outputDirectory);
             RunExcelGridLimitTest(outputDirectory);
+            RunXlsxReadFidelityTest(outputDirectory);
+            RunImageFidelityTest(outputDirectory);
             RunWriteOutputTest(outputDirectory);
             RunResourceLimitTest(outputDirectory);
             RunSecurityTest(outputDirectory, pdfPath, docxPath, xlsxPath);

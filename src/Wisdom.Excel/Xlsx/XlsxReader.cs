@@ -180,7 +180,13 @@ namespace Wisdom.Excel
             string stylesPart = package.GetRelationshipTargetByType(workbookPart, "/styles");
             string sharedStringsPart = package.GetRelationshipTargetByType(workbookPart, "/sharedStrings");
             XDocument stylesXml = package.GetXml(stylesPart);
-            XlsxStyles styles = new XlsxStyles(stylesXml);
+            // 主题部件不一定有关系（Excel 直接按固定路径写入 xl/theme/theme1.xml），两条路都试一次。
+            // The theme part is not always related (Excel writes xl/theme/theme1.xml at a fixed path), so both
+            // routes are tried.
+            string themePart = package.GetRelationshipTargetByType(workbookPart, "/theme");
+            if (string.IsNullOrEmpty(themePart)) themePart = "xl/theme/theme1.xml";
+            XlsxThemeColors theme = XlsxThemeColors.Load(package.GetXml(themePart));
+            XlsxStyles styles = new XlsxStyles(stylesXml, theme);
             List<string> sharedStrings = ReadSharedStrings(package.GetXml(sharedStringsPart));
 
             OfficeWorkbook workbook = new OfficeWorkbook();
@@ -189,10 +195,15 @@ namespace Wisdom.Excel
 
             XElement workbookProperties = Xlsx.Child(workbookXml.Root, "workbookPr");
             bool date1904 = Xlsx.ParseBool(Xlsx.Attribute(workbookProperties, "date1904"), false);
+            // 基准要留在模型里：只在本次读取用一下就丢掉，重新写出时 1904 的日期会整体偏移四年。
+            // The epoch has to stay in the model: used once during this read and then dropped, a re-write shifts
+            // every 1904 date by four years.
+            workbook.Date1904 = date1904;
 
             XElement sheetsElement = Xlsx.Child(workbookXml.Root, "sheets");
             XElement definedNames = Xlsx.Child(workbookXml.Root, "definedNames");
             Dictionary<int, string> printAreas = ReadPrintAreas(definedNames);
+            Dictionary<int, string> printTitles = ReadBuiltInNames(definedNames, "Print_Titles");
             Dictionary<int, Worksheet> loadedSheets = new Dictionary<int, Worksheet>();
             int workbookIndex = 0;
             foreach (XElement sheetElement in Xlsx.Children(sheetsElement, "sheet"))
@@ -205,10 +216,9 @@ namespace Wisdom.Excel
                 workbookIndex++;
                 if (hidden && !options.IncludeHiddenWorksheets) continue;
                 string sheetPart = package.GetRelationshipTarget(workbookPart, relationshipId);
-                if (string.IsNullOrEmpty(sheetPart)) continue;
-
                 Worksheet sheet = workbook.AddWorksheet(string.IsNullOrEmpty(name) ? "Sheet" + (workbook.Worksheets.Count + 1) : name);
                 sheet.IsHidden = hidden;
+                if (string.IsNullOrEmpty(sheetPart)) continue;
 
                 // 工作表部件按流解析：sheetData 逐格直接落到模型，其余顶层元素保留为骨架供装饰读取。
                 // The worksheet part is parsed as a stream: sheetData lands cell-by-cell in the model while the
@@ -220,14 +230,16 @@ namespace Wisdom.Excel
                 }
                 catch (XmlException)
                 {
-                    workbook.Worksheets.Remove(sheet);
+                    // 部件解析失败也保留这张表：整页内容凭空消失比一张空表更难发现，
+                    // 而且流式解析已经落进模型的单元格本就是真实读到的数据。
+                    // A part that fails to parse still keeps its worksheet: a tab vanishing into thin air is harder
+                    // to notice than an empty one, and the cells the streaming pass already stored are real data.
                     continue;
                 }
-                if (sheetRoot == null)
-                {
-                    workbook.Worksheets.Remove(sheet);
-                    continue;
-                }
+                // 根元素不是 worksheet（或部件为空）时同样只留下空表，不拿 null 骨架去读装饰。
+                // When the root is not a worksheet (or the part is empty) the tab still stays, and the decoration
+                // reader is never handed a null skeleton.
+                if (sheetRoot == null) continue;
 
                 string printArea;
                 if (printAreas.TryGetValue(sheetIndex, out printArea))
@@ -236,8 +248,10 @@ namespace Wisdom.Excel
                     catch (FormatException) { }
                     catch (ArgumentOutOfRangeException) { }
                 }
-                ReadWorksheet(sheet, sheetRoot, styles, sharedStrings, date1904, package, sheetPart);
-                XlsxDecorationReader.Read(package, sheet, sheetPart, sheetRoot, stylesXml);
+                string titles;
+                if (printTitles.TryGetValue(sheetIndex, out titles)) ApplyPrintTitles(sheet, titles);
+                ReadWorksheet(sheet, sheetRoot, styles, sharedStrings, date1904, package, sheetPart, theme);
+                XlsxDecorationReader.Read(package, sheet, sheetPart, sheetRoot, stylesXml, theme);
                 loadedSheets[sheetIndex] = sheet;
                 if (!options.IncludeHiddenRows || !options.IncludeHiddenColumns)
                 {
@@ -444,22 +458,99 @@ namespace Wisdom.Excel
         /// <returns>工作表索引到打印区域引用的映射。 Map from worksheet index to print-area reference.</returns>
         private static Dictionary<int, string> ReadPrintAreas(XElement definedNames)
         {
+            Dictionary<int, string> result = ReadBuiltInNames(definedNames, "Print_Area");
+            foreach (int key in new List<int>(result.Keys))
+            {
+                string reference = result[key];
+                int comma = reference.IndexOf(',');
+                if (comma >= 0) result[key] = reference.Substring(0, comma).Trim();
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 收集按表局部作用域登记的内置定义名（<c>Print_Area</c>、<c>Print_Titles</c>）。
+        /// Collects built-in defined names registered with a per-sheet local scope, such as
+        /// <c>Print_Area</c> and <c>Print_Titles</c>.
+        /// </summary>
+        /// <remarks>
+        /// 这些名字带 <c>_xlnm.</c> 前缀，普通定义名读取会整批跳过它们；打印标题一旦不在保留之列，
+        /// 真实报表"读取—保存"后每页重复的表头行就凭空消失。
+        /// They carry the <c>_xlnm.</c> prefix that the ordinary defined-name reader skips; once print titles
+        /// fall out of the keep-list, a real report loses its repeated header rows after a load-save round trip.
+        /// </remarks>
+        /// <param name="definedNames">workbook.xml 的 definedNames 元素。The definedNames element of workbook.xml.</param>
+        /// <param name="localName">不含前缀的内置名。The built-in name without its prefix.</param>
+        /// <returns>工作表索引到引用文本的映射。A map from worksheet index to reference text.</returns>
+        private static Dictionary<int, string> ReadBuiltInNames(XElement definedNames, string localName)
+        {
             Dictionary<int, string> result = new Dictionary<int, string>();
             if (definedNames == null) return result;
             foreach (XElement defined in Xlsx.Children(definedNames, "definedName"))
             {
                 string name = Xlsx.Attribute(defined, "name");
                 if (name == null) continue;
-                if (!string.Equals(name, "Print_Area", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(name, "_xlnm.Print_Area", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(name, localName, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(name, "_xlnm." + localName, StringComparison.OrdinalIgnoreCase)) continue;
                 int sheetIndex = Xlsx.IntAttribute(defined, "localSheetId", -1);
                 if (sheetIndex < 0 || result.ContainsKey(sheetIndex)) continue;
                 string reference = defined.Value == null ? string.Empty : defined.Value.Trim();
-                int comma = reference.IndexOf(',');
-                if (comma >= 0) reference = reference.Substring(0, comma).Trim();
                 if (reference.Length > 0) result[sheetIndex] = reference;
             }
             return result;
+        }
+
+        /// <summary>
+        /// 把 <c>_xlnm.Print_Titles</c> 的文本按段落分配到重复行与重复列。
+        /// Splits the text of a <c>_xlnm.Print_Titles</c> entry into repeated rows and repeated columns.
+        /// </summary>
+        /// <param name="sheet">目标工作表。The worksheet.</param>
+        /// <param name="reference">定义名文本，可能是逗号分隔的多段。The defined-name text, possibly several comma-separated parts.</param>
+        private static void ApplyPrintTitles(Worksheet sheet, string reference)
+        {
+            if (sheet == null || string.IsNullOrEmpty(reference)) return;
+            foreach (string segment in SplitOutsideQuotes(reference))
+            {
+                string body = segment.Trim();
+                if (body.Length == 0) continue;
+                int bang = body.LastIndexOf('!');
+                if (bang >= 0) body = body.Substring(bang + 1);
+                body = body.Replace("$", string.Empty).Trim();
+                if (body.Length == 0) continue;
+                char head = body[0];
+                try
+                {
+                    if (head >= '0' && head <= '9') sheet.SetPrintTitleRows(body);
+                    else sheet.SetPrintTitleColumns(body);
+                }
+                catch (FormatException)
+                {
+                }
+            }
+        }
+
+        /// <summary>按引号外的逗号切分文本，表名里合法的逗号不会被误切。Splits a text on commas outside quotes, so a comma legal inside a sheet name is not cut.</summary>
+        /// <param name="text">待切分文本。The text to split.</param>
+        /// <returns>切出的段落。The segments.</returns>
+        private static IEnumerable<string> SplitOutsideQuotes(string text)
+        {
+            List<string> segments = new List<string>();
+            StringBuilder current = new StringBuilder();
+            bool quoted = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '\'') quoted = !quoted;
+                if (c == ',' && !quoted)
+                {
+                    segments.Add(current.ToString());
+                    current.Length = 0;
+                    continue;
+                }
+                current.Append(c);
+            }
+            segments.Add(current.ToString());
+            return segments;
         }
 
         /// <summary>读取共享字符串表（sharedStrings.xml），按 si 顺序返回列表。 Reads the shared string table (sharedStrings.xml) and returns the strings in si order.</summary>
@@ -506,6 +597,7 @@ namespace Wisdom.Excel
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
         /// <param name="package">包访问器（解析超链接关系）。 The package accessor (resolves hyperlink relationships).</param>
         /// <param name="sheetPart">工作表部件路径。 The worksheet part path.</param>
+        /// <param name="theme">主题调色板（页签色可能是主题色）。 Theme palette, since the tab colour may be themed.</param>
         private static void ReadWorksheet(
             Worksheet sheet,
             XElement root,
@@ -513,7 +605,8 @@ namespace Wisdom.Excel
             List<string> sharedStrings,
             bool date1904,
             XlsxPackage package,
-            string sheetPart)
+            string sheetPart,
+            XlsxThemeColors theme)
         {
             XElement properties = Xlsx.Child(root, "sheetPr");
             if (properties != null)
@@ -521,10 +614,12 @@ namespace Wisdom.Excel
                 XElement pageSetupProperties = Xlsx.Child(properties, "pageSetUpPr");
                 sheet.FitToPage = Xlsx.ParseBool(Xlsx.Attribute(pageSetupProperties, "fitToPage"), false);
                 XElement tabColor = Xlsx.Child(properties, "tabColor");
-                OfficeColor color;
-                if (tabColor != null && Xlsx.TryParseColor(Xlsx.Attribute(tabColor, "rgb"), out color))
+                if (tabColor != null)
                 {
-                    sheet.TabColor = color;
+                    // 页签色常写成 theme="5" 而不是 rgb；只认 rgb 时彩色页签会整体变黑。
+                    // Tab colours are often theme="5" rather than rgb, so reading only rgb turned every colored tab black.
+                    OfficeColor color;
+                    if (XlsxColors.TryRead(tabColor, theme, out color)) sheet.TabColor = color;
                 }
             }
 
@@ -549,8 +644,12 @@ namespace Wisdom.Excel
                 XElement pane = Xlsx.Child(view, "pane");
                 if (pane != null)
                 {
+                    // 只有显式 state 才是冻结：View→Split 产生的窗格带 xSplit/ySplit 但没有 state，
+                    // 早先把它当冻结读，读进来就多出冻结、写回变成 state="frozen"。
+                    // Only an explicit state means frozen: a View→Split pane carries xSplit/ySplit but no state, and
+                    // reading it as frozen both invented a freeze and wrote state="frozen" back out.
                     string state = Xlsx.Attribute(pane, "state");
-                    if (state == null || state == "frozen" || state == "frozenSplit")
+                    if (state == "frozen" || state == "frozenSplit")
                     {
                         sheet.FrozenRows = Math.Max(0, Xlsx.IntAttribute(pane, "ySplit", 0));
                         sheet.FrozenColumns = Math.Max(0, Xlsx.IntAttribute(pane, "xSplit", 0));
@@ -615,6 +714,9 @@ namespace Wisdom.Excel
         private static XElement ReadWorksheetPart(XlsxPackage package, string sheetPart, Worksheet sheet,
             XlsxStyles styles, List<string> sharedStrings, bool date1904)
         {
+            // 共享公式只存在于单张表内，登记表随工作表一起生灭。
+            // Shared formulas exist inside one worksheet only, so the registry lives and dies with the sheet.
+            XlsxSharedFormulas sharedFormulas = new XlsxSharedFormulas();
             Stream input = package.OpenRead(sheetPart);
             if (input == null) return null;
             XElement root = new XElement(Xlsx.Main + "worksheet");
@@ -637,7 +739,7 @@ namespace Wisdom.Excel
                     if (reader.Depth != rootDepth + 1) continue;
                     if (reader.LocalName == "sheetData")
                     {
-                        ReadSheetDataStreaming(reader, sheet, styles, sharedStrings, date1904);
+                        ReadSheetDataStreaming(reader, sheet, styles, sharedStrings, date1904, sharedFormulas);
                         continue;
                     }
                     XElement captured = XElement.ReadFrom(reader) as XElement;
@@ -654,8 +756,9 @@ namespace Wisdom.Excel
         /// <param name="styles">样式表。 The style table.</param>
         /// <param name="sharedStrings">共享字符串表。 The shared string table.</param>
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
+        /// <param name="sharedFormulas">本表的共享公式登记表。 The sheet's shared-formula registry.</param>
         private static void ReadSheetDataStreaming(XmlReader reader, Worksheet sheet, XlsxStyles styles,
-            List<string> sharedStrings, bool date1904)
+            List<string> sharedStrings, bool date1904, XlsxSharedFormulas sharedFormulas)
         {
             if (reader.IsEmptyElement) return;
             int dataDepth = reader.Depth;
@@ -665,7 +768,7 @@ namespace Wisdom.Excel
                 if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == dataDepth) return;
                 if (reader.NodeType != XmlNodeType.Element) continue;
                 if (reader.Depth != dataDepth + 1 || reader.LocalName != "row") continue;
-                ReadRowStreaming(reader, sheet, styles, sharedStrings, date1904, ref lastRowIndex);
+                ReadRowStreaming(reader, sheet, styles, sharedStrings, date1904, sharedFormulas, ref lastRowIndex);
             }
         }
 
@@ -675,9 +778,10 @@ namespace Wisdom.Excel
         /// <param name="styles">样式表。 The style table.</param>
         /// <param name="sharedStrings">共享字符串表。 The shared string table.</param>
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
+        /// <param name="sharedFormulas">本表的共享公式登记表。 The sheet's shared-formula registry.</param>
         /// <param name="lastRowIndex">上一行号，用于缺失 r 属性时续行。 The previous row index, used to continue when the r attribute is missing.</param>
         private static void ReadRowStreaming(XmlReader reader, Worksheet sheet, XlsxStyles styles,
-            List<string> sharedStrings, bool date1904, ref int lastRowIndex)
+            List<string> sharedStrings, bool date1904, XlsxSharedFormulas sharedFormulas, ref int lastRowIndex)
         {
             int rowIndex = Xlsx.ParseInt(reader.GetAttribute("r"), lastRowIndex + 1);
             if (rowIndex < 1) rowIndex = lastRowIndex + 1;
@@ -701,7 +805,8 @@ namespace Wisdom.Excel
                 if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == rowDepth) return;
                 if (reader.NodeType != XmlNodeType.Element) continue;
                 if (reader.Depth != rowDepth + 1 || reader.LocalName != "c") continue;
-                ReadCellStreaming(reader, sheet, styles, sharedStrings, date1904, rowIndex, ref lastColumnIndex, withinGrid);
+                ReadCellStreaming(reader, sheet, styles, sharedStrings, date1904, sharedFormulas, rowIndex,
+                    ref lastColumnIndex, withinGrid);
             }
         }
 
@@ -715,11 +820,13 @@ namespace Wisdom.Excel
         /// <param name="styles">样式表。 The style table.</param>
         /// <param name="sharedStrings">共享字符串表。 The shared string table.</param>
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
+        /// <param name="sharedFormulas">本表的共享公式登记表。 The sheet's shared-formula registry.</param>
         /// <param name="rowIndex">所属行号。 The owning row index.</param>
         /// <param name="lastColumnIndex">上一列号，用于缺失 r 属性时续列。 The previous column index, used to continue when the r attribute is missing.</param>
         /// <param name="withinRow">所属行是否落在网格内；越界的行不写任何单元格。 Whether the owning row is inside the grid; a row outside it writes no cell at all.</param>
         private static void ReadCellStreaming(XmlReader reader, Worksheet sheet, XlsxStyles styles,
-            List<string> sharedStrings, bool date1904, int rowIndex, ref int lastColumnIndex, bool withinRow)
+            List<string> sharedStrings, bool date1904, XlsxSharedFormulas sharedFormulas, int rowIndex,
+            ref int lastColumnIndex, bool withinRow)
         {
             string reference = reader.GetAttribute("r");
             string type = reader.GetAttribute("t");
@@ -759,7 +866,10 @@ namespace Wisdom.Excel
                     switch (reader.LocalName)
                     {
                         case "f":
-                            if (formula == null) formula = ReadElementTextStreaming(reader);
+                            if (formula == null)
+                            {
+                                formula = ReadFormulaStreaming(reader, sharedFormulas, row, column);
+                            }
                             else SkipElementStreaming(reader);
                             break;
                         case "v":
@@ -814,6 +924,36 @@ namespace Wisdom.Excel
             if (hasStyle) cell.Style = styles.GetStyle(styleIndex);
         }
 
+        /// <summary>
+        /// 读取 f 元素：<c>t="shared"</c> 的主格带公式文本，登记它；从格只剩 si，按与主格的偏移还原。
+        /// 过去两种都只取元素文本，于是从格读回"无公式"，一份用共享公式写的表在模型里几乎全是空公式格。
+        /// Reads an f element: a <c>t="shared"</c> master carries the formula text and is registered, while a
+        /// dependent carries only the si number and is restored from the offset to that master. Both used to be
+        /// read as plain element text, so every dependent came back with no formula and a sheet built with
+        /// shared formulas lost almost all of its formulas in the model.
+        /// </summary>
+        /// <param name="reader">定位在 f 起始标签的读取器。 The reader positioned on the f start tag.</param>
+        /// <param name="sharedFormulas">本表的共享公式登记表。 The sheet's shared-formula registry.</param>
+        /// <param name="row">所属行号。 The owning row index.</param>
+        /// <param name="column">所属列号。 The owning column index.</param>
+        /// <returns>公式文本；从格找不到主格时返回 null。 The formula text, or null for a dependent whose master was never seen.</returns>
+        private static string ReadFormulaStreaming(XmlReader reader, XlsxSharedFormulas sharedFormulas, int row, int column)
+        {
+            // 属性必须在消费元素之前取走：读完文本后读取器已停在结束标签上，取不到任何属性。
+            // The attributes have to be taken before the element is consumed: once its text is read the reader
+            // sits on the end tag and no attribute is reachable.
+            string formulaType = reader.GetAttribute("t");
+            int si = Xlsx.ParseInt(reader.GetAttribute("si"), -1);
+            string text = ReadElementTextStreaming(reader);
+            if (formulaType != "shared" || si < 0) return text;
+            if (!string.IsNullOrEmpty(text))
+            {
+                sharedFormulas.Remember(si, text, row, column);
+                return text;
+            }
+            return sharedFormulas.Resolve(si, row, column);
+        }
+
         /// <summary>消费 is 元素内的全部 t 文本（与基于 XDocument 的富文本读取等价）。 Consumes every t text inside an is element, equivalent to the XDocument-based rich-text read.</summary>
         /// <param name="reader">定位在 is 起始标签的读取器。 The reader positioned on the is start tag.</param>
         /// <param name="mainNamespace">主命名空间 URI。 The main namespace URI.</param>
@@ -844,6 +984,15 @@ namespace Wisdom.Excel
         /// .NET Framework and .NET Core, which makes the depth-based boundary checks of the outer loops miss
         /// their end tags.
         /// </summary>
+        /// <remarks>
+        /// 只有 Whitespace 节点也要收：没有 xml:space="preserve" 的 <c>&lt;v&gt; &lt;/v&gt;</c> 会以 Whitespace
+        /// 而不是 Text 节点出现，早先跳过它让单空格字符串读回长度为 0，与 XDocument 路径的 <c>.Value</c> 不一致。
+        /// 数字解析本身允许首尾空白，所以收下这些空白不会改变数值单元格的判定。
+        /// Whitespace nodes are collected as well: a <c>&lt;v&gt; &lt;/v&gt;</c> without xml:space="preserve" arrives
+        /// as a Whitespace node rather than Text, and skipping it made a single-space string read back as length 0,
+        /// diverging from the XDocument path's <c>.Value</c>. Number parsing already tolerates surrounding
+        /// whitespace, so numeric cells are unaffected.
+        /// </remarks>
         /// <param name="reader">定位在元素起始标签的读取器。 The reader positioned on the element start tag.</param>
         /// <returns>元素文本内容。 The element text.</returns>
         internal static string ReadElementTextStreaming(XmlReader reader)
@@ -855,7 +1004,7 @@ namespace Wisdom.Excel
             {
                 if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth) return builder.ToString();
                 if (reader.NodeType == XmlNodeType.Text || reader.NodeType == XmlNodeType.CDATA
-                    || reader.NodeType == XmlNodeType.SignificantWhitespace)
+                    || reader.NodeType == XmlNodeType.SignificantWhitespace || reader.NodeType == XmlNodeType.Whitespace)
                 {
                     builder.Append(reader.Value);
                 }
@@ -928,20 +1077,40 @@ namespace Wisdom.Excel
             }
             if (styles.IsDateFormat(styleIndex))
             {
-                return FromSerial(number, date1904);
+                DateTime serialDate;
+                if (TryFromSerial(number, date1904, out serialDate)) return serialDate;
+                // 序列号落在 DateTime 可表示范围之外时保留原始数值：过去 epoch.AddDays(serial) 直接抛
+                // ArgumentOutOfRangeException，一个畸形单元格就能让整本工作簿读不出来。同一包的
+                // ExcelCollection 早就是「转不了就留原值」，这里对齐它而不是升级成整簿失败。
+                // A serial outside DateTime's range keeps its raw number: epoch.AddDays(serial) used to
+                // throw ArgumentOutOfRangeException, letting one malformed cell take the whole workbook
+                // down. ExcelCollection in the same package already keeps the raw value when it cannot
+                // convert, so this aligns with it instead of escalating to a whole-workbook failure.
+                return number;
             }
             return number;
         }
 
-        /// <summary>将 Excel 日期序列号转换为 DateTime（1904 系统基准 1904-01-01，否则 1899-12-30）。 Converts an Excel date serial into a DateTime (epoch 1904-01-01 for the 1904 system, otherwise 1899-12-30).</summary>
+        /// <summary>
+        /// 将 Excel 日期序列号转换为 DateTime（1904 系统基准 1904-01-01，否则 1899-12-30）；
+        /// 超出 <see cref="DateTime"/> 可表示范围时返回 false 而不是抛异常。
+        /// Converts an Excel date serial into a DateTime (epoch 1904-01-01 for the 1904 system, otherwise
+        /// 1899-12-30); out-of-range serials return false instead of throwing.
+        /// </summary>
         /// <param name="serial">日期序列号；负数按 0 处理。 Date serial number; negative values are treated as 0.</param>
         /// <param name="date1904">是否使用 1904 日期系统。 Whether the 1904 date system is used.</param>
-        /// <returns>对应的日期时间。 The corresponding date and time.</returns>
-        private static DateTime FromSerial(double serial, bool date1904)
+        /// <param name="value">转换结果。 The converted value.</param>
+        /// <returns>转换成功返回 true。 True when the serial fits the DateTime range.</returns>
+        private static bool TryFromSerial(double serial, bool date1904, out DateTime value)
         {
             DateTime epoch = date1904 ? new DateTime(1904, 1, 1) : new DateTime(1899, 12, 30);
+            value = epoch;
+            if (double.IsNaN(serial) || double.IsInfinity(serial)) return false;
             if (serial < 0) serial = 0;
-            return epoch.AddDays(serial);
+            double maximum = (DateTime.MaxValue - epoch).TotalDays;
+            if (serial >= maximum) return false;
+            value = epoch.AddDays(serial);
+            return true;
         }
 
         /// <summary>读取 pageMargins 与 pageSetup：页边距按英寸换算为磅，按纸张编号近似页面尺寸并处理横向。 Reads pageMargins and pageSetup: margins are converted from inches to points and the page size is approximated from the paper number, honoring landscape orientation.</summary>

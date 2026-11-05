@@ -310,7 +310,12 @@ namespace Wisdom.Excel
             int[] columns = ResolveColumns(sheet, maps, effective);
             int firstDataRow = effective.StartRow + (effective.FirstRowIsHeader ? 1 : 0);
             List<T> result = new List<T>();
-            for (int row = firstDataRow; row <= sheet.LastRow; row++)
+            // LastRow 每次调用都要遍历整张表的单元格；把它写在循环条件里就是 O(行数 × 单元格数)。
+            // 进循环前取一次快照，与本文件 CSV 路径的写法一致。
+            // LastRow walks every cell of the sheet on each call, so testing it in the loop condition makes
+            // this O(rows × cells). Take one snapshot before the loop, matching the CSV path in this file.
+            int lastRow = sheet.LastRow;
+            for (int row = firstDataRow; row <= lastRow; row++)
             {
                 T item = new T();
                 bool any = false;
@@ -367,7 +372,10 @@ namespace Wisdom.Excel
                 names.Add(unique);
                 table.Columns.Add(unique, typeof(object));
             }
-            for (int row = firstDataRow; row <= sheet.LastRow; row++)
+            // 同上：快照一次 LastRow，别让它在循环条件里每行重扫整表。
+            // Same as above: snapshot LastRow once instead of rescanning the whole sheet per row.
+            int dataLastRow = sheet.LastRow;
+            for (int row = firstDataRow; row <= dataLastRow; row++)
             {
                 DataRow dataRow = table.NewRow();
                 bool any = false;
