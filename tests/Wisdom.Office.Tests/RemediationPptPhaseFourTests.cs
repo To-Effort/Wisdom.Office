@@ -25,6 +25,7 @@ namespace Wisdom.Office.Tests
             RunUnsetShapeFillStaysInheritedTest();
             RunUnmarkedParagraphDoesNotSuppressBulletsTest();
             RunTextBoxWrapNoneSurvivesTest();
+            RunDoubleBorderIsCompoundLineTest();
             RunZeroHeightSeparatorSurvivesTest();
             RunTransitionDirectionSpeedClickTest();
             RunSectionHeaderLayoutSurvivesTest();
@@ -440,6 +441,77 @@ namespace Wisdom.Office.Tests
                 && (string)thirdPrs[1].Attribute("wrap") == "square"
                 && (string)thirdPrs[2].Attribute("wrap") == "square",
                 "the second write did not reproduce the first one's wrapping");
+        }
+
+        /// <summary>
+        /// 双线在 DrawingML 里是**复合线**，写法是 <c>a:ln@cmpd="dbl"</c>（同一个写出器给表格边框就写了
+        /// <c>cmpd="sng"</c>），而 <c>a:prstDash</c> 的取值集合里没有 "dbl" 这一档。旧实现把 Double 塞进
+        /// prstDash：文件里留下一个架构不接受的枚举值，读端 <c>MapDashStyle</c> 也认不出来，一律回落
+        /// Single——双线边框存一次盘就变成单线。同批还有点线：<c>BorderStyle.Dotted</c> 被映射成
+        /// <c>sysDash</c>（长划图案），画出来是虚线而不是点线。
+        /// Double is a *compound* line in DrawingML and spells itself <c>a:ln@cmpd="dbl"</c> — the very same
+        /// writer emits <c>cmpd="sng"</c> for table edges — while <c>a:prstDash</c> has no "dbl" in its value
+        /// set. The old code stuffed Double into prstDash, which leaves a value the schema does not accept and
+        /// which <c>MapDashStyle</c> cannot read back, so a double border silently became single after one
+        /// save. The dotted case ships in the same batch: <c>BorderStyle.Dotted</c> mapped to <c>sysDash</c>,
+        /// a long-dash pattern, so a dotted line drew as a dashed one.
+        /// </summary>
+        private static void RunDoubleBorderIsCompoundLineTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            AutoShape doubled = slide.AddShape(AutoShapeKind.Rectangle, 40, 40, 320, 120, "双线边框");
+            doubled.Outline = new BorderLine(BorderStyle.Double, 2.0, OfficeColor.Black);
+            AutoShape dotted = slide.AddShape(AutoShapeKind.Rectangle, 40, 200, 320, 120, "点线边框");
+            dotted.Outline = new BorderLine(BorderStyle.Dotted, 1.0, OfficeColor.Black);
+            TableShape table = slide.AddTable(420, 40, 480, 160);
+            table.Table.Borders = new TableBorders();
+            table.Table.Borders.InsideHorizontal = new BorderLine(BorderStyle.Double, 1.5, OfficeColor.Black);
+            table.Table.AddRow("甲", "乙");
+            table.Table.AddRow("丙", "丁");
+
+            byte[] written = WriteToBuffer(deck);
+            XDocument doc = ReadSlideXml(written, "ppt/slides/slide1.xml");
+
+            // prstDash 的取值集合里没有双线：这个值出现在文件里就是非法枚举。
+            // prstDash has no double value; seeing it in the file is an out-of-enumeration value.
+            foreach (XElement dash in doc.Descendants(A + "prstDash"))
+            {
+                string value = (string)dash.Attribute("val");
+                Require(value != "dbl",
+                    "a:prstDash/@val was written as \"dbl\", which is a compound-line value, not a dash pattern");
+            }
+
+            XElement[] spPrs = ReadShapeProperties(written, "ppt/slides/slide1.xml");
+            Require(spPrs.Length == 2, "expected two p:spPr, got " + spPrs.Length);
+            XElement doubleLn = spPrs[0].Element(A + "ln");
+            Require(doubleLn != null && (string)doubleLn.Attribute("cmpd") == "dbl",
+                "a double outline must be a compound line: a:ln@cmpd="
+                + (doubleLn == null ? "<no a:ln>" : (string)doubleLn.Attribute("cmpd") ?? "<absent>"));
+            XElement dotLn = spPrs[1].Element(A + "ln");
+            XElement dotDash = dotLn == null ? null : dotLn.Element(A + "prstDash");
+            string dotValue = dotDash == null ? null : (string)dotDash.Attribute("val");
+            Require(dotValue == "sysDot" || dotValue == "dot" || dotValue == "sqDot" || dotValue == "roundDot",
+                "BorderStyle.Dotted wrote prstDash=" + (dotValue == null ? "<absent>" : dotValue)
+                + ", which is a dash pattern rather than dots");
+
+            bool tableEdgeIsDouble = false;
+            foreach (XElement edge in doc.Descendants(A + "lnL").Concat(doc.Descendants(A + "lnR"))
+                .Concat(doc.Descendants(A + "lnT")).Concat(doc.Descendants(A + "lnB")))
+            {
+                if ((string)edge.Attribute("cmpd") == "dbl") tableEdgeIsDouble = true;
+            }
+            Require(tableEdgeIsDouble, "the table's double inside border reached no a:lnX@cmpd=\"dbl\"");
+
+            OfficePresentation loaded = PptxReader.Load(written);
+            Require(loaded.Slides[0].Shapes.Count == 3,
+                "expected three shapes back, got " + loaded.Slides[0].Shapes.Count);
+            BorderLine doubleBack = loaded.Slides[0].Shapes[0].Outline;
+            Require(doubleBack != null && doubleBack.Style == BorderStyle.Double,
+                "the double outline read back as " + (doubleBack == null ? "<null>" : doubleBack.Style.ToString()));
+            BorderLine dotBack = loaded.Slides[0].Shapes[1].Outline;
+            Require(dotBack != null && dotBack.Style == BorderStyle.Dotted,
+                "the dotted outline read back as " + (dotBack == null ? "<null>" : dotBack.Style.ToString()));
         }
 
         /// <summary>
