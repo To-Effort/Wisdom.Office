@@ -36,6 +36,7 @@ namespace Wisdom.Office.Tests
             RunCorruptHeaderPartIsReportedTest();
             RunOdtPageCountFieldTest();
             RunRtfTableBorderColorSurvivesTest();
+            RunHeaderRepeatFlagSurvivesFormatHopsTest();
 
             Console.WriteLine("[remediation] word phase-four contracts ok");
         }
@@ -482,6 +483,96 @@ namespace Wisdom.Office.Tests
             if (index < 0) return "<no cell border written>";
             int end = Math.Min(rtf.Length, index + 160);
             return rtf.Substring(index, end - index).Replace("\n", " ");
+        }
+
+        /// <summary>
+        /// WE14：<c>Table.RepeatHeaderRow</c> 只有 DOCX 一家读写，HTML / RTF / ODT 读端建表时一律落到
+        /// 构造默认的 <c>true</c>——「跨页不重复表头」的表格转成 DOCX 后凭空多出一条 <c>w:tblHeader</c>。
+        /// WE14: only DOCX reads and writes <c>Table.RepeatHeaderRow</c>; the HTML, RTF and ODT readers leave
+        /// it at the constructor's <c>true</c>, so a table that asked not to repeat its header gains a phantom
+        /// <c>w:tblHeader</c> as soon as it is converted to DOCX.
+        /// </summary>
+        private static void RunHeaderRepeatFlagSurvivesFormatHopsTest()
+        {
+            // 用户两样都关了：首行不是表头，也不要求跨页重复。
+            // The caller turned both off: row zero is not a header and no repetition was requested.
+            OfficeDocument plain = BuildHeaderRepeatTable(false, false);
+            Require(HeaderRepeatMarkers(DocxWriter.Write(plain)) == 0,
+                "the DOCX direct path already writes a header repeat nobody asked for");
+
+            Require(HeaderRepeatMarkers(HopThroughHtml(plain)) == 0,
+                "html to docx gained a phantom w:tblHeader on a table with no header row at all");
+            Require(HeaderRepeatMarkers(HopThroughRtf(plain)) == 0,
+                "rtf to docx gained a phantom w:tblHeader on a table with no header row at all");
+            Require(HeaderRepeatMarkers(HopThroughOdt(plain)) == 0,
+                "odt to docx gained a phantom w:tblHeader on a table with no header row at all");
+
+            // 控制：真表头过一趟 HTML 之后仍然要有那一条，别把该重复的也一起关掉。
+            // Control: a declared header row must keep its repeat through the same hop, so the fix cannot
+            // simply switch repetition off everywhere.
+            OfficeDocument declared = BuildHeaderRepeatTable(true, true);
+            Require(HeaderRepeatMarkers(HopThroughHtml(declared)) == 1,
+                "the declared header row lost its w:tblHeader through the html hop, got "
+                + HeaderRepeatMarkers(HopThroughHtml(declared)));
+        }
+
+        /// <summary>造一张两行两列的表，按参数决定首行是否表头与是否跨页重复。 Builds a two-row, two-column table with the requested header and repetition flags.</summary>
+        /// <param name="repeat">是否要求跨页重复表头。Whether the header should repeat across pages.</param>
+        /// <param name="firstRowIsHeader">首行是否为表头行。Whether row zero is a header row.</param>
+        /// <returns>只含这张表的文档。A document holding just that table.</returns>
+        private static OfficeDocument BuildHeaderRepeatTable(bool repeat, bool firstRowIsHeader)
+        {
+            OfficeDocument document = new OfficeDocument();
+            Section section = document.AddSection(PageSetup.A4());
+            Table table = new Table();
+            table.Columns.Add(new TableColumn(120));
+            table.Columns.Add(new TableColumn(120));
+            table.RepeatHeaderRow = repeat;
+            TableRow head = table.AddRow();
+            head.IsHeader = firstRowIsHeader;
+            head.Cells.Add(new TableCell("名称"));
+            head.Cells.Add(new TableCell("数量"));
+            TableRow body = table.AddRow();
+            body.Cells.Add(new TableCell("甲"));
+            body.Cells.Add(new TableCell("1"));
+            section.Blocks.Add(table);
+            return document;
+        }
+
+        /// <summary>文档过一趟 HTML 再写回 DOCX。Takes the document through HTML and back out as DOCX.</summary>
+        /// <param name="document">待转换的文档。The document to hop.</param>
+        /// <returns>DOCX 字节。The DOCX bytes.</returns>
+        private static byte[] HopThroughHtml(OfficeDocument document)
+        {
+            return DocxWriter.Write(HtmlReader.Parse(HtmlWriter.ToHtml(document)));
+        }
+
+        /// <summary>文档过一趟 RTF 再写回 DOCX。Takes the document through RTF and back out as DOCX.</summary>
+        /// <param name="document">待转换的文档。The document to hop.</param>
+        /// <returns>DOCX 字节。The DOCX bytes.</returns>
+        private static byte[] HopThroughRtf(OfficeDocument document)
+        {
+            return DocxWriter.Write(RtfReader.Parse(RtfWriter.ToRtf(document)));
+        }
+
+        /// <summary>文档过一趟 ODT 再写回 DOCX。Takes the document through ODT and back out as DOCX.</summary>
+        /// <param name="document">待转换的文档。The document to hop.</param>
+        /// <returns>DOCX 字节。The DOCX bytes.</returns>
+        private static byte[] HopThroughOdt(OfficeDocument document)
+        {
+            return DocxWriter.Write(OdtReader.Load(OdtWriter.Write(document)));
+        }
+
+        /// <summary>数 DOCX 正文里的 <c>w:tblHeader</c> 标记。Counts the <c>w:tblHeader</c> markers in the DOCX body.</summary>
+        /// <param name="docx">DOCX 字节。The DOCX bytes.</param>
+        /// <returns>标记条数。The number of markers.</returns>
+        private static int HeaderRepeatMarkers(byte[] docx)
+        {
+            using (MemoryStream buffer = new MemoryStream(docx))
+            using (ZipArchive archive = new ZipArchive(buffer, ZipArchiveMode.Read))
+            {
+                return CountOf(ReadZipEntryText(archive, "word/document.xml"), "<w:tblHeader");
+            }
         }
 
         /// <summary>收集文档里所有域指令。 Collects every field instruction in the document.</summary>
