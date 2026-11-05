@@ -736,6 +736,8 @@ WordDocumentFormat format = WordFormatConverter.DetectFormat("report.odt");   //
 
 RTF 的表格边框颜色走 `\brdrcf<颜色表索引>`：写出时非纯黑的那条边才登记并引用颜色表，纯黑沿用 RTF 的自动色，默认表格的产物字节因此不变；载入时按索引回到 `TableCell.Borders`，索引缺失或越界回自动色。从前这条路径只把六个方向的颜色登记进 `\colortbl`，正文里从不引用，读端又把每条边钉成黑色，2 磅红边框存一次盘就成黑边框。RTF 本身没有表级边框，读回的权威在逐格那一份，`Table.Borders` 的六向不回。
 
+「跨页重复表头」这一条只有 DOCX 部件带得动：`Table.RepeatHeaderRow` 在 DOCX 写成第一行的 `w:tblHeader`，读回时按首行是否表头推导；RTF 的 `\trhdr`、HTML 的 `<thead>` 与 ODT 的 `table:table-header-rows` 说得出的都只是「这一行是不是表头」。所以从这三种格式载入时，`RepeatHeaderRow` 一律按首行 `IsHeader` 推导。从前这里留着构造默认的 `true`，一张关掉了重复的表格转一趟再存 DOCX，就凭空多出一条 Word 会真的照行的 `w:tblHeader`。
+
 ODT 读取端给跨行 / 跨列单元格的覆盖登记设了单表槽位上限：畸形跨度（例如 4096 × 4096 的乘积）在预算用完之后停止登记覆盖，声明的 `RowSpan` / `ColSpan` 原样保留，原本被它"盖住"的单元格按正常单元格读出。这样一份畸形文件不会把加载拖成假死或 OOM，代价是超大跨度之后的网格对齐不再保证精确。
 
 ## 模板填充

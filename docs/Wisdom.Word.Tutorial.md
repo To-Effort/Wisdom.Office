@@ -957,4 +957,6 @@ Console.WriteLine(fromOdt.GetPlainText());
 
 **表格边框的颜色存成 RTF 就变黑了。** 已修。RTF 用 `\brdrcf<颜色表索引>` 说边框颜色，写出端从前只把六个方向的颜色登记进 `\colortbl`、正文里从不引用，读端又把每条边钉成黑色，2 磅红边框存一次盘就成了黑边框。现在非纯黑的边会写 `\brdrcf`，读端按索引回到 `TableCell.Borders`；纯黑沿用 RTF 的自动色，默认表格的产物字节不变。RTF 本身没有表级边框，读回的权威在逐格那一份，`Table.Borders` 的六个方向不回。
 
+**表格设了「不重复表头」，转一趟格式再存成 DOCX 又开始重复。** 已修。`Table.RepeatHeaderRow` 只有 DOCX 部件带得动，RTF（`\trhdr`）、HTML（`<thead>`）、ODT（`table:table-header-rows`）只说得出「这一行是不是表头」；这三个读端从前建表后把 `RepeatHeaderRow` 留在构造默认的 `true`，转一跳再存 DOCX 就给首行补上一条 `w:tblHeader`。现在载入时按首行是否表头推导，与 DOCX 读取端同一条规则；声明过表头的表格照旧重复，DOCX 直进直出的产物不变。
+
 **模板占位符没被替换。** 先用 `DocxReader.ExtractText` 确认模板里确实是 `{{key}}`（全角花括号、多余空格都会导致不匹配），再用 `TemplateEngine.ContainsToken` 快速判断某个字符串是否含占位符。

@@ -360,6 +360,13 @@
 - 目标行为：写端补 `\brdrcf<颜色表索引>`（索引复用 `AddColor` 的去重结果），读端新增 `brdrcf` 分支按 `_context.Colors` 回色，索引缺失或越界仍回自动色。
 - 红测：两列表格，首格给红实线上边框与蓝虚线左边框，`RtfWriter.ToRtf` 断言出现 `\brdrcf`，`RtfReader.Parse` 断言两处颜色原值与线型线宽；控制项断言默认全黑表格的 RTF 不含 `\brdrcf`（产物字节口径不变）。
 
+### WE14｜`RepeatHeaderRow` 只有 DOCX 读写，其余三个读端留着构造默认的 `true`，转档冒幽灵 `w:tblHeader`　A
+
+- 位置：`src/Wisdom.Word/Formats/HtmlReader.cs`、`Formats/RtfReader.cs`、`Formats/OdtReader.cs` 的建行处（改前三处建表后都不回这个字段，而 `src/Wisdom.Office.Core/Model/DocumentModel.cs:769` 的构造默认是 `true`）；写出端 `src/Wisdom.Word/Docx/DocxWriter.cs:1864` 的条件是 `row.IsHeader || (r == 0 && table.RepeatHeaderRow)`。
+- 后果：`RepeatHeaderRow = false` 且首行 `IsHeader = false` 的表格（本库自用路径也显式设过 false，如 `src/Wisdom.Word/WordLabels.cs:448`、`Legacy/DocReader.cs:441`）转一趟 HTML / RTF / ODT 再存成 DOCX，第一行带上 `w:tblHeader`——Word 打开后把一行普通数据行当表头跨页重复，而这条声明在中间格式里根本不存在。DOCX 直进直出不受影响，因为 `Docx/DocxPartReader.cs:842` 本来就按首行推导。
+- 目标行为：三个读端在加入第一行时按 `row.IsHeader` 回写 `RepeatHeaderRow`，与 DOCX 读取端同一条规则。三种格式各自仍能表达表头行（`\trhdr`、`<thead>`、`table:table-header-rows`），所以声明过表头的表格，其重复照旧保留。
+- 红测：两行两列表格，`RepeatHeaderRow = false` 且首行非表头，分别过 HTML / RTF / ODT 一跳再写 DOCX，断言 `word/document.xml` 不含 `w:tblHeader`；两条控制分别钉住 DOCX 直进直出为零、真表头过 HTML 仍恰好一条。
+
 ---
 
 ## 7. P2 与 P3
@@ -435,6 +442,7 @@
 | `PT14` | 表格逐格四条边线从「只出不进」改为双向：读端解析 `a:lnL`/`lnR`/`lnT`/`lnB` 逐格落进 `TableCell.Borders`，`a:noFill` 认成 `BorderStyle.None`，四条全缺仍为 null。载入别人的表格再存盘不再把边框塌回默认细线，这一类稿子的字节随之变化（变化本身就是修复）；本库新建稿第二次保存逐边字节不变 | `src/Wisdom.Ppt/README.md` 表格边框一段改写为双向，「已知限制」的「只出不进」条目替换为「逐格往返、表级六向不回」；`docs/Wisdom.Ppt.Tutorial.md` 常见问题补「别人的表格打开再存一次，边框全没了」，并把 `PT11`/`PT12` 两条里「只出不进」的边界句改掉 |
 | `WE12` | ODT 页码域从 `IndexOf("PAGE")` 改为整词判定：`NUMPAGES`/`PAGES` 写 `text:page-count`、整词 `PAGE` 写 `text:page-number`，读端新增 `text:page-count` → `NUMPAGES`（此前没有这一分支）。同时用到两个域的 ODT 产物在总页数那一处字节变化（变化本身就是修复），只用 `PAGE` 的稿子一个字节不动 | `src/Wisdom.Word/README.md`「在格式之间保留什么」的页码一行改为「页码与总页数域」并新增一段说明 ODT 只认这两个指令、其余指令写的是显示文本；`docs/Wisdom.Word.Tutorial.md` 常见问题补「『第 X 页 共 N 页』存成 ODT 变成两个页码」 |
 | `WE13` | RTF 表格边框补写 `\brdrcf`，读端按颜色表回色：有色边框的 RTF 产物在颜色那一句字节变化（变化本身就是修复），纯黑的边沿用 RTF 自动色不写引用，默认表格产物一字节不变。读端此前没有 `brdrcf` 分支，边框颜色一律读成黑色 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增 RTF 边框颜色一段（含「RTF 没有表级边框、`Table.Borders` 六向不回」这条边界）；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格边框的颜色存成 RTF 就变黑了」 |
+| `WE14` | HTML / RTF / ODT 三个读端新增按首行 `IsHeader` 回写 `Table.RepeatHeaderRow`（此前留着构造默认的 `true`）：经这三跳再存 DOCX 的表格不再冒出 `w:tblHeader`。只有「首行不是表头」这一类表格的产物形状变化（变化本身就是修复），声明过表头的照旧；DOCX 直进直出一字节不变 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增「重复表头只有 DOCX 带得动」一段；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格设了不重复表头，转一趟格式再存成 DOCX 又开始重复」 |
 
 ---
 
@@ -767,4 +775,15 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 读端新增 `_borderColorIndex`，四条 `clbrdr*` 各自把它复位（否则上一条边的颜色会渗到下一条），`brdrcf` 落值后立即 `ApplyPendingBorder`；回色走既有的 `GetColor`，缺失或越界仍是自动色。
   - 线型与线宽本来就往返，测试把这两项一起钉住，防止改动带坏；另有一条控制断言默认全黑表格的 RTF 不含 `\brdrcf`。
   - 顺带记下的边界：RTF 没有表级边框元素，读回的权威在逐格那一份，`Table.Borders` 的六向不回（`RtfReader.cs:1430` 建树时先给 `TableBorders.None()`）。这与 PPT 侧 `PT14` 的结论同形，文档已按同一口径写。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE14` 幽灵 `w:tblHeader`（`002f308` 取证 + `41d3172` 修复）：`Table.RepeatHeaderRow` 是模型字段，但只有 DOCX 部件读写它（写端 `DocxWriter.cs:1864` 的 `row.IsHeader || (r == 0 && table.RepeatHeaderRow)`，读端 `DocxPartReader.cs:842` 由首行推导）；HTML / RTF / ODT 三个读端建表后从不回这个字段，于是留着构造默认的 `true`，转一跳再存 DOCX 就给第一行补上一条 Word 会真的照行的 `w:tblHeader`。
+  - 修复前失败原文（三跳里最先失败的是 HTML 这一跳，DOCX 直进直出那条控制当时已经为零）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: html to docx gained a phantom w:tblHeader on a table with no header row at all
+    at Wisdom.Office.Tests.Program.RunHeaderRepeatFlagSurvivesFormatHopsTest() ... RemediationWordPhaseFourTests.cs:line 503
+    ```
+
+  - 落点选在三个读端而不是写出端：写出端那条 `r == 0 && RepeatHeaderRow` 是 DOCX 自己的表达力（Word 的 `tblHeader` 本来就挂在行上，模型却把它拆成两个字段），把它削掉会让「只设了 `RepeatHeaderRow`、没设 `IsHeader`」的调用方失去跨页重复。读端改成与 DOCX 同一规则「由首行 `IsHeader` 推导」，既补上声明的通道（`\trhdr`、`<thead>`、`table:table-header-rows` 三种格式都认表头行），也不再凭空造声明。
+  - 字节口径：DOCX 直进直出不变；只有首行不是表头的表格在跨格式转档后再存 DOCX 时少掉那条幽灵标记，声明过表头的表格一字节不动。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
