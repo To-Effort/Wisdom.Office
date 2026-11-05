@@ -938,7 +938,7 @@ namespace Wisdom.Ppt
                 return row;
             }
 
-            /// <summary>读取单个表格单元格：段落进 Blocks，tcPr 提供底色、合并跨度与垂直对齐。Reads one cell: paragraphs go into Blocks while tcPr supplies shading, merge spans and vertical alignment.</summary>
+            /// <summary>读取单个表格单元格：段落进 Blocks，tcPr 提供底色、合并跨度、垂直对齐与逐格四边线。Reads one cell: paragraphs go into Blocks while tcPr supplies shading, merge spans, vertical alignment and the four per-cell edges.</summary>
             /// <param name="cellElement">a:tc 元素。The a:tc element.</param>
             /// <returns>读取出的单元格。The parsed cell.</returns>
             private TableCell ReadTableCell(XElement cellElement)
@@ -954,14 +954,54 @@ namespace Wisdom.Ppt
                 XElement tcPr = Ppt.DrawingChild(cellElement, "tcPr");
                 cell.BackgroundColor = _session.ReadFill(tcPr);
                 cell.VerticalAlignment = MapCellAnchor(Ppt.Attribute(tcPr, "anchor"));
-                // tcPr 的 a:lnL/a:lnR/a:lnT/a:lnB 与 marT/marB/marR 不读入：统一模型的单元格边框与
-                // 内边距是表级设置，逐格还原会让写出器重复输出四周边框。首个单元格的 marL 已在
-                // ReadTableColumns 里作为表级内边距的近似值使用。
-                // The per-edge borders (a:lnL/lnR/lnT/lnB) and the remaining marT/marB/marR insets are not
-                // read: the unified model keeps borders and padding at table level, so restoring them cell by
-                // cell would make the writer repeat the surrounding borders. The first cell's marL is already
-                // used in ReadTableColumns as an approximation of the table padding.
+                cell.Borders = ReadCellBorders(tcPr);
+                // marT/marB/marR 三个内边距不读入：统一模型只有表级 CellPadding，首个单元格的 marL
+                // 已在 ReadTableColumns 里当作它的近似值。
+                // The marT/marB/marR insets are not read: the unified model only has table-level CellPadding,
+                // and the first cell's marL is already used in ReadTableColumns as an approximation of it.
                 return cell;
+            }
+
+            /// <summary>
+            /// 读取 a:tcPr 的逐格四边线：一条 a:lnX 都没有就返回 null，让表格级边框继续做主。
+            /// 从前这四个元素只在写出侧出现，读侧一概不看，于是别人的表格载进来边框全丢。
+            /// Reads the four per-cell edges of a:tcPr, returning null when no a:lnX is present so the
+            /// table-level borders stay in charge. These elements used to exist only on the way out, so a
+            /// foreign table lost every border on the way in.
+            /// </summary>
+            /// <param name="tcPr">a:tcPr 元素，可为 null。The a:tcPr element, may be null.</param>
+            /// <returns>四边边框，全未声明时为 null。The four edges, or null when none is declared.</returns>
+            private TableCellBorders ReadCellBorders(XElement tcPr)
+            {
+                if (tcPr == null) return null;
+                TableCellBorders borders = new TableCellBorders();
+                borders.Left = ReadCellEdge(tcPr, "lnL");
+                borders.Right = ReadCellEdge(tcPr, "lnR");
+                borders.Top = ReadCellEdge(tcPr, "lnT");
+                borders.Bottom = ReadCellEdge(tcPr, "lnB");
+                if (borders.Left == null && borders.Right == null && borders.Top == null && borders.Bottom == null) return null;
+                return borders;
+            }
+
+            /// <summary>
+            /// 读取一条单元格边线：w 转磅，a:noFill 是「这条边不画」而不是「没说过」，双线看 a:lnX@cmpd="dbl"。
+            /// Reads one cell edge: w becomes points, a:noFill means "draw nothing on this edge" rather than
+            /// "nothing was said", and a double line is read from a:lnX@cmpd="dbl".
+            /// </summary>
+            /// <param name="tcPr">a:tcPr 元素。The a:tcPr element.</param>
+            /// <param name="tag">边线标签（lnL/lnR/lnT/lnB）。The edge tag.</param>
+            /// <returns>边框线描述，该边未声明时为 null。The line, or null when the edge is undeclared.</returns>
+            private BorderLine ReadCellEdge(XElement tcPr, string tag)
+            {
+                XElement ln = Ppt.DrawingChild(tcPr, tag);
+                if (ln == null) return null;
+                // 缺省线宽 1 磅，与形状描边同一口径。The implicit width is one point, same as an outline.
+                double width = Ppt.ToPoints(ParseLong(Ppt.Attribute(ln, "w"), 12700));
+                if (Ppt.DrawingChild(ln, "noFill") != null) return new BorderLine(BorderStyle.None, width, OfficeColor.Black);
+                OfficeColor? color = _session.ReadFill(ln);
+                BorderStyle style = MapDashStyle(Ppt.Attribute(Ppt.DrawingChild(ln, "prstDash"), "val"));
+                if (string.Equals(Ppt.Attribute(ln, "cmpd"), "dbl", StringComparison.Ordinal)) style = BorderStyle.Double;
+                return new BorderLine(style, width, color ?? OfficeColor.Black);
             }
 
             /// <summary>
