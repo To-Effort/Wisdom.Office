@@ -1151,7 +1151,13 @@ namespace Wisdom.Ppt
                     CreateXfrm(picture),
                     new XElement(A + "prstGeom", new XAttribute("prst", "rect"), new XElement(A + "avLst")));
                 if (picture.FillColor.HasValue) spPr.Add(CreateSolidOrNoFill(picture.FillColor));
-                spPr.Add(CreateLine(picture.Outline));
+                // 没设过描边就整条不写：a:ln/noFill 是一句「本图不要线」的真话资格在调用者身上，
+                // 写端替它说出口，版式与母版本来的描边就被压掉——自选图形与文本框已按这条修过。
+                // An outline never set stays unwritten: only the caller may say "no line for this picture",
+                // and saying it on their behalf suppresses the line the layout or master supplies. Shapes
+                // and text boxes already follow this rule.
+                XElement pictureLine = CreateOptionalLine(picture.Outline);
+                if (pictureLine != null) spPr.Add(pictureLine);
 
                 return new XElement(P + "pic", nvPicPr, blipFill, spPr);
             }
