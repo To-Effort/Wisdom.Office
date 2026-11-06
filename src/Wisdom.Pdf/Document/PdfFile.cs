@@ -1300,49 +1300,16 @@ namespace Wisdom.Pdf
             return text == null ? string.Empty : PdfDocumentInfo.DecodePdfString(text.Bytes);
         }
 
-        /// <summary>解析 PDF 日期串。Parses a PDF date string.</summary>
+        /// <summary>
+        /// 解析 PDF 日期串，与写出端 <see cref="PdfObjectWriter.FormatPdfDate"/> 同一口径（时区标注参与换算）。
+        /// Parses a PDF date string on the same terms as <see cref="PdfObjectWriter.FormatPdfDate"/>, so a
+        /// declared time zone is converted rather than dropped.
+        /// </summary>
         /// <param name="value">日期串。The date string.</param>
         /// <returns>日期或 null。The date or null.</returns>
         private static DateTime? ParsePdfDate(string value)
         {
-            if (string.IsNullOrEmpty(value)) return null;
-            string text = value.Trim();
-            if (text.StartsWith("D:", StringComparison.Ordinal)) text = text.Substring(2);
-            if (text.Length < 4) return null;
-            string digits = string.Empty;
-            for (int i = 0; i < text.Length && i < 14; i++)
-            {
-                if (text[i] >= '0' && text[i] <= '9') digits += text[i];
-                else break;
-            }
-            if (digits.Length < 4) return null;
-            int year = ParseDigits(digits, 0, 4);
-            int month = digits.Length >= 6 ? Math.Max(1, Math.Min(12, ParseDigits(digits, 4, 2))) : 1;
-            int day = digits.Length >= 8 ? ParseDigits(digits, 6, 2) : 1;
-            int hour = digits.Length >= 10 ? ParseDigits(digits, 8, 2) : 0;
-            int minute = digits.Length >= 12 ? ParseDigits(digits, 10, 2) : 0;
-            int second = digits.Length >= 14 ? ParseDigits(digits, 12, 2) : 0;
-            try
-            {
-                int maxDay = DateTime.DaysInMonth(year < 1 ? 1 : year, month);
-                day = Math.Max(1, Math.Min(maxDay, day));
-                return new DateTime(year, month, day, Math.Min(23, hour), Math.Min(59, minute), Math.Min(59, second));
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return null;
-            }
-        }
-
-        /// <summary>解析定长数字。Parses a fixed-length number.</summary>
-        private static int ParseDigits(string text, int start, int length)
-        {
-            int value = 0;
-            for (int i = start; i < start + length && i < text.Length; i++)
-            {
-                if (text[i] >= '0' && text[i] <= '9') value = value * 10 + (text[i] - '0');
-            }
-            return value;
+            return PdfObjectWriter.ParsePdfDate(value);
         }
 
         /// <summary>设置或移除文本项。Sets or removes a text entry.</summary>

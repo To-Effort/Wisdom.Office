@@ -316,19 +316,132 @@ namespace Wisdom.Pdf
         }
 
         /// <summary>
-        /// 把时间格式化为 PDF 日期字符串（D:yyyyMMddHHmmss+hh'mm'），附带本地时区偏移。
-        /// Formats a time as a PDF date string (D:yyyyMMddHHmmss+hh'mm') including the local time-zone offset.
+        /// 把时间格式化为 PDF 日期字符串（D:yyyyMMddHHmmss+hh'mm'）。传入的时刻先折成本地墙上时间，
+        /// 再配上当一刻的本地偏移——两者一起指向同一个时刻；<see cref="DateTimeKind.Utc"/> 的值若按自己的
+        /// 数字配本地偏移，等于把时刻说早了几个钟头。
+        /// Formats a time as a PDF date string (D:yyyyMMddHHmmss+hh'mm'). The instant is folded into the local
+        /// wall clock first and paired with the local offset for that clock, so the two describe one instant;
+        /// stamping a <see cref="DateTimeKind.Utc"/> value with its own digits and a local offset would move the
+        /// recorded instant by hours.
         /// </summary>
-        /// <param name="value">本地时间。The local time.</param>
+        /// <param name="value">待写出的时间。The time to write.</param>
         /// <returns>符合 PDF 规范的日期文本。The PDF-conformant date text.</returns>
         public static string FormatPdfDate(DateTime value)
         {
-            TimeSpan offset = TimeZoneInfo.Local.GetUtcOffset(value);
+            DateTime local = value.Kind == DateTimeKind.Utc
+                ? TimeZoneInfo.ConvertTimeFromUtc(value, TimeZoneInfo.Local)
+                : value;
+            TimeSpan offset = TimeZoneInfo.Local.GetUtcOffset(local);
             string sign = offset.TotalMinutes >= 0 ? "+" : "-";
             int total = (int)Math.Abs(offset.TotalMinutes);
-            return "D:" + value.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture)
+            return "D:" + local.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture)
                 + sign + (total / 60).ToString("00", CultureInfo.InvariantCulture)
                 + "'" + (total % 60).ToString("00", CultureInfo.InvariantCulture) + "'";
+        }
+
+        /// <summary>
+        /// 解析 PDF 日期串，并与 <see cref="FormatPdfDate"/> 成对：标注了时区（<c>Z</c> 或 <c>±hh'mm'</c>）时，
+        /// 那串数字按该时区的墙上时间理解，先折成时刻再落回本地时间；没有标注时按规范就当作本地时间原样取回。
+        /// 返回的时间一律是 <see cref="DateTimeKind.Unspecified"/>，与写出端「本地墙上时间」的口径一致。
+        /// Parses a PDF date string as the counterpart of <see cref="FormatPdfDate"/>: when a time zone is
+        /// declared (<c>Z</c> or <c>±hh'mm'</c>) the digits are that zone's wall clock, so they are folded into
+        /// an instant and converted back to local time; without a designator the spec means local time and the
+        /// wall clock is returned untouched. The result is always <see cref="DateTimeKind.Unspecified"/>, the
+        /// same local-wall-clock currency the writer stamps.
+        /// </summary>
+        /// <param name="value">日期串正文。The date string.</param>
+        /// <returns>本地墙上时间，无法解析时为 null。The local wall time, or null when unparseable.</returns>
+        internal static DateTime? ParsePdfDate(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            string text = value.Trim();
+            if (text.StartsWith("D:", StringComparison.Ordinal)) text = text.Substring(2);
+
+            string digits = string.Empty;
+            for (int i = 0; i < text.Length && i < 14; i++)
+            {
+                if (text[i] >= '0' && text[i] <= '9') digits += text[i];
+                else break;
+            }
+            if (digits.Length < 4) return null;
+
+            int year = ParseDateDigits(digits, 0, 4);
+            int month = Math.Max(1, Math.Min(12, digits.Length >= 6 ? ParseDateDigits(digits, 4, 2) : 1));
+            int day = digits.Length >= 8 ? ParseDateDigits(digits, 6, 2) : 1;
+            int hour = digits.Length >= 10 ? Math.Min(23, ParseDateDigits(digits, 8, 2)) : 0;
+            int minute = digits.Length >= 12 ? Math.Min(59, ParseDateDigits(digits, 10, 2)) : 0;
+            int second = digits.Length >= 14 ? Math.Min(59, ParseDateDigits(digits, 12, 2)) : 0;
+            DateTime wall;
+            try
+            {
+                int maxDay = DateTime.DaysInMonth(year < 1 ? 1 : year, month);
+                day = Math.Max(1, Math.Min(maxDay, day));
+                wall = new DateTime(year, month, day, hour, minute, second);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return null;
+            }
+
+            int offsetMinutes;
+            if (!TryReadZoneOffset(text, digits.Length, out offsetMinutes)) return wall;
+            DateTime instant = DateTime.SpecifyKind(wall.AddMinutes(-offsetMinutes), DateTimeKind.Utc);
+            return DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(instant, TimeZoneInfo.Local), DateTimeKind.Unspecified);
+        }
+
+        /// <summary>
+        /// 读取紧跟在数字后面的时区标注：只认 <c>Z</c> 与 <c>±hh[':']mm</c> 两种，其余（含残缺）都按「没有标注」处理。
+        /// Reads the time-zone designator written right after the digits: only <c>Z</c> and <c>±hh[':']mm</c>
+        /// count; anything else, including a malformed one, is reported as "no designator".
+        /// </summary>
+        /// <param name="text">去掉 <c>D:</c> 前缀的日期正文。The date text without the <c>D:</c> prefix.</param>
+        /// <param name="start">数字结束的位置。The index just past the digits.</param>
+        /// <param name="offsetMinutes">该标注相对 UTC 的分钟数。The offset from UTC in minutes.</param>
+        /// <returns>标注成立时返回 true。True when a designator was recognised.</returns>
+        private static bool TryReadZoneOffset(string text, int start, out int offsetMinutes)
+        {
+            offsetMinutes = 0;
+            if (start >= text.Length) return false;
+            char marker = text[start];
+            if (marker == 'Z' || marker == 'z') return true;
+            if (marker != '+' && marker != '-') return false;
+
+            int collected = 0;
+            int hours = 0;
+            int minutes = 0;
+            for (int i = start + 1; i < text.Length && collected < 4; i++)
+            {
+                char c = text[i];
+                if (c >= '0' && c <= '9')
+                {
+                    if (collected < 2) hours = hours * 10 + (c - '0');
+                    else minutes = minutes * 10 + (c - '0');
+                    collected++;
+                    continue;
+                }
+                // 规范写作 hh'mm'，阅读器也常见 hh:mm；分隔符允许，其余字符即视为标注结束。
+                // The spec spells it hh'mm' and readers also write hh:mm; separators are tolerated, anything
+                // else ends the designator.
+                if (c != '\'' && c != ':') break;
+            }
+            if (collected < 2 || hours > 23) return false;
+            offsetMinutes = (marker == '-' ? -1 : 1) * (hours * 60 + Math.Min(59, minutes));
+            return true;
+        }
+
+        /// <summary>解析日期串里的定长数字。Parses a fixed-length number out of a date string.</summary>
+        /// <param name="text">数字正文。The digit run.</param>
+        /// <param name="start">起始下标。The start index.</param>
+        /// <param name="length">位数。The number of digits.</param>
+        /// <returns>整数值。The parsed value.</returns>
+        private static int ParseDateDigits(string text, int start, int length)
+        {
+            int value = 0;
+            for (int i = start; i < start + length && i < text.Length; i++)
+            {
+                if (text[i] >= '0' && text[i] <= '9') value = value * 10 + (text[i] - '0');
+            }
+            return value;
         }
     }
 }
