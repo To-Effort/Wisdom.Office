@@ -226,6 +226,13 @@
 - 目标行为：补认 `k`（DeviceCMYK 填充）与 `c`（按当前色彩空间的填充），按无 ICC 配置的减法混色近似换算成 RGB；分隔色 `sc`/`scn` 与自定义色彩空间仍认不出，按黑色起排并写进「已知不支持」。写出端本来就用 `rg` 表示填充色，自己的产出不受影响。
 - 红测：两个文本控件，本域 `/DA` 分别写 `"/Helv 12 Tf 0 0.75 0.75 0.25 k"` 与控制用例 `"/Helv 12 Tf 0.2 0.6 0.9 rg"`，填值并生成外观后读各自 `/AP /N` 正文里第一条 `rg` 的三个分量，容差 0.01。
 
+### PD29｜`/Info` 日期的时区标注读端整段丢弃、写端只贴本地偏移，创建时间记成另一个时刻　B
+
+- 位置：读端两份重复实现——`src/Wisdom.Pdf/Document/PdfFile.cs` 的 `ParsePdfDate` 与 `src/Wisdom.Pdf/Reading/PdfDocument.cs` 的 `ParseDate`，各自只取前 14 位数字、遇到非数字即停，标注看都不看；写端 `src/Wisdom.Pdf/Syntax/PdfObjectWriter.cs` 的 `FormatPdfDate`，数字按传入的墙上时间原样写、偏移一律贴 `TimeZoneInfo.Local.GetUtcOffset`。
+- 后果：`D:20260115120000Z` 在东八区读回来是本地 12:00，而它记录的时刻是 20:00；`-08'00'` 这类标注偏差更大。阅读器与「文档属性」按标注显示，本库的 `Info.CreationDate` 与它们不一致，且带 `Z` 或异国偏移的第三方稿载入再存盘时，`PdfFile` 会用本地偏移重新落串，把时刻再搬一次。写端反过来也错：调用方交进 `DateTimeKind.Utc` 的值（`DateTime.UtcNow`、别的文档读来的时刻），数字是 UTC 墙上时间、偏移贴的是 `+08'00'`，同一个时刻被说成早了八个钟头。
+- 目标行为：读写成对，且落在一处。`PdfObjectWriter.ParsePdfDate` 认紧跟数字的 `Z` 与 `±hh[':']mm`：有标注时把这串数字当那个时区的墙上时间折成时刻，再落回本地；无标注按规范就是本地时间，原样取回；标注残缺（位数不足、`+` 后无数字）一律按「没有标注」处理，不猜。返回一律 `Kind=Unspecified` 的本地墙上时间，与写出端「本地墙上时间配本地偏移」同一币种。`FormatPdfDate` 收到 `Kind=Utc` 先折成本地墙上时间再配当刻的本地偏移。两个读取端删掉各自的数字解析，改调这一份。
+- 红测：`/Info` 里写死日期串的经典交叉表 PDF。控制用例 `D:20260115120000` 必须原样读出 12:00（无标注不换算）；`Z` 与 `+00'00'` 等于把 12:00 UTC 换到本地；`+05'30'` 与 `-08'00'` 各自回推到 12:00 那一个时刻；`D:2026` 仍读成 2026-01-01。`PdfFile` 与 `PdfDocument` 两个入口必须给出同一个值。写侧：`FormatPdfDate(new DateTime(2026,1,15,12,0,0,DateTimeKind.Utc))` 的数字部分必须等于该时刻的本地墙上时间，偏移后缀仍是本地偏移。
+
 ---
 
 ## 5. P1 —— PPT：结构非法与读写不对称
@@ -499,6 +506,8 @@
 | `PD27` | 字段的可继承 `/DA` 沿父域走完仍为空时退回取 AcroForm 上那一份（本域 `/DA` 仍优先）：过去只写在表单元上的文档默认外观读成空，生成外观时字号退回自动、颜色一律黑。`FT`/`Ff`/`Q` 不参与这一层（AcroForm 字典表没有这些条目）。本库不生成新表单字段、自产稿的 `/DA` 一直写在本域上，走不到回退分支，产出字节不变；表单级 `/DA` 的第三方稿其生成外观的 `Tf` 字号与 `rg` 颜色随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行继承顺序；`docs/Wisdom.Pdf.Tutorial.md` 表单一节补一段外观取色口径、常见问题补「填进去的值生成的外观跟表单其余部分不像同一份稿子」 |
 | `PD28` | `/DA` 补认 CMYK 填充算子 `k`/`c`，按无 ICC 的减法混色近似换算成 RGB：过去这类表单生成外观时一律画黑字。分隔色与自定义色彩空间仍按黑色起排，写进「已知不支持」。本库写出的外观正文本来就用 `rg`，自产稿一字节不变；只有 `/DA` 用 CMYK 的第三方稿，其生成外观里的 `rg` 三元组由 `0 0 0` 变成换算值（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行配色算子，「已知不支持」的表单一行补配色边界；`docs/Wisdom.Pdf.Tutorial.md` 表单「外观取色」一段补同一口径 |
 | `PT15` | 产出字节不变：写端与读端维持现状，纠正的是文档里「动画延迟只对第一个形状有效」与 `p:spid/@val` 这两个过期口径；补一条测试钉住逐形状的延迟往返 | `docs/Wisdom.Ppt.Tutorial.md` 第 11 步规则与常见问题「形状动画没出现」改写；`docs/Wisdom.Office.功能导读.md` 动画一段改写 |
+
+| `PD29` | `/Info` 日期的时区标注读写成对：读端补认 `Z` 与 `±hh[':']mm`，把数字按标注时区折成时刻再落回本地（此前只取前 14 位数字，带 `Z` 的稿件偏一个时区）；写端 `Kind=Utc` 的值先折成本地墙上时间再贴本地偏移（此前数字与偏移各说各话）。两份重复的数字解析收进 `PdfObjectWriter.ParsePdfDate` 一处。本库自产稿写的是本地墙上时间配本地偏移，读回再写出仍是同一串数字，产出字节不变；变化只落在带 `Z`／异国偏移的第三方稿与 `Kind=Utc` 的调用方入参——那两处原本记的就是错的时刻 | `src/Wisdom.Pdf/README.md`「解析 PDF」补 `/Info` 日期一段、「已知不支持」补一行标注识别边界；`docs/Wisdom.Pdf.Tutorial.md` 第 5 步补一段读写口径、常见问题补「创建时间比阅读器里显示的差几个钟头」 |
 
 ---
 
@@ -876,6 +885,21 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 触发语义保留原样并写清楚：本页设了 `AdvanceAfterSeconds` 时第一个动画形状写成 `nodeType="afterEffect"` 自动接播，其余形状仍是 `clickEffect`，它们的延迟含义是「单击之后再等这么久」；`indefinite` 只出现在触发节点上，读端不把它当延迟。
   - 字节口径：写出与读取都没动，产出零变化；改的是 `docs/Wisdom.Ppt.Tutorial.md` 的规则与常见问题、`docs/Wisdom.Office.功能导读.md` 的动画一段。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
+- `PD29` `/Info` 日期的时区标注两头各丢一半（`f8b2c36` + `14d2cd8` 取证 + `f8d5f10` 修复）：读端两份重复的数字解析只取前 14 位、标注整段不看，写端数字按传入墙上时间原样写、偏移一律贴本地。
+  - 修复前失败原文（`net8.0`，读侧与写侧两条）：
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the UTC designator is dropped: D:20260115120000Z reads 2026-01-15T12:00:00.0000000, the instant it records is 2026-01-15T20:00:00.0000000
+      at Wisdom.Office.Tests.Program.RunPdfDateDesignatorTest() ... RemediationPhaseFourTests.cs:line 987
+
+    Unhandled exception. System.InvalidOperationException: Test failed: a UTC-kind date is stamped as its own digits instead of the local wall clock: D:20260115120000+08'00', expected the digits 20260115200000
+      at Wisdom.Office.Tests.Program.RunPdfDateDesignatorTest() ... RemediationPhaseFourTests.cs:line 1025
+    ```
+  - 收口方式：解析合并进 `PdfObjectWriter.ParsePdfDate`（`internal`，不扩公开面），`PdfFile.ParsePdfDate` 与 `PdfDocument.ParseDate` 只剩转发，各自的 `ParseDigits`/`ParseInt` 一并删除；两份口径从此不可能再各自漂移。
+  - 只认紧跟数字的 `Z` 与 `±hh[':']mm`：`hh:mm` 这种阅读器写法顺手认，但标注残缺（位数不足、`+` 后无数字）一律退回「没有标注」按本地时间处理，不做猜测式宽容——猜错等于凭空造一个时刻偏移。
+  - 返回一律 `Kind=Unspecified` 的本地墙上时间，与写出端「本地墙上时间配本地偏移」同一币种；`FormatPdfDate` 只对 `Kind=Utc` 做折算，`Unspecified`/`Local` 按调用方给的墙上时间原样配本地偏移。
+  - 字节口径：自产稿不变——写的是本地墙上时间配本地偏移，读回再写出还是同一串数字（数字 − 本地偏移 + 本地偏移 = 数字）。变化只发生在带 `Z` 或异国偏移的第三方稿（载入再存盘不再被搬走时刻），以及 `Kind=Utc` 的入参（那处原本就记错了时刻）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
+
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
 - `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
   - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。
