@@ -37,6 +37,7 @@ namespace Wisdom.Office.Tests
             RunNonFirstShapeAnimationDelayTest();
             RunBaselineAndSpacingRoundTripTest();
             RunVerticalMergeGridTest();
+            RunPictureUnsetOutlineNotFabricatedTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -1211,6 +1212,58 @@ namespace Wisdom.Office.Tests
             }
             Require(texts[1].IndexOf("384", StringComparison.Ordinal) >= 0,
                 "the second row's data slid into the merged column: " + string.Join(" | ", texts));
+        }
+
+        /// <summary>
+        /// PT16 第一批：图片形状没设过描边，写端不得替它落一条 <c>a:ln/a:noFill</c>。
+        /// 同一件事在自选图形与文本框上已经修过（写端不伪造模型未表达的意图），图片这一条路径漏在外面：
+        /// <c>CreateLine(picture.Outline)</c> 不看 null，一律产出带 <c>noFill</c> 的线元素，
+        /// 等于每个图片形状都在说「本图不要线」，把版式与母版本来给的描边压掉。
+        /// PT16, first batch: a picture whose outline was never set must not leave the file carrying an
+        /// <c>a:ln/a:noFill</c>. Shapes and text boxes were fixed the same way earlier - the writer must not
+        /// invent intent the model never stated - but this path was left out: <c>CreateLine(picture.Outline)</c>
+        /// is called without looking at null, so every picture says "no line for me" and suppresses whatever
+        /// the layout or master supplies.
+        /// </summary>
+        private static void RunPictureUnsetOutlineNotFabricatedTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            slide.AddImage(new OfficeImage(CreateTestPng(8, 6)), 40, 40, 120, 90);
+            PictureShape lined = slide.AddImage(new OfficeImage(CreateTestPng(8, 6)), 220, 40, 120, 90);
+            lined.Outline = new BorderLine(BorderStyle.Dashed, 2.0, new OfficeColor(0xC0, 0x39, 0x2B));
+
+            byte[] written = WriteToBuffer(deck);
+            XElement[] props = ReadPictureProperties(written, "ppt/slides/slide1.xml");
+            Require(props.Length == 2, "expected two p:pic on the slide, got " + props.Length);
+
+            Require(props[0].Element(A + "ln") == null,
+                "a picture that never set an outline still got an a:ln element, silencing the inherited line");
+            Require(props[0].Element(A + "solidFill") == null,
+                "a picture that never set a fill was given a solidFill anyway");
+
+            XElement linedLn = props[1].Element(A + "ln");
+            Require(linedLn != null, "the picture with an explicit outline lost its a:ln");
+            Require(linedLn != null && linedLn.Element(A + "prstDash") != null,
+                "the dashed outline set on a picture did not reach the file");
+        }
+
+        /// <summary>
+        /// 取出幻灯片部件里每个 <c>p:pic</c> 的 <c>p:spPr</c>，按文档顺序返回。
+        /// Collects the <c>p:spPr</c> of every <c>p:pic</c> in a slide part, in document order.
+        /// </summary>
+        /// <param name="archive">pptx 字节。The pptx bytes.</param>
+        /// <param name="entryName">部件路径。The part path.</param>
+        /// <returns>每个图片的形状属性元素。The shape properties element per picture.</returns>
+        private static XElement[] ReadPictureProperties(byte[] archive, string entryName)
+        {
+            List<XElement> found = new List<XElement>();
+            foreach (XElement pic in ReadSlideXml(archive, entryName).Descendants(P + "pic"))
+            {
+                XElement spPr = pic.Element(P + "spPr");
+                if (spPr != null) found.Add(spPr);
+            }
+            return found.ToArray();
         }
 
         /// <summary>取幻灯片部件里第一个 <c>p:transition</c>（带时长时它住在 mc:Choice 里）。 Takes the first <c>p:transition</c> in a slide part, which lives inside mc:Choice when a duration is present.</summary>
