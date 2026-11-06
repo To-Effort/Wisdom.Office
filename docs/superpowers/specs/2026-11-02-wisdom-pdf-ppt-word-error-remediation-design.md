@@ -506,6 +506,7 @@
 | `WE12` | ODT 页码域从 `IndexOf("PAGE")` 改为整词判定：`NUMPAGES`/`PAGES` 写 `text:page-count`、整词 `PAGE` 写 `text:page-number`，读端新增 `text:page-count` → `NUMPAGES`（此前没有这一分支）。同时用到两个域的 ODT 产物在总页数那一处字节变化（变化本身就是修复），只用 `PAGE` 的稿子一个字节不动 | `src/Wisdom.Word/README.md`「在格式之间保留什么」的页码一行改为「页码与总页数域」并新增一段说明 ODT 只认这两个指令、其余指令写的是显示文本；`docs/Wisdom.Word.Tutorial.md` 常见问题补「『第 X 页 共 N 页』存成 ODT 变成两个页码」 |
 | `WE13` | RTF 表格边框补写 `\brdrcf`，读端按颜色表回色：有色边框的 RTF 产物在颜色那一句字节变化（变化本身就是修复），纯黑的边沿用 RTF 自动色不写引用，默认表格产物一字节不变。读端此前没有 `brdrcf` 分支，边框颜色一律读成黑色 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增 RTF 边框颜色一段（含「RTF 没有表级边框、`Table.Borders` 六向不回」这条边界）；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格边框的颜色存成 RTF 就变黑了」 |
 | `WE14` | HTML / RTF / ODT 三个读端新增按首行 `IsHeader` 回写 `Table.RepeatHeaderRow`（此前留着构造默认的 `true`）：经这三跳再存 DOCX 的表格不再冒出 `w:tblHeader`。只有「首行不是表头」这一类表格的产物形状变化（变化本身就是修复），声明过表头的照旧；DOCX 直进直出一字节不变 | `src/Wisdom.Word/README.md`「在格式之间保留什么」新增「重复表头只有 DOCX 带得动」一段；`docs/Wisdom.Word.Tutorial.md` 常见问题补「表格设了不重复表头，转一趟格式再存成 DOCX 又开始重复」 |
+
 | `PD23` | 页面自身没有 `/Resources` 时，`SetPageResource` 从「就地改写继承来的那一份」改为「按页复制一份、连分类组一起脱开再写」：登记不再串页，同名条目不再相互顶替。本库新建稿每页自带 `/Resources`，走不到这条，一字节不变；只有把资源挂在 `/Pages` 上的第三方稿，其水印与外观扁平化的资源名与分组归属随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「编辑既有 PDF 与水印」新增按页脱开一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「给第三方 PDF 逐页登记资源，另一页的同名条目被顶掉了」 |
 | `PD24` | 读端补认流字典的缩写键 `/F`（`/Filter`），与既认的 `/DP` 对齐：过去写成 `<< /F /Fl >>` 的正文按原字节交回、整页文字静默为空，现在照常解码。写出端从不发缩写，产出字节不变；`/F` 是整数标志时仍按无过滤器处理 | `src/Wisdom.Pdf/README.md`「解析 PDF」新增解码链一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的 PDF 在阅读器里显示正常，抽出来却是空的」 |
 | `PD25` | 名称读回端由「一个 `#HH` 一个字符」改为「攒起字节按 UTF-8 还原」，且只在能原样编回同一串字节时才采用，否则退回逐字节（历史高位单字节名不凭空造替换符）；写端把成对代理当一个码位展开，星外字符不再各编成 `?` 而丢失。纯 ASCII 名称的产物一字节不变；带非 ASCII 名称的第三方稿载入再存盘不再逐次增长，带星外字符的名称写出字节变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md`「解析 PDF」新增名称转义成对一段；`docs/Wisdom.Pdf.Tutorial.md` 常见问题补「别人的表单打开再存一次，选项名对不上了」 |
@@ -513,7 +514,6 @@
 | `PD27` | 字段的可继承 `/DA` 沿父域走完仍为空时退回取 AcroForm 上那一份（本域 `/DA` 仍优先）：过去只写在表单元上的文档默认外观读成空，生成外观时字号退回自动、颜色一律黑。`FT`/`Ff`/`Q` 不参与这一层（AcroForm 字典表没有这些条目）。本库不生成新表单字段、自产稿的 `/DA` 一直写在本域上，走不到回退分支，产出字节不变；表单级 `/DA` 的第三方稿其生成外观的 `Tf` 字号与 `rg` 颜色随之变化（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行继承顺序；`docs/Wisdom.Pdf.Tutorial.md` 表单一节补一段外观取色口径、常见问题补「填进去的值生成的外观跟表单其余部分不像同一份稿子」 |
 | `PD28` | `/DA` 补认 CMYK 填充算子 `k`/`c`，按无 ICC 的减法混色近似换算成 RGB：过去这类表单生成外观时一律画黑字。分隔色与自定义色彩空间仍按黑色起排，写进「已知不支持」。本库写出的外观正文本来就用 `rg`，自产稿一字节不变；只有 `/DA` 用 CMYK 的第三方稿，其生成外观里的 `rg` 三元组由 `0 0 0` 变成换算值（变化本身就是修复） | `src/Wisdom.Pdf/README.md` 表单「实现要点」补一行配色算子，「已知不支持」的表单一行补配色边界；`docs/Wisdom.Pdf.Tutorial.md` 表单「外观取色」一段补同一口径 |
 | `PT15` | 产出字节不变：写端与读端维持现状，纠正的是文档里「动画延迟只对第一个形状有效」与 `p:spid/@val` 这两个过期口径；补一条测试钉住逐形状的延迟往返 | `docs/Wisdom.Ppt.Tutorial.md` 第 11 步规则与常见问题「形状动画没出现」改写；`docs/Wisdom.Office.功能导读.md` 动画一段改写 |
-
 | `PD29` | `/Info` 日期的时区标注读写成对：读端补认 `Z` 与 `±hh[':']mm`，把数字按标注时区折成时刻再落回本地（此前只取前 14 位数字，带 `Z` 的稿件偏一个时区）；写端 `Kind=Utc` 的值先折成本地墙上时间再贴本地偏移（此前数字与偏移各说各话）。两份重复的数字解析收进 `PdfObjectWriter.ParsePdfDate` 一处。本库自产稿写的是本地墙上时间配本地偏移，读回再写出仍是同一串数字，产出字节不变；变化只落在带 `Z`／异国偏移的第三方稿与 `Kind=Utc` 的调用方入参——那两处原本记的就是错的时刻 | `src/Wisdom.Pdf/README.md`「解析 PDF」补 `/Info` 日期一段、「已知不支持」补一行标注识别边界；`docs/Wisdom.Pdf.Tutorial.md` 第 5 步补一段读写口径、常见问题补「创建时间比阅读器里显示的差几个钟头」 |
 | `PT16` | 图片描边由「恒补一条 `a:ln/noFill`」改为设过才写（与 `p:sp`、文本框同口径，显式 `BorderStyle.None` 照写），读端 `ReadPicture` 补调 `ReadFill` 与 `ReadOutline`，两条声明不再一趟往返就丢。没设过描边的图片产物少掉那条恒补的 `a:ln`（变化本身就是修复），设过底色或描边的图片其声明现在能活过第二次保存；教程与包说明的实测字节数按当前代码刷新 | `src/Wisdom.Ppt/README.md` 形状表 PictureShape 一行补口径、新增「图片的底色与描边」一段、「读取覆盖」补一句；`docs/Wisdom.Ppt.Tutorial.md` 第 4 步补一段、常见问题补「图片的底色或描边存一次盘就没了」，并把 12 步实测字节数整批刷新 |
 
@@ -731,8 +731,8 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 夹具走内存流，`a:rPr` 直接从 zip 部件里按文档顺序取（`a:endParaRPr` 不在 `a:r` 下，天然排除）：三条 run 分别只设粗体、只设 22 磅、只设「宋体」，断言第一份既无 `sz` 也无 `a:latin`/`a:ea`/`a:solidFill`，后两份各只写自己那一项、不许臆造另一项；再 `PptxReader.Load` 回读并二次写出，验证读端没在文件里见到的属性不会被当成显式设过——模型侧回读断言 `Bold`、`FontSize=22`、`FontFamily=宋体` 三项仍在，省下来的属性按模型默认值读回，不是丢失。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - `PT3` 结构档（`f9fc99a` + `04ff01b`）：目标行为「写端不伪造模型未表达的意图」（`PT3` 目标 2 的表头一档）落地为四件小事——声明式表头判据、`bandRow` 下线、单元格填充可缺省、`firstRow` 有读回的路。
-  - 旧 `HasHeaderRow(rows)` 循环查完显式表头后 `return rows.Count > 0`，等于宣布「只要非空，首行就是表头」；`IsHeaderRowAt` 又把这个条件逐格套用，于是两行数据表出门自带主题 accent1 底色 + 加粗白字。新判据 `HasDeclaredHeader(table, rows)` 只认模型里真说过的两句话：某行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`。`IsHeaderRowAt` 的「显式行优先，否则首行」不变，但它现在只在门控通过后才可达——门内不再有猜测。
-  - `bandRow` 直接不写而不是补字段：统一模型里没有带状行这一项，恒写 `bandRow="1"` 是替调用者做样式决定；把它建模属 Phase 5 的模型扩展（与 `PT3` 的超链接、组合、`rowSpan` 同批排期）。这次先让写端闭嘴。
+  - 旧 `HasHeaderRow(rows)` 循环查完显式表头后 `return rows.Count > 0`，等于宣布「只要非空，首行就是表头」；`IsHeaderRowAt` 又把这条件逐格套用，于是两行数据表出门自带主题 accent1 底色 + 加粗白字。新判据 `HasDeclaredHeader(table, rows)` 只认模型里真说过的两句话：某行 `TableRow.IsHeader`，或给过 `TableShape.HeaderColor`。`IsHeaderRowAt` 的「显式行优先，否则首行」不变，但它现在只在门控通过后才可达——门内不再有猜测。
+  - `bandRow` 直接不写而不是补字段：统一模型里没有带状行这一项，恒写 `bandRow="1"` 是替调用者做样式决定，把它建模属 Phase 5 的模型扩展（与 `PT3` 的超链接、组合、`rowSpan` 同批排期）。这次先让写端闭嘴。
   - `a:tcPr` 的填充从「没底色就写 `a:noFill`」改为「没底色就不写」：`a:noFill` 是显式断言「这格不许有底色」，`tableStyleId` 本来要给条纹与整表填充被逐格堵死，这正是 §PT3 里「未设置」与「显式无填充」必须分开的同一件事。同一理由管到补齐用的空格（`placed < gridCols` 那一段）：它在表头行借表头色，免得一条表头被补位格截成两截；在数据行什么都不写。
   - 读端这一次只补 `firstRow` 一条：`a:tblPr@firstRow` 是 `TableRow.IsHeader` 唯一能回来的路（读端从不解析 `a:tableStyles`），不读它，声明过的表头在第二次保存被整段抹平——写端不再猜测之后，这条读回路径就成了保真的一部分，不是可选优化。`lnSpc`/`wrap`/`baseline`/`rowSpan` 与主题 accent 的读端补齐仍留在 Phase 5。
   - 修复前失败原文（`net8.0` 与 `net461` 同一条）：
@@ -744,7 +744,7 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 断言分正反两面：未声明的那张既不得出现 `firstRow`/`bandRow`，首格也既无 `a:solidFill` 也无 `a:noFill`，运行不带 `b="1"`；设了 `HeaderColor` 的那张必须写得出 `firstRow="1"`、`1F3A5F` 底色与加粗表头——把「不伪造」做成「该写的还写得出」的反证，避免修复退化成整段不写样式。再加一条往返：`PptxReader.Load` 后声明过的首行 `IsHeader` 仍在，未声明的仍是普通行。夹具继续走内存流，`a:tbl` 从 zip 部件按文档顺序取。
   - `§9` 单独补一行（原先与 `PT1`/`PT2` 合并一行）：输出形状变了，`tableStyleId` 的话头重新生效。
-  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`PptMarkdownTests` 的表格往返断言（`HeaderColor` + 三行，回读 3 行、单元格文本 `"华东"`）与 Word 侧共用表格夹具的套件全绿，说明声明过表头的常用写法输出不变。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`；`PptMarkdownTests` 与 `Batch4PptTests` 的表格往返断言（`HeaderColor` + 三行，回读 3 行、单元格文本 `"华东"`）全绿，说明声明过表头的常用写法输出不变。
   - 同批目标 2 还剩两项的收口：`p:style` 未解析出的填充与描边一律落成 `a:noFill`（`PptxWriter.cs:757`、`:769`）已由 `6dce2b6` 落地为「未设置就不写、显式 `BorderStyle.None` 才写空描边」；段落无标记仍恒写 `pPr` 与 `buNone` 一档见下一条。
 - `PT3` 结构档·项目符号（`19cee6b` + `adb0f30`）：目标 2 的第三档——`a:buNone` 不再占位，全段无属性的 `a:pPr` 随之省略。
   - `CreateParagraphProperties` 结尾两行是 `pPr.Add(CreateBullet(paragraph.ListMarker)); any = true;`，而 `CreateBullet` 对空标记返回 `a:buNone`：任何段落都带 `pPr`，任何段落都带一条「关掉本层符号」。`buNone` 不是留白而是显式指令，本库自建的母版与版式从不定义符号所以自家产物看不出问题，一旦 `PptxReader.Load` 别人的稿子再 `Write` 回去，母版与版式里定义好的项目符号被逐段压掉——这与 `a:tcPr` 那档「未设置写成显式无填充」是同一个病。
@@ -810,6 +810,55 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
 
   - 夹具故意把「无线」与「有线」混在一张表里：`Borders = TableBorders.None()` 之后只把 `Top` 设回细黑线。断言首行 `lnT` 仍是 `000000`（证明没把「有线」那一档一起修没），其余三条边一律是 `<a:noFill/>`。`EdgeHex` 这个助手把缺失的边、无填充的边与没颜色的边写成不同占位串，失败消息直接说清文件里是什么。
   - 字节口径：只有设过 `TableBorders.None()` 或某方向 `BorderStyle.None` 的稿子会变，那正是本条要修的差别；默认六向细实线的表与形状描边输出不动。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
+  - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。
+  - 两个语义要点值得记下：`a:noFill` 必须读成 `BorderStyle.None` 而不是 null——null 在模型里是「这条边没说过」，会被表级默认线填成一条实线，正好把 `PT13` 修掉的那件事反着做一遍；`algn`、逐格 `marT`/`marB`/`marR` 不建模，读侧不取，写出仍是固定值，这条留在文档的边界句里。
+  - 修复前失败原文（`net8.0`，`net461` 同一条）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the loaded table kept no cell borders: row 0 cell 0 has Borders=<null>
+       at Wisdom.Office.Tests.Program.RunTableCellBordersComeBackTest() ... RemediationPptPhaseFourTests.cs:line 677
+    ```
+
+  - 夹具是两张表同页：一张六向各异（外圈 3 磅四色、内部 1 磅灰/紫、`InsideVertical` 给双线），一张 `TableBorders.None()` 只留 `Top` 细线。断言分三层——载入后逐格四边的颜色与线型回到声明值（含双线 `Double` 与 `None`）、末行末列的 ring 判定边界、最后把载入的稿子再写出一次，逐格四条边的 `w` + 颜色签名必须与第一次逐字相同。最后一层才是「往返」的真正断言：只测读回来的对象等于声明，测不出写出侧会不会另取一份默认值。
+  - 字节口径：本库新建稿第二次保存逐边不变（测试直接比对两次写出的边线签名）；变化只发生在「载入别人的表格再存盘」这一类稿子上，而那正是本条要修的丢失。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE12` ODT 页码与总页数域（`fbd2c6e` 取证 + `f5bbd98` 修复）：`OdtWriter` 认页码用的是 `Instruction.IndexOf("PAGE")`，而 `NUMPAGES` 里正含 `PAGE` 四个字母——`第 X 页 共 N 页` 这份最常见的页脚写成 ODT 就成了两个当前页码。改成整词判定：`PageFieldTokens` 把指令按字母成词切出并大写，`NUMPAGES`/`PAGES` 先认走写 `text:page-count`，剩下整词 `PAGE` 写 `text:page-number`；`OdtReader` 补 `text:page-count` → `NUMPAGES`。
+  - 修复前失败原文：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: NUMPAGES wrote no text:page-count, so the total is drawn as a page number: ...<text:page-number text:select-page="current"/>...<text:page-number text:select-page="current"/>...
+    at Wisdom.Office.Tests.Program.RunOdtPageCountFieldTest() ... RemediationWordPhaseFourTests.cs:line 397
+    ```
+
+  - 只有 ODT 这一路塌：DOCX / RTF / HTML 三个写出器都把 `FieldRun.Instruction` 原样带出去，`FieldRun` 本来就存着指令，所以本轮不动模型；测试用同一份稿子的 DOCX 做对照，断言它读回 PAGE 与 NUMPAGES 两条指令，把「模型没丢」和「ODT 写错了」分开。
+  - 顺手记下的边界：ODT 只认这两个指令，其它指令（`SECTIONPAGES`、`DATE` 之类）写出的是域的显示文本而不是指令本身，载回后不再是一个域；`OdtReader` 有 `text:date`/`text:time` 分支而 `OdtWriter` 不产它们，这条读写不对称留给后续条目。
+  - 字节口径：只用 `PAGE` 的稿子输出不变（那一条元素的文本与属性都没动），差别只在同时出现总页数的 ODT。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE13` RTF 表格边框颜色（`3d300a4` 取证 + `441479e` 修复）：`CollectBorderColors` 把六个方向的 `BorderLine.Color` 都 `AddColor` 进了 `\colortbl`，可 `AppendBorder` 只写线型与 `\brdrw`，全文不出现 `\brdrcf`；读端 `ApplyPendingBorder` 又固定 `new BorderLine(..., OfficeColor.Black)`。颜色因此在 RTF 这一路单向丢失——登记了却没人引用，读了却一律是黑。
+  - 修复前失败原文：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the border colour was registered in \colortbl but never named by the border itself: \clbrdrt\brdrs\brdrw40\clbrdrb\brdrs\brdrw10\clbrdrl\brdrdash\brdrw30\clbrdrr\brdrs\brdrw10\cellx2400 \clvertalt\clbrdrt\brdrs\brdrw10\clbrdrb\brdrs\brdrw10\clb
+    at Wisdom.Office.Tests.Program.RunRtfTableBorderColorSurvivesTest() ... RemediationWordPhaseFourTests.cs:line 444
+    ```
+
+  - 写端 `AppendBorder` 多收一个 `WriterState`，索引复用 `AddColor` 的去重结果；纯黑不写 `\brdrcf`——RTF 的默认边色就是自动黑，给每一条边都补一句会让所有默认表格的 RTF 产物字节整体变化，而这条改动并不改变任何可观测行为。
+  - 读端新增 `_borderColorIndex`，四条 `clbrdr*` 各自把它复位（否则上一条边的颜色会渗到下一条），`brdrcf` 落值后立即 `ApplyPendingBorder`；回色走既有的 `GetColor`，缺失或越界仍是自动色。
+  - 线型与线宽本来就往返，测试把这两项一起钉住，防止改动带坏；另有一条控制断言默认全黑表格的 RTF 不含 `\brdrcf`。
+  - 顺带记下的边界：RTF 没有表级边框元素，读回的权威在逐格那一份，`Table.Borders` 的六向不回（`RtfReader.cs:1430` 建树时先给 `TableBorders.None()`）。这与 PPT 侧 `PT14` 的结论同形，文档已按同一口径写。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+- `WE14` 幽灵 `w:tblHeader`（`002f308` 取证 + `41d3172` 修复）：`Table.RepeatHeaderRow` 是模型字段，但只有 DOCX 部件读写它（写端 `DocxWriter.cs:1864` 的 `row.IsHeader || (r == 0 && table.RepeatHeaderRow)`，读端 `DocxPartReader.cs:842` 由首行推导）；HTML / RTF / ODT 三个读端建表后从不回这个字段，于是留着构造默认的 `true`，转一跳再存 DOCX 就给第一行补上一条 Word 会真的照行的 `w:tblHeader`。
+  - 修复前失败原文（三跳里最先失败的是 HTML 这一跳，DOCX 直进直出那条控制当时已经为零）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: html to docx gained a phantom w:tblHeader on a table with no header row at all
+    at Wisdom.Office.Tests.Program.RunHeaderRepeatFlagSurvivesFormatHopsTest() ... RemediationWordPhaseFourTests.cs:line 503
+    ```
+
+  - 落点选在三个读端而不是写出端：写出端那条 `r == 0 && RepeatHeaderRow` 是 DOCX 自己的表达力（Word 的 `tblHeader` 本来就挂在行上，模型却把它拆成两个字段），把它削掉会让「只设了 `RepeatHeaderRow`、没设 `IsHeader`」的调用方失去跨页重复。读端改成与 DOCX 同一规则「由首行 `IsHeader` 推导」，既补上声明的通道（`\trhdr`、`<thead>`、`table:table-header-rows` 三种格式都认表头行），也不再凭空造声明。
+  - 字节口径：DOCX 直进直出不变；只有首行不是表头的表格在跨格式转档后再存 DOCX 时少掉那条幽灵标记，声明过表头的表格一字节不动。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
 - `PD23` 继承来的 `/Resources` 被就地改写（`21e9f30` 取证 + `96e54e0` 修复）：`SetPageResource` 在页面没有自带 `/Resources` 时把沿继承链取到的那一份实例钉在本页字典上再落笔，而那份实例同时挂在 `/Pages` 与每个兄弟页上；`EnsureFlatPageTree` 拍平页面树时 `page.Set("Resources", node.Resources)` 留下的是同一个别名，此后无论从哪条路登记都在改公共件。
   - 修复前失败原文（三跳断言里最先倒下的是「本页读回自己登记的那一枚」）：
@@ -908,7 +957,6 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 返回一律 `Kind=Unspecified` 的本地墙上时间，与写出端「本地墙上时间配本地偏移」同一币种；`FormatPdfDate` 只对 `Kind=Utc` 做折算，`Unspecified`/`Local` 按调用方给的墙上时间原样配本地偏移。
   - 字节口径：自产稿不变——写的是本地墙上时间配本地偏移，读回再写出还是同一串数字（数字 − 本地偏移 + 本地偏移 = 数字）。变化只发生在带 `Z` 或异国偏移的第三方稿（载入再存盘不再被搬走时刻），以及 `Kind=Utc` 的入参（那处原本就记错了时刻）。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
-
 - `PT16` 图片的底色与描边：写端恒补「不要线」＋读端整条不看（`cd45868` 取证 + `503bfda` 写端 + `c4e5577` 取证 + `9307554` 读端）：`WritePicture` 走的是 `CreateLine` 而不是 `CreateOptionalLine`，`ReadPicture` 两条 `p:sp` 那条路都有的读取一行没有。
   - 修复前失败原文（`net8.0`，写端与读端两条）：
     ```text
@@ -925,52 +973,202 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
 
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
-- `PT14` 表格边线读回（`9cbc757` + `a96a0e1`）：写出侧逐格写四条边，读侧从不解析，表格边框只出不进。
-  - 这一条是 `PT11`/`PT12` 两批各自留下的那句「要说边界」：那两批只把写端修对了，读端仍写着「不读入」（`PptxReader.cs` 的旧注释自己点名 `a:lnL`/`lnR`/`lnT`/`lnB`）。差别不在自家稿子——新建的表在内存里带着 `Table.Borders`，存几次都按六向落位——在载入：`PptxReader.Load` 出来的表 `TableCell.Borders` 全是 null，`Table.Borders` 是构造器默认的六向细黑线，于是别人的外圈 3 磅四色 + 内部 1 磅淡线，再存一次就是一张均匀黑格网。同库 Word 侧 `DocxPartReader.cs:856-870` 的 `ReadCellBorders` 早就逐边解析、四条全缺才返回 null，本次按同一口径补齐 PPT 读端（`ReadCellBorders` + `ReadCellEdge`）。
-  - 两个语义要点值得记下：`a:noFill` 必须读成 `BorderStyle.None` 而不是 null——null 在模型里是「这条边没说过」，会被表级默认线填成一条实线，正好把 `PT13` 修掉的那件事反着做一遍；`algn`、逐格 `marT`/`marB`/`marR` 不建模，读侧不取，写出仍是固定值，这条留在文档的边界句里。
+
+### 11.6 续修记录（2026-11-04，`PT7` / `WE8` / `WE9`）
+
+三条都不是新条目，是本集 §5、§6 里早就登记、但到这一轮才落地的。
+
+- `PT7`（零尺寸几何被判「读不到」）：目标行为「允许 0 尺寸（负值才拒绝），区分『读不到』与『读到 0』」落地在 `PptxReader.ReadBoxFromTransform` 一处。旧代码先 `ParseLong(..., 0)` 再看 `cx <= 0 || cy <= 0`，于是「属性缺失」与「属性在、值是 0」被压成同一个结论；现在先判 `cx`/`cy` 两个属性在不在，缺失才回落继承/默认几何，0 原样保留，只有负值仍判坏几何。写端不需要改：它一直照原样写 `cy="0"`，`Slide.AddShape(AutoShapeKind.Line, …, height: 0)` 就是一条水平分隔线。
   - 修复前失败原文（`net8.0`，`net461` 同一条）：
 
     ```text
-    Unhandled exception. System.InvalidOperationException: Test failed: the loaded table kept no cell borders: row 0 cell 0 has Borders=<null>
-       at Wisdom.Office.Tests.Program.RunTableCellBordersComeBackTest() ... RemediationPptPhaseFourTests.cs:line 677
+    Unhandled exception. System.InvalidOperationException: Test failed: a zero-height separator was inflated to 313.2 pt on the way back in
+       at Wisdom.Office.Tests.Program.RunZeroHeightSeparatorSurvivesTest() ... RemediationPptPhaseFourTests.cs:line 238
     ```
 
-  - 夹具是两张表同页：一张六向各异（外圈 3 磅四色、内部 1 磅灰/紫、`InsideVertical` 给双线），一张 `TableBorders.None()` 只留 `Top` 细线。断言分三层——载入后逐格四边的颜色与线型回到声明值（含双线 `Double` 与 `None`）、末行末列的 ring 判定边界、最后把载入的稿子再写出一次，逐格四条边的 `w` + 颜色签名必须与第一次逐字相同。最后一层才是「往返」的真正断言：只测读回来的对象等于声明，测不出写出侧会不会另取一份默认值。
-  - 字节口径：本库新建稿第二次保存逐边不变（测试直接比对两次写出的边线签名）；变化只发生在「载入别人的表格再存盘」这一类稿子上，而那正是本条要修的丢失。
-  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
-- `WE12` ODT 页码与总页数域（`fbd2c6e` 取证 + `f5bbd98` 修复）：`OdtWriter` 认页码用的是 `Instruction.IndexOf("PAGE")`，而 `NUMPAGES` 里正含 `PAGE` 四个字母——`第 X 页 共 N 页` 这份最常见的页脚写成 ODT 就成了两个当前页码。改成整词判定：`PageFieldTokens` 把指令按字母成词切出并大写，`NUMPAGES`/`PAGES` 先认走写 `text:page-count`，剩下整词 `PAGE` 写 `text:page-number`；`OdtReader` 补 `text:page-count` → `NUMPAGES`。
+  - 313.2 pt 就是 `DefaultBox(null)` 按 540 pt 版面给的 `0.58 × 540`：一根细线读回来铺满半个版面，与条目描述一致。断言两头都钉：写出字节里形状自己的 `a:ext@cy` 必须是 `"0"`（辅助方法跳过 `p:grpSpPr` 上那圈整页尺寸的组变换，只取挂在 `spPr` 下、属于形状自身的 `a:xfrm`），读回后高度仍是 0 且宽度 700 pt 不丢。
+  - 产出字节不变：本例修复前写出的文件本来就是对的，错的是读回；只有「真实文件里 `cy="0"` 的形状」读回结果变化，而那是从「变成一个矩形」变成「保持一条线」。
+- `WE8`（ODT 绕过 `PackageArchive`）：`OdtReader.Load(Stream)` 的两个分支改用 `PackageArchive.OpenForRead`，与 DOCX 的四个入口口径统一。**无自动断言**，原因照 `§11` 最后一条：要复现的正是 .NET Framework 惰性解析中央目录、把非法条目名报成 `ArgumentException` 这一时机差，夹具需要在 zip 里放一个框架认得出、.NET 那边也认得出「非法」的条目名，且必须在两个目标上分别验证同一个类型；这一轮没能造出稳定夹具，只做了代码对齐（`OpenForRead` 对合法包是纯粹的「提前枚举一次」，行为不变，全部存量 ODT 用例照常绿）。
+- `WE9`（单张超限图片毁掉整篇 ODT）：目标行为「改为跳过该图，总量保护交给 `_totalBytes` 预算」落地为 `PartReader.ReadBinaryImage` / `ReadImagePart` 的两处 `throw` 改 `return null`，与 `HtmlReader`「丢图不丢文档」一致。没有建告警通道，理由与 `PD9` 那条同一批：`src/` 无 `InternalsVisibleTo`，告警集合要么测不到、要么是新增公共契约，统一通道留给 Word 那一批一起定形状；这里丢的是「一张图」，不是整篇，静默跳过与 HTML 路径同口径。
   - 修复前失败原文：
 
     ```text
-    Unhandled exception. System.InvalidOperationException: Test failed: NUMPAGES wrote no text:page-count, so the total is drawn as a page number: ...<text:page-number text:select-page="current"/>...<text:page-number text:select-page="current"/>...
-    at Wisdom.Office.Tests.Program.RunOdtPageCountFieldTest() ... RemediationWordPhaseFourTests.cs:line 397
+    Unhandled exception. System.IO.InvalidDataException: ODT 内嵌图片超过安全上限。
     ```
 
-  - 只有 ODT 这一路塌：DOCX / RTF / HTML 三个写出器都把 `FieldRun.Instruction` 原样带出去，`FieldRun` 本来就存着指令，所以本轮不动模型；测试用同一份稿子的 DOCX 做对照，断言它读回 PAGE 与 NUMPAGES 两条指令，把「模型没丢」和「ODT 写错了」分开。
-  - 顺手记下的边界：ODT 只认这两个指令，其它指令（`SECTIONPAGES`、`DATE` 之类）写出的是域的显示文本而不是指令本身，载回后不再是一个域；`OdtReader` 有 `text:date`/`text:time` 分支而 `OdtWriter` 不产它们，这条读写不对称留给后续条目。
-  - 字节口径：只用 `PAGE` 的稿子输出不变（那一条元素的文本与属性都没动），差别只在同时出现总页数的 ODT。
-  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
-- `WE13` RTF 表格边框颜色（`3d300a4` 取证 + `441479e` 修复）：`CollectBorderColors` 把六个方向的 `BorderLine.Color` 都 `AddColor` 进了 `\colortbl`，可 `AppendBorder` 只写线型与 `\brdrw`，全文不出现 `\brdrcf`；读端 `ApplyPendingBorder` 又固定 `new BorderLine(..., OfficeColor.Black)`。颜色因此在 RTF 这一路单向丢失——登记了却没人引用，读了却一律是黑。
+  - 夹具是 `BuildOdtPackageWithImage`：正文一段 + 一个引用 `Pictures/*.gif` 的 `draw:frame`（按 ODF 结构嵌在 `text:p` 里，第一版写在 `text:p` 外面，控制断言当场红——那时红的是夹具不是本条）。超限那一份按 64 KB 块流式写入 64 MB + 64 字节，夹具自身不占第二份大缓冲。控制断言用同结构的 8×6 GIF：正文与图片都必须读回，确保修复没有把正常图片一起跳过。
+  - 产出不变：小于上限的图片走的是同一条路，只有超 64 MB 的那一张从「整篇失败」变成「这一张不在模型里」。
+- `PT3` 的收尾说明（与 §11.5 同一件事的交接面）：本轮接手时 `PptxWriter.cs` 已改成调用 `HasDeclaredHeader`，但该方法还没落地，整棵树 `CS0103` 编不过；补上实现并删掉已被取代的死方法 `HasHeaderRow` 之后，`f9fc99a` 的红测转绿，随后由并行批次连同写端改动一起入库为 `04ff01b`。
+- Markdown 审计结论（`§8` 原本把它列为未审）：这一轮只做静态审计，未改代码。已核的防线——行内解析深度 `MaxInlineDepth = 64`、内层强调配对搜索 `MaxDelimiterScanDepth = 32`（防平方级）、链接定义 `MaxLinkDefinitions` 与 `MaxDefinitionLabelChars`、表格 `MaxTableColumns`/`MaxTableCells`、引用块 `MaxQuoteDepth`、文档级图片字节 `MaxDocumentImageBytes` 与单图 `MaxImages`/`MaxImageBytes`、`LoadFile` 的 64 MB 源文件上限；HTML 出口的 `href`/`src` 走 `Escape` 并只放行相对地址、`#锚点` 与 `http/https/mailto/ftp/ftps/tel`；回写侧 `EscapeText` 对反斜杠、反引号、`*`、`_`、`[]`、类标签的 `<>` 与表格内的 `|` 逐字符转义。**未发现需要改代码的缺陷**，因此本轮没有为 Markdown 立条目；它的真正缺口是「不是完整 CommonMark/GFM」（脚注、HTML 块容器），那是能力边界而非缺陷，已写在 `README.md` 已知限制里。
+
+### 11.7 续修记录（2026-11-04，`PD19` / `PD20`）
+
+- `PD20`（平铺水印的退化步长）：目标行为「步长设下限并在 int 化前夹紧」落地为 `DrawTiled` 里的两件事。其一，先按页面面积与 `MaxTileDraws = 600` 求出预算步长 `sqrt(rangeU × rangeV / 600)`，请求的步长比它更小时抬到它——只有「整页要画超过 600 格」的请求才会被抬，正常间距逐字节不变。其二，格序号经新增的 `TileIndex` 先夹在 ±4096 内再转 int，避免比值越界后 `double → int` 饱和成 `int.MinValue`、所有 tile 叠到同一坐标。
+  - 复现条件比条目写的更窄一处：`WatermarkOptions` 的默认 `TileSpacingX/Y` 是 60/40 磅，只要间距不为 0，步长就有兜底，退化根本走不到判据上。夹具因此显式把两个间距归零，块尺寸用 `FontSize = 0.01` 磅（约 0.04 × 0.011 磅）。第一版没归零间距，红测在「禁用步长下限」的树上照样绿，是假绿。
+  - 修复前失败原文（人为关掉步长下限后）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a 0.01 pt block collapsed the tiling into a corner: 600 tiles, furthest at 33.6 x -0.0 (page is 595 x 842)
+    ```
+
+  - 断言取「最远那个 tile 的 `cm` 平移量」而不是条数：600 格的预算在修复前后都会被花光，区别只在它们铺在哪；条数断言测不到本条。平铺表单里的 `cm` 矩阵在 `Angle = 0` 时固定是 `1 0 0 1 x y cm`，直接正则取平移量即可，不依赖提取链。
+  - 产出字节只在「请求步长比预算更小」时变化：这类稿子过去本来就只画出前 600 格（挤在左下角），现在改为均匀铺开覆盖整页；请求步长本来就在预算内的水印一个字节都不变，`RunWatermarkTextTile` 的 `>= 8` 次重复断言照旧为绿。
+- `PD19`（`FontResolver` 锁外读缓存）：目标行为「读入锁或改 `ConcurrentDictionary`」取前半句——`_fileBytes` 的 `TryGetValue` 移进 `lock (_sync)`，文件 I/O 仍留在锁外，与同文件 `GetFileBytes` 的写法一致。**无自动断言**：要复现的是「另一个线程正在写条目时读到扩容中的 `Dictionary`」，线程时序不可确定，稳定复现需要注入调度器；这一轮只做代码对齐。
+
+### 11.8 续修记录（2026-11-04，`WE11`）
+
+- `WE11`（RTF 非 BMP 码元越界）：目标行为「改代理对或多字节通道」取前者。RTF 的 `\uN` 只接受**有符号** 16 位，码元超过 32767 必须写成 `N - 65536`；旧实现 `((int)value)` 把 emoji 的高位代理写成 `\u55357`，超出规范范围，严格解析器会读错或拒收。读端 `RtfReader` 本来就按「负值加 65536」还原，所以这条只改输出字节，本库自身往返行为不变——断言因此把两侧都钉住：既不许出现 `\u55357`，也必须出现 `\u-10179` 与 `\u-8704`，并且 `😀` 能在往返后原样读回。
   - 修复前失败原文：
 
     ```text
-    Unhandled exception. System.InvalidOperationException: Test failed: the border colour was registered in \colortbl but never named by the border itself: \clbrdrt\brdrs\brdrw40\clbrdrb\brdrs\brdrw10\clbrdrl\brdrdash\brdrw30\clbrdrr\brdrs\brdrw10\cellx2400 \clvertalt\clbrdrt\brdrs\brdrw10\clbrdrb\brdrs\brdrw10\clb
-    at Wisdom.Office.Tests.Program.RunRtfTableBorderColorSurvivesTest() ... RemediationWordPhaseFourTests.cs:line 444
+    Unhandled exception. System.InvalidOperationException: Test failed: a surrogate code unit was written as the positive 55357, outside RTF's signed 16-bit range
     ```
+  - 产出字节只在含非 BMP 字符（emoji 等增补平面字符）的 RTF 里变化；纯 BMP 文本一个字节都不变，存量 RTF 用例全绿。
 
-  - 写端 `AppendBorder` 多收一个 `WriterState`，索引复用 `AddColor` 的去重结果；纯黑不写 `\brdrcf`——RTF 的默认边色就是自动黑，给每一条边都补一句会让所有默认表格的 RTF 产物字节整体变化，而这条改动并不改变任何可观测行为。
-  - 读端新增 `_borderColorIndex`，四条 `clbrdr*` 各自把它复位（否则上一条边的颜色会渗到下一条），`brdrcf` 落值后立即 `ApplyPendingBorder`；回色走既有的 `GetColor`，缺失或越界仍是自动色。
-  - 线型与线宽本来就往返，测试把这两项一起钉住，防止改动带坏；另有一条控制断言默认全黑表格的 RTF 不含 `\brdrcf`。
-  - 顺带记下的边界：RTF 没有表级边框元素，读回的权威在逐格那一份，`Table.Borders` 的六向不回（`RtfReader.cs:1430` 建树时先给 `TableBorders.None()`）。这与 PPT 侧 `PT14` 的结论同形，文档已按同一口径写。
-  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
-- `WE14` 幽灵 `w:tblHeader`（`002f308` 取证 + `41d3172` 修复）：`Table.RepeatHeaderRow` 是模型字段，但只有 DOCX 部件读写它（写端 `DocxWriter.cs:1864` 的 `row.IsHeader || (r == 0 && table.RepeatHeaderRow)`，读端 `DocxPartReader.cs:842` 由首行推导）；HTML / RTF / ODT 三个读端建表后从不回这个字段，于是留着构造默认的 `true`，转一跳再存 DOCX 就给第一行补上一条 Word 会真的照行的 `w:tblHeader`。
-  - 修复前失败原文（三跳里最先失败的是 HTML 这一跳，DOCX 直进直出那条控制当时已经为零）：
+### 11.9 续修记录（2026-11-04，`PT9`）
+
+- `PT9`（切换效果的方向、速度与点击语义被写死）：目标行为「扩充枚举并原值往返」。条目给的两个例子（上推还原成左推、「与上一动画同时」变成必须点击）来自同一条根因——模型里只有类别与时长，写端只好替调用者定 `dir="l"`、`spd="med"`、`advClick="1"`，读端也就无处可读。落地为三处加字段、两侧对称：
+  - `Slide.TransitionDirection`（`SlideTransitionDirection?`，`Left`/`Right`/`Up`/`Down` ↔ `dir` 的 `l`/`r`/`u`/`d`）、`Slide.TransitionSpeed`（`SlideTransitionSpeed?`，`Slow`/`Medium`/`Fast` ↔ `spd` 的 `slow`/`med`/`fast`）、`Slide.AdvanceOnClick`（`bool`，默认 `true` ↔ `advClick`）。
+  - 可空是刻意的：`null` 表示「调用者没说过」，写端这时回落到该效果的原生默认方向（推入向左、擦除与分割向下）与 `med` 速度，输出与旧稿逐字节一致；读端遇到未设置或无法识别的值也回 `null`，不猜。`AdvanceOnClick` 用 `bool` 而不是可空：缺省语义就是 `true`，构造函数里置真。
+  - 写端只在字段设过时才追加 `spd`（无时长分支）与 `advClick="0"`；带 `TransitionDuration` 的 `mc:AlternateContent` 路径原本恒写 `spd`/`advClick`，现在写模型值，未设置时仍是 `med`/`1`，存量断言（`[ppt-anim] delay/duration round-trip ok`）不受影响。
+  - 修复前失败原文（保留模型字段、只去掉读端三行赋值，模拟「读端不还原」）：
 
     ```text
-    Unhandled exception. System.InvalidOperationException: Test failed: html to docx gained a phantom w:tblHeader on a table with no header row at all
-    at Wisdom.Office.Tests.Program.RunHeaderRepeatFlagSurvivesFormatHopsTest() ... RemediationWordPhaseFourTests.cs:line 503
+    Unhandled exception. System.InvalidOperationException: Test failed: the direction did not read back: 
     ```
 
-  - 落点选在三个读端而不是写出端：写出端那条 `r == 0 && RepeatHeaderRow` 是 DOCX 自己的表达力（Word 的 `tblHeader` 本来就挂在行上，模型却把它拆成两个字段），把它削掉会让「只设了 `RepeatHeaderRow`、没设 `IsHeader`」的调用方失去跨页重复。读端改成与 DOCX 同一规则「由首行 `IsHeader` 推导」，既补上声明的通道（`\trhdr`、`<thead>`、`table:table-header-rows` 三种格式都认表头行），也不再凭空造声明。
-  - 字节口径：DOCX 直进直出不变；只有首行不是表头的表格在跨格式转档后再存 DOCX 时少掉那条幽灵标记，声明过表头的表格一字节不动。
-  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`。
+  - 断言分正反两面：设过方向/速度/自动换片的那一页必须写出 `dir="u"`、`spd="fast"`、`advClick="0"`、`advTm="2500"` 并全部读回；一个字段都没设的控制页必须仍是 `dir="l"`、不带 `spd`、不带 `advClick`——把「不伪造」与「该写的写得出」同时钉住。
+  - §9 的 BREAKING 面为零：只新增三个可选属性与两个枚举，未设置时输出字节不变。`docs/Wisdom.Ppt.Tutorial.md` 无需改（它讲的是 Fade + 时长的用法），`src/Wisdom.Ppt/README.md` 的切换段已补三个字段的写法与「没设过就不写」规则。
+
+### 11.10 续修记录（2026-11-04，`WE10`）
+
+- `WE10`（写侧对公开可空的模型字段直接解引用）：条目点到的三类字段（`TextRun.Format`、`TextRun.Text`、`Table.Borders`）全部兑现，且**四个写出器一起**兑现——这正是条目要的「同一份文档不该在 DOCX 上崩、在 HTML 上正常」。
+  - RTF：`state.AddColor(run.Format.Color)` 与 `field.Format.Color` 两行补判空（同函数里 `SelectFont` 早就按可空处理）；`WriteRunGroup` 把 `text` 归一成空串；`AppendCellBorderProperties` 里四个三元表达式解引用 `table.Borders`，改成先归一 `TableBorders tableBorders = table.Borders ?? new TableBorders();`。
+  - DOCX：`TextRun.Text` 的 `text.Text.Length` 改 `string.IsNullOrEmpty`；删除修订那一支同样改；`CreateRun` 入口 `text = text ?? string.Empty;`，把 `text.Replace(...)` 的解引用一并挡掉。
+  - HTML / ODT：同一处「表级边框兜底」的四个三元表达式各归一一次（这两个写出器原本也崩，见下面的第二段失败原文）。
+  - 修复前失败原文（同一份文档、四个写出器依次试；红测本身就是按 `Docx → Rtf → Html → Odt` 顺序推进的，所以下面两段是逐个修好后依次暴露的）：
+
+    ```text
+    Test failed: the Rtf writer failed on a null model field: NullReferenceException: Object reference not set to an instance of an object.
+    Test failed: the Html writer failed on a null model field: NullReferenceException: Object reference not set to an instance of an object.
+    ```
+
+  - 断言只要求「四个写出器都产出非空字节」，不看具体内容：本条要钉的是「不崩且口径一致」，内容正确性由各自的既有断言守着。夹具同时置空 `TextRun.Text`、`TextRun.Format` 与 `Table.Borders`，并把四个格式放在一个循环里跑，任何一支崩都会指名道姓地报出是哪个写出器。
+  - 产出字节：正常文档一个字节都不变（判空只在字段为 null 时才生效）；只有宿主真把字段置空时，结果从「部分写出器崩溃」变成「四个一致地输出空文本/无边框表格」。
+
+### 11.11 续修记录（2026-11-04，`E7`）
+
+- `E7`（先截断目标再写，失败即毁原文件）：第一集 §5 登记过的 P0 类条目，本集 §9 把它标成「先修 E7，其它崩溃项的红测才有意义」。这一轮把它连同**同一形态的全部九个入口**一起修掉，而不是只修条目点名的四处：
+  - 新增 `Wisdom.Office.Core.IO/AtomicFileWriter`（public static，`Write(path, Action<Stream>)`）：同目录建临时文件 → 写入并 `Flush` → `File.Replace`（目标已存在，同卷原子替换）或 `File.Move`（目标不存在）；失败时只删临时文件，目标一个字节都不动。临时文件放在目标同目录是必须的——跨卷的 `File.Replace`/`File.Move` 不是原子操作。
+  - 改造的九个入口：`DocxWriter.Write` / `WriteTemplate`、`WordFormatConverter.Save`、`XlsxWriter.Write`、`PptxWriter.Write` / `WriteTemplate`、`PdfRenderer.Render`、`PdfRenderer.RenderPresentation`、`OfficeFile.Save(path, format)`。它们原先都是同一句 `using (FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write))`，而参数校验发生在被调用的流重载**里面**，于是 `Write(null, path)` 先把用户文件截成 0 字节再抛 `ArgumentNullException`。
+  - 修复前失败原文（把 `XlsxWriter` 临时退回 `FileMode.Create` 取证）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a failed xlsx write left the original file with 0 byte(s) instead of the 13 it had
+    ```
+
+  - 断言三件事，逐个扩展名跑：目标文件写入前先放 13 字节哨兵；失败调用必须抛出已声明的 `ArgumentNullException`；之后目标字节逐字节不变，且目录里没有 `.<文件名>.*.tmp` 残骸。`docx`/`xlsx`/`pptx` 三个扩展名各跑一遍，PDF 与门面走的是同一个 `AtomicFileWriter`，行号级改动但未单独断言。
+  - 成功路径的行为变化：目标文件被替换而不是原地覆盖，因此**文件系统层面的 inode / 创建时间会变**，正在被其他进程独占打开的目标现在会以 `IOException` 失败而**不**破坏原文件（过去是先把内容清掉再失败）。这是期望的取舍，`README.md` 的「不可信输入优先」段落与新写入说明一致。
+  - 副产品：`File.Replace` 在目标存在时保留目标的权限位与备用数据流语义，`File.Move` 只在目标不存在时走，因此新建文件的权限按默认继承。
+
+### 11.12 续修记录（2026-11-05，`PT8`）
+
+- `PT8`（`SectionHeader` 版式永不归还）：目标行为「读端保留原始 `p:sldLayout@type` 与 `cSld@name`」取**只认章节页**这一半。章节过渡页只有一个标题占位符，与「仅标题页」形状逐项相同，`InferLayoutKind` 再怎么调都不可能分开这两者——这不是启发式不够聪明，是证据本来就不在形状里。
+  - 写端：`p:sldLayout` 现在带 `type`（`title`/`obj`/`secHead`/`twoColTx`/`picTx`/`tbl`/`blank`）。此前只写 `cSld@name`；PowerPoint 自产的模板普遍带 `type`，补上它对第三方消费者也是纯增益。
+  - 读端：`SlideReader` 构造时解析所用版式部件，`type="secHead"` 或 `cSld@name` 为 `Section Header` / `节标题` 时记下 `_declaredLayoutKind = SectionHeader`，`Read` 里 `slide.Layout = _declaredLayoutKind ?? InferLayoutKind(slide)`。**其余类别一律仍走推断**：版式声明有三十余种（`twoTxTwoObj`、`objOverTx` 等），与统一模型的七个类别不是一一映射，强行用声明覆盖推断会改掉既有且已写进文档的行为（手工加表格的那页被推断成 `TitleAndTable`）。
+  - 修复前失败原文（把 `Read` 里那一行退回 `InferLayoutKind` 取证）：
+
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: the section header slide came back as Title
+    ```
+
+  - 断言三面：章节页往返必须是 `SectionHeader`；`type="secHead"` 的版式部件恰好一个，且 `cSld@name` 仍是「节标题」；控制页（`TitleAndContent` 上手工 `AddTable`）必须**仍**推断成 `TitleAndTable`——这条钉的是「声明只对章节页生效」，防止修复顺手把推断整体废掉。
+  - 文档义务：`README.md` 与 `src/Wisdom.Ppt/README.md` 里「`SectionHeader` 会归成 `Title`」的说法已改写为「先看版式部件声明，其余按形状推断」。
+
+### 11.13 本轮收尾：已修清单与剩余条目现状（2026-11-05）
+
+这一轮从「测试工程编不过」开始，到双目标全绿结束。修掉的 11 条按提交顺序：
+
+| 编号 | 一句话 | 证据形态 |
+| --- | --- | --- |
+| `PT3` 表格结构档 | 没声明表头就不再伪造 `firstRow`/`bandRow`/逐格填充 | 红测 + 绿（并行批次入库 `04ff01b`） |
+| `PT7` | 零尺寸几何按真实尺寸读回，不再被换成默认大框 | 红/绿 |
+| `WE8` | ODT 打开入口并入 `PackageArchive`，与 DOCX 同口径 | 代码对齐，无断言（原因见 §11.6） |
+| `WE9` | ODT 单张超限图片跳过而不是废掉整篇 | 红/绿 |
+| `PD20` | 平铺水印步长按绘制预算抬升，退化输入不再缩成一角 | 红/绿 |
+| `PD19` | `FontResolver` 字体字节缓存读入锁 | 代码对齐，无断言（时序不可复现） |
+| `WE11` | RTF 非 BMP 码元改按有符号 16 位写出 | 红/绿 |
+| `PT9` | 切换方向/速度/点击语义成为模型字段并原值往返 | 红/绿 |
+| `WE10` | 四个 Word 写出器统一容忍可空模型字段 | 红/绿（逐个暴露） |
+| `E7` | 九个写出入口改为原子写入，失败不再毁原文件 | 红/绿 |
+| `PT8` | 章节过渡页版式经 `p:sldLayout@type` 原样往返 | 红/绿 |
+| `PT11` | 双线写 `a:ln@cmpd="dbl"`、点线写 `sysDot`，读端认 `cmpd` 也认历史 `prstDash val="dbl"` | 红/绿 |
+| `PT12` | 表格边框六向按单元格在网格中的位置落位，`TableCell.Borders` 逐边优先 | 红/绿 |
+| `PT13` | 表格边线 `BorderStyle.None` 写 `a:noFill`，不再反着补一条 `a:solidFill` | 红/绿 |
+| `PT14` | 表格逐格四条边线读回 `TableCell.Borders`，`a:noFill` 认成 `None`，边框不再只出不进 | 红/绿 |
+| `WE12` | ODT 页码域改整词判定，`NUMPAGES` 写 `text:page-count`，读端补回 NUMPAGES | 红/绿 |
+| `WE13` | RTF 表格边框写 `\brdrcf`、读端按颜色表回色，边框颜色不再只出不进 | 红/绿 |
+| `WE14` | HTML/RTF/ODT 读端按首行 `IsHeader` 回写 `RepeatHeaderRow`，转档不再冒幽灵 `w:tblHeader` | 红/绿 |
+| `PD23` | 页面登记资源前按页复制继承来的 `/Resources`（含分类组），兄弟页同名条目不再相互顶替 | 红/绿 |
+| `PD24` | 流字典认 `/Filter` 的缩写 `/F`（整数标志不误认），缩写过滤器的正文不再当成未过滤原字节 | 红/绿 |
+| `PD25` | 名称的 `#HH` 转义读写成对：读回按 UTF-8 攒字节（解不回原字节则退回逐字节），写端成对代理不再各降级成 `?` | 红/绿 |
+| `PD26` | 签名域在填写、批量填写与模型属性三条入口一律拒绝写入，`FillableFields` 不再把签名域递进可填清单 | 红/绿 |
+| `PD27` | 字段 `/DA` 沿父域走完仍为空时退回取 AcroForm 上的文档默认，生成外观不再一律黑字自动字号 | 红/绿 |
+| `PD28` | `/DA` 配色补认 CMYK 填充算子 `k`／`c`，按无 ICC 的减法混色换算成 RGB，分隔色与自定义色彩空间仍按黑色起排并写进「已知不支持」 | 红/绿 |
+| `PD29` | `/Info` 日期的时区标注读写成对：`Z` 与 `±hh'mm'` 参与换算，`Kind=Utc` 的值先折本地墙上时间再贴偏移，两份重复解析收进一处 | 红/绿 |
+| `PT15` | 教程与导读里「延迟只对第一个形状有效」与 `p:spid/@val` 的过期口径改写，逐形状延迟另加一条当前即通过的钉住测试 | 文档/绿 |
+
+当前工作区复核：`net8.0` 与 `net461` 均到末行 `All tests finished.`，构建 0 警告 0 错误。
+
+剩余四条**本轮刻意未做**，逐条复核结论与理由：
+
+| 编号 | 复核结论（2026-11-05） | 建议 |
+| --- | --- | --- |
+| `PT2` `p:timing` 树形状 | 仍在：`PptxWriter.CreateTiming` 继续写 `delay="indef"`、`dur="indef"`（规范词法是 `indefinite`），且同一个 `p:par` 下并列两个 `p:cTn`，`seq` 与根 `cTn` 平级 | 需要一次结构性重写；没有 PowerPoint 真机可验时，只能做结构断言，改错的代价高于不改，建议与真机验证同批 |
+| `WE7` 部件解析失败静默丢内容 | 仍在：`DocxXml` 的 `catch (XmlException) { return null; }` 未动，「部件缺失」与「部件坏了」仍不可区分 | 依赖「文档级告警与降级通道」，与 `PD9` 那次上抛路由一起设计 |
+| `PT3` 读端补齐 | 仍在：写端仍无 `rowSpan`/`vMerge`（全文件 grep 为空），`baseline`、`lnSpc`/`spcBef`/`spcAft`、主题 accent 同样未动；`wrap` 一档已由 `5f15d03` 补齐 | 属模型扩展（超链接、组合形状、旋转翻转），里程碑级 |
+| `PT10` `docProps/app.xml` 次序 | 未动 | 条目自己写着「不在打开校验关键路径，列为次要」，可与 `PT2` 同批 |
+
+`§8` 的未审缺口里，`src/Wisdom.Markdown` 已在本轮补审（结论见 §11.6），`src/Wisdom.Office.Core` 的 `Templates/TemplateEngine` 与 `Utilities` 仍未系统审计——那是下一轮该开的头，而不是继续在本集里加条目。
+
+### 11.14 收尾续修（2026-11-05，`PT2` / `PT10` / `WE7` / `PT3` 一部分 / Core 审计）
+
+这一轮把 §11.13 里标着「刻意未做」的四条全部落地，并补审了 `src/Wisdom.Office.Core` 的 `Templates`。
+
+- `PT2`（`p:timing` 树形状）：`CreateTiming` 重写为 `tnLst/par/cTn(nodeType="tmRoot")/childTnLst/seq/cTn(nodeType="mainSeq")/childTnLst/par/cTn(触发)/childTnLst/par/cTn(延迟)/childTnLst/par/cTn(效果)` 的形状，逐条对应条目点名的七处：
+  - 一个 `p:par` 里不再并列两个 `p:cTn`；每层都是 `par > cTn`，因为 `CT_TLTimeNodeList` 只接受 par/seq 这类时间节点，裸 `cTn` 不是合法子元素。
+  - `seq` 从「与根 `cTn` 平级」改为住在根 `cTn` 的 `childTnLst` 里。
+  - id 全树唯一（根 1、序列 2，其后每个形状占 5 个）。
+  - `indef` 一律改 `indefinite`；类别改由 `nodeType` 承载（`tmRoot`/`mainSeq`/`clickEffect`/`afterEffect`）。
+  - `p:set` 重写为 `cBhvr(cTn + tgtEl/p:spTgt@spid + attrNameLst)` 加 `p:to/p:strVal val="visible"`，不再把 `a:clrMapOvr` 塞进 `p:setTo`。
+  - 目标的规范写法是 `p:spTgt/@spid`；读端补了这条识别（旧形态 `p:spid/@val` 仍兼容）。
+  - 顺带修了 `presetId` → `presetID`（`CT_TLCommonTimeNodeData` 的属性名是后者，PowerPoint 也这样写），`Batch4PptTests` 的字符串断言同步改。
+  - 延迟单独占一个 cTn（PowerPoint 对「单击后延迟」正是这样写）；读端的延迟回溯从「父节点的父节点」两跳改成逐级向上检查每个 `cTn`，中间的 `par/childTnLst` 层不再让它跳过延迟节点。
+  - 修复前失败原文（把根节点改回 `type="tmRoot"` 取证）：
+
+    ```text
+    Test failed: the root cTn must carry nodeType="tmRoot": 
+    ```
+
+  - 断言是结构性的：树形状、id 唯一性、全树不出现 `indef`、`p:set` 的 `p:to/p:strVal` 与唯一 `p:attrName`，再加一条往返（类别/时长/延迟都读回）。**没有真机验证**——本集只做格式断言，PowerPoint 的实际接受度仍建议人工抽查一次。
+- `PT10`（`docProps/app.xml` 次序）：改成 `CT_Properties` 的序列（Company → Slides → Application → AppVersion）。选架构顺序而不是照抄 PowerPoint 的「Application 提前」，是因为后者本身不满足 sequence；本部件只承载统计信息，按架构写不掉任何能力。
+  - 修复前失败原文：
+
+    ```text
+    Test failed: docProps/app.xml is not in CT_Properties order (position 0): Application, Slides, Company, AppVersion
+    ```
+- `WE7`（部件解析失败静默丢内容）：新增 `OfficeDocument.Warnings`（`List<string>`，`private set`），`DocxPackage.GetXml` 在 `catch (XmlException)` 里记一条点名部件的告警，`DocxReader.ReadPackage` 把包级告警搬到文档上。部件缺失仍然不记——「本来没有」不是降级。这是 `§11.13` 说的「文档级告警与降级通道」的最小形状：只记 Word 这一侧已经确认会丢内容的路径，不提前替其它包定契约（`PD9` 仍走上抛）。
+  - 修复前失败原文（把 `_warnings.Add` 去掉取证）：
+
+    ```text
+    Test failed: expected exactly one downgrade notice for the corrupt header, got 0
+    ```
+- `PT3` 读端补齐（本轮做了一半，另一半仍是里程碑）：
+  - 已补：`a:rPr/@baseline` 现在由写端输出（上标 +30000、下标 -25000），读端本来就按它还原 `Superscript`/`Subscript`；`a:pPr` 的 `lnSpc`（`spcPct`，1/100000）与 `spcBef`/`spcAft`（`spcPts`，1/100）改由读端还原到 `LineSpacing`/`SpaceBefore`/`SpaceAfter`——这三个元素一直是「写端写、读端不读」。
+  - 已补（续）：`rowSpan`/`vMerge` 的写出——首格写 `rowSpan`，后续行按网格补 `vMerge="1"`（块首列）与 `hMerge="1"`（同块其余列），补齐用的空格也改按列游标插入；`p:sp` 不再没设填充/描边时补 `a:noFill` 与空的 `a:ln`，显式 `BorderStyle.None` 仍写成 `a:ln` + `a:noFill`。
+  - 未补：`wrap`、主题 accent、超链接与组合形状——它们要动模型或写端的关系表，按 `§11.13` 的排期留作独立条目。
+- Core 审计（`Templates/TemplateEngine`）：`TemplateEngine.Replace` 对 `IFormattable` 直接调 `ToString(format, culture)`，格式串来自模板、取值来自数据，一个坏格式（如 `{{when:'unclosed}}` 的未闭合引号）就抛 `FormatException` 穿出、整份报表全废。现在捕获 `FormatException` 并退回不带格式的默认转换，值仍然出现；空格式与正常格式的路径不变。`Utilities` 这一轮的结论是「未发现需要改代码的缺陷」：`Zlib`/`Adler32` 的预算与边界由 PDF/XLSX 的既有恶意输入用例覆盖，`OfficeXmlText`、`OfficePackageLimits`、`BinaryReaders`、`UnitConverter`（除 `ExcelSerialToDateTime` 里两分支同值的死代码）逐处读过，没有本条这种「一个坏输入毁整篇」的形态。`UnitConverter` 的死分支未改：改它只是删代码，不改变任何可观测行为，留给下一次顺手清理。
+
+验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误；新增标记行 `[remediation] core template formatting degradation ok`，`[remediation] ppt phase-four shapes and media ok` 覆盖本轮 PPT 断言。
+
+

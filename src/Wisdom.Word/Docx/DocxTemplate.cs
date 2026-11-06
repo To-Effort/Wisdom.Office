@@ -22,20 +22,23 @@ namespace Wisdom.Word
     /// </summary>
     public static class DocxTemplate
     {
+        /// <summary>标记匹配超时，防止畸形段落里的超长空白把模板填充拖成假死。Match timeout for the marker patterns; a malformed paragraph of very long whitespace must not hang the fill.</summary>
+        private static readonly TimeSpan MarkerTimeout = TimeSpan.FromSeconds(2);
+
         /// <summary>匹配 {{key}} 或 {{key:format}} 占位符（key 以 # 或 / 开头的循环标记除外）。Matches {{key}} or {{key:format}} placeholders, excluding loop markers whose key starts with # or /.</summary>
         private static readonly Regex TokenRegex = new Regex(
             @"\{\{\s*([^#/{}][^{}:]*?)\s*(?::\s*([^{}]+?))?\s*\}\}",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, MarkerTimeout);
 
         /// <summary>匹配 {{#each name}} 循环起始标记。Matches the opening {{#each name}} loop marker.</summary>
         private static readonly Regex LoopStartRegex = new Regex(
             @"\{\{\s*#each\s+([^{}]+?)\s*\}\}",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, MarkerTimeout);
 
         /// <summary>匹配 {{/each}} 循环结束标记。Matches the closing {{/each}} loop marker.</summary>
         private static readonly Regex LoopEndRegex = new Regex(
             @"\{\{\s*/each\s*\}\}",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, MarkerTimeout);
 
         /// <summary>段落内单个 w:t 文本节点在「合并文本」中的位置记录，用于跨运行替换。Records the position of one w:t text node inside a paragraph within its merged text, used to replace markers that span several runs.</summary>
         private sealed class TextNode

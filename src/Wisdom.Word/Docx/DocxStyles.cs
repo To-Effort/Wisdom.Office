@@ -44,6 +44,8 @@ namespace Wisdom.Word
         {
             /// <summary>起始序号（w:start），默认为 1。The starting number (w:start), 1 by default.</summary>
             public int Start = 1;
+            /// <summary>已发出的序号；0 表示本级还没走到，下一个就是 Start。The number already handed out; 0 means the level has not run yet, so the next one is Start.</summary>
+            public int Current;
             /// <summary>编号格式（w:numFmt/@w:val）：decimal、bullet、lowerLetter、upperRoman 等。The numbering format (w:numFmt/@w:val): decimal, bullet, lowerLetter, upperRoman, ...</summary>
             public string Format;
             /// <summary>编号文本模板（w:lvlText/@w:val），如 "%1."。The numbering text template (w:lvlText/@w:val), e.g. "%1.".</summary>
@@ -396,15 +398,17 @@ namespace Wisdom.Word
         }
 
         /// <summary>
-        /// 从段落属性 w:numPr 中提取编号引用（numId + ilvl）并生成对应的列表标记文本。
-        /// Extracts the numbering reference (numId plus ilvl) from the paragraph properties w:numPr and builds
-        /// the matching list marker text.
+        /// 取段落的编号引用（numId + ilvl）并生成对应的列表标记文本：先看段落自己的 w:numPr，
+        /// 再沿 w:pStyle 的样式继承链查找。
+        /// Builds the list marker text from a paragraph's numbering reference (numId plus ilvl): the paragraph's own
+        /// w:numPr first, then the w:pStyle inheritance chain.
         /// </summary>
         /// <param name="paragraphProperties">段落属性元素 w:pPr，可为 null。The w:pPr element, may be null.</param>
         /// <returns>标记文本（如 "• " 或 "1. "），非编号段落返回 null。The marker text (e.g. "• " or "1. "); null for paragraphs without numbering.</returns>
         public string GetListMarker(XElement paragraphProperties)
         {
             XElement numPr = Wml.Child(paragraphProperties, "numPr");
+            if (numPr == null) numPr = FindStyleNumbering(paragraphProperties);
             if (numPr == null) return null;
             int numId = Wml.GetInt(numPr, "numId", 0);
             int level = Wml.GetInt(numPr, "ilvl", 0);
@@ -412,10 +416,40 @@ namespace Wisdom.Word
         }
 
         /// <summary>
-        /// 按编号定义生成指定级别的标记文本：项目符号、字母/罗马数字或十进制数字，
-        /// 并替换 lvlText 模板中的 %n 占位符。
-        /// Builds the marker text of a numbering level: bullet, letter, Roman or decimal number, replacing the
-        /// %n placeholders of the lvlText template.
+        /// 段落自己没有 w:numPr 时，沿 w:pStyle 的样式继承链找编号引用：
+        /// Word 里挂到列表上的段落样式（标题多级编号、List Paragraph 等）把 numPr 写在样式里而不是段落里，
+        /// 只看段落直接属性会把整份列表读成无编号正文。取离段落最近的样式定义。
+        /// Resolves the numbering reference through the style chain when the paragraph carries no w:numPr of its
+        /// own: Word puts numPr on the paragraph style for list-bound styles (multilevel headings, List
+        /// Paragraph), so reading only the direct properties turns a whole list into un-numbered body text.
+        /// The style closest to the paragraph wins.
+        /// </summary>
+        /// <param name="paragraphProperties">段落属性元素 w:pPr，可为 null。The w:pPr element, may be null.</param>
+        /// <returns>找到的 w:numPr，没有则返回 null。The numbering reference found, or null.</returns>
+        private XElement FindStyleNumbering(XElement paragraphProperties)
+        {
+            XElement styleReference = Wml.Child(paragraphProperties, "pStyle");
+            if (styleReference == null) return null;
+            string styleId = Wml.AttributeValue(styleReference, "val");
+            if (string.IsNullOrEmpty(styleId)) return null;
+            List<DocxStyleInfo> chain = GetChain(styleId);
+            for (int i = chain.Count - 1; i >= 0; i--)
+            {
+                XElement properties = chain[i].ParagraphProperties;
+                if (properties == null) continue;
+                XElement candidate = Wml.Child(properties, "numPr");
+                if (candidate != null) return candidate;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 按编号定义生成指定级别的标记文本：项目符号、字母/罗马数字或十进制数字。
+        /// 每次调用都让本级计数器往前走一格并把更深的级别复位，因此三项有序列表读回来是 1.、2.、3.；
+        /// lvlText 里的每个 %n 占位都按各自级别的当前值替换。
+        /// Builds the marker text of a numbering level: bullet, letter, Roman or decimal number. Every call steps
+        /// this level forward and resets the deeper ones, so a three-item ordered list reads back as 1., 2., 3.;
+        /// each %n placeholder of lvlText is replaced with the current value of its own level.
         /// </summary>
         /// <param name="numId">编号序列 ID（w:num/@w:numId）。The numbering id (w:num/@w:numId).</param>
         /// <param name="level">缩进级别（ilvl，从 0 开始）。The indentation level (ilvl, zero-based).</param>
@@ -434,19 +468,74 @@ namespace Wisdom.Word
             if (format == "bullet") return marker.Length == 0 ? "\u2022" : marker;
             if (format == "none") return null;
 
-            string number;
-            if (format == "lowerLetter") number = ToLetter(numbering.Start, false);
-            else if (format == "upperLetter") number = ToLetter(numbering.Start, true);
-            else if (format == "lowerRoman") number = ToRoman(numbering.Start, false);
-            else if (format == "upperRoman") number = ToRoman(numbering.Start, true);
-            else number = numbering.Start.ToString(CultureInfo.InvariantCulture);
-
-            if (marker.IndexOf('%') >= 0)
+            // 过去只读 w:start，同一列表的每一格都返回起始号，三项列表读回来成了三个 "1."。
+            // Only w:start used to be read, so every item of one list returned the start value and a three-item
+            // list came back as three "1." markers.
+            numbering.Current = numbering.Current == 0 ? numbering.Start : numbering.Current + 1;
+            for (int deeper = level + 1; deeper <= 8; deeper++)
             {
-                int percent = marker.IndexOf('%');
-                return marker.Substring(0, percent) + number + marker.Substring(Math.Min(marker.Length, percent + 2));
+                NumberingLevel subordinate;
+                if (levels.TryGetValue(deeper, out subordinate)) subordinate.Current = 0;
             }
+
+            string number = FormatNumber(format, numbering.Current);
+            if (marker.IndexOf('%') >= 0) return ExpandLevelText(marker, levels, format, numbering);
             return number + ". ";
+        }
+
+        /// <summary>
+        /// 把 lvlText 模板中的每个 %n 占位替换成对应级别的当前序号。
+        /// Replaces every %n placeholder of the lvlText template with the current number of that level.
+        /// </summary>
+        /// <param name="template">lvlText 模板，如 "%1.%2"。The lvlText template, e.g. "%1.%2".</param>
+        /// <param name="levels">该编号序列的全部级别。All levels of this numbering sequence.</param>
+        /// <param name="format">本级编号格式，占位找不到级别时按它格式化。The format of the current level, used when a placeholder has no level of its own.</param>
+        /// <param name="current">本级定义。The definition of the current level.</param>
+        /// <returns>替换后的标记文本。The expanded marker text.</returns>
+        private static string ExpandLevelText(string template, Dictionary<int, NumberingLevel> levels, string format, NumberingLevel current)
+        {
+            System.Text.StringBuilder builder = new System.Text.StringBuilder();
+            for (int i = 0; i < template.Length; i++)
+
+            {
+                char c = template[i];
+                if (c == '%' && i + 1 < template.Length && template[i + 1] >= '1' && template[i + 1] <= '9')
+                {
+                    int index = template[i + 1] - '1';
+                    i++;
+                    NumberingLevel level;
+                    if (levels.TryGetValue(index, out level))
+                    {
+                        int value = level.Current == 0 ? level.Start : level.Current;
+                        builder.Append(FormatNumber(level.Format ?? format, value));
+                    }
+                    else
+                    {
+                        builder.Append(FormatNumber(format, current.Current == 0 ? current.Start : current.Current));
+                    }
+                    continue;
+                }
+                builder.Append(c);
+            }
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// 按编号格式把一个序号写成文本（十进制、字母、罗马数字或补零十进制）。
+        /// Writes one sequence number as text according to its numbering format (decimal, letter, Roman or
+        /// zero-padded decimal).
+        /// </summary>
+        /// <param name="format">w:numFmt 值。The w:numFmt value.</param>
+        /// <param name="value">序号。The sequence number.</param>
+        /// <returns>序号文本。The number text.</returns>
+        private static string FormatNumber(string format, int value)
+        {
+            if (format == "lowerLetter") return ToLetter(value, false);
+            if (format == "upperLetter") return ToLetter(value, true);
+            if (format == "lowerRoman") return ToRoman(value, false);
+            if (format == "upperRoman") return ToRoman(value, true);
+            if (format == "decimalZero") return value.ToString("00", CultureInfo.InvariantCulture);
+            return value.ToString(CultureInfo.InvariantCulture);
         }
 
         /// <summary>
@@ -570,7 +659,52 @@ namespace Wisdom.Word
                 Dictionary<int, NumberingLevel> levels;
                 if (abstracts.TryGetValue(abstractId, out levels))
                 {
-                    _numberedLists[numId] = levels;
+                    // 每个 numId 是一份独立的编号序列，计数器不能共用同一批级别对象。
+                    // Every numId is its own sequence, so the counters must not be shared through one set of
+                    // level objects when several numIds point at the same abstractNum.
+                    Dictionary<int, NumberingLevel> own = new Dictionary<int, NumberingLevel>();
+                    foreach (KeyValuePair<int, NumberingLevel> pair in levels)
+                    {
+                        NumberingLevel copy = new NumberingLevel();
+                        copy.Start = pair.Value.Start;
+                        copy.Format = pair.Value.Format;
+                        copy.Text = pair.Value.Text;
+                        own[pair.Key] = copy;
+                    }
+                    _numberedLists[numId] = own;
+
+                    // Word 用 w:lvlOverride/w:startOverride 表达"从此处重新起号"，计数器记在 numId 这一层；
+                    // 只读 abstractNum 的 w:start 会把每个重新起号的列表读成同一个起始值。
+                    // Word expresses "restart at" through w:lvlOverride/w:startOverride, which applies to the numId
+                    // instance; reading only the abstractNum's w:start would make every restarted list come back
+                    // with the abstract definition's start value.
+                    foreach (XElement lvlOverride in Wml.Children(num, "lvlOverride"))
+                    {
+                        int level = Wml.ParseInt(Wml.AttributeValue(lvlOverride, "ilvl"), 0);
+                        XElement startOverride = Wml.Child(lvlOverride, "startOverride");
+                        if (startOverride == null) continue;
+                        NumberingLevel target;
+                        if (!own.TryGetValue(level, out target)) continue;
+                        target.Start = Wml.ParseInt(Wml.AttributeValue(startOverride, "val"), target.Start);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 把所有编号级别的计数器复位，让下一次解析从各级的起始值重新计数。
+        /// 页眉页脚部件会被每个引用它的节各解析一次，若计数器继续累加，同一份页眉在两节里会显示成 1.、2.。
+        /// Resets every numbering level counter so the next pass starts from each level's start value. A header or
+        /// footer part is parsed once per section that references it, and without this reset the same header would
+        /// render as 1. in one section and 2. in the next.
+        /// </summary>
+        public void ResetNumberingCounters()
+        {
+            foreach (KeyValuePair<int, Dictionary<int, NumberingLevel>> list in _numberedLists)
+            {
+                foreach (KeyValuePair<int, NumberingLevel> pair in list.Value)
+                {
+                    pair.Value.Current = 0;
                 }
             }
         }

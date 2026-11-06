@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using System.Xml.Linq;
 using Wisdom.Office.Core;
 
@@ -206,13 +207,45 @@ namespace Wisdom.Excel
             return value.ToString("G15", CultureInfo.InvariantCulture);
         }
 
-        /// <summary>去掉区域文本里的表名前缀，sqref 只接受本表坐标。 Strips the sheet-name prefix because sqref accepts local coordinates only.</summary>
+        /// <summary>把区域文本逐片改成本表坐标：sqref 是空格分隔的多区域列表。Rewrites each fragment of the range text as local coordinates, since sqref is a space-separated list.</summary>
+        /// <remarks>
+        /// 早先对整串取 <c>LastIndexOf('!')</c>，"看板!D5:P5 看板!Q5:R5" 只剩最后一片，前面的区域静默消失；
+        /// 现在逐片剥前缀并按网格规范化重排，反写的角坐标也能落成合法 sqref。
+        /// Taking <c>LastIndexOf('!')</c> of the whole string kept only the last fragment, silently dropping the
+        /// ranges before it; each fragment is now stripped and re-anchored to the grid, so reversed corners land
+        /// as a legal sqref too.
+        /// </remarks>
         /// <param name="range">区域文本。 Range text.</param>
         /// <returns>本表坐标文本。 The local coordinate text.</returns>
         private static string StripSheetPrefix(string range)
         {
-            int bang = range.LastIndexOf('!');
-            return bang < 0 ? range : range.Substring(bang + 1);
+            string[] tokens = range.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i];
+                int bang = token.LastIndexOf('!');
+                if (bang >= 0) token = token.Substring(bang + 1);
+                int row1, column1, row2, column2;
+                try
+                {
+                    CellAddress.ParseRange(token, out row1, out column1, out row2, out column2);
+                }
+                catch (FormatException)
+                {
+                    // 认不出的片段丢弃：留下非法 sqref 会让 Excel 修复并连带删掉整条条件格式。
+                    // An unrecognised fragment is dropped: an illegal sqref makes Excel "repair" the sheet and
+                    // take the whole rule down with it.
+                    continue;
+                }
+                if (builder.Length > 0) builder.Append(' ');
+                builder.Append(CellAddress.Format(Math.Min(row1, row2), Math.Min(column1, column2)));
+                if (row1 != row2 || column1 != column2)
+                {
+                    builder.Append(':').Append(CellAddress.Format(Math.Max(row1, row2), Math.Max(column1, column2)));
+                }
+            }
+            return builder.Length == 0 ? "A1" : builder.ToString();
         }
     }
 }

@@ -91,7 +91,7 @@ for (int r = 0; r < rows.GetLength(0); r++)
     sheet.GetCell(row, 5).Style = dateStyle;
 }
 
-// 合计：公式文本 + 缓存值（本库不计算，值要自己给）
+// 合计：公式文本 + 缓存值（写出前可用 FormulaEngine.Calculate 自动重算，见文末常见问题）
 Cell total = sheet.GetCell(7, 4);
 total.Value = 2836.5;
 total.Formula = "SUM(D3:D6)";
@@ -364,7 +364,7 @@ A1=客户：示例客户 D1=签订日期：2026-10-21
 lastRow=8
 ```
 
-循环行按条目数展开成 3 行，模板行的样式、行高、列宽与合并区域都跟着复制，`合计` 那行整体下移。同一份模板可以在内存里反复填充——`XlsxTemplate.Fill(OfficeWorkbook, …)` 返回**新**工作簿，传入的模板不被修改：
+循环行按条目数展开成 3 行，模板行的样式、行高、列宽与合并区域都跟着复制，`合计` 那行整体下移；条件格式、筛选、数据验证与打印区域这类区域引用也按同一映射换算。同一份模板可以在内存里反复填充——`XlsxTemplate.Fill(OfficeWorkbook, …)` 返回**新**工作簿，传入的模板不被修改：
 
 ```csharp
 OfficeWorkbook inMemory = XlsxTemplate.Fill(XlsxReader.Load("out/order-template.xlsx"), context);
@@ -606,7 +606,17 @@ Console.WriteLine("读回码点=" + string.Join(" ", v2.Select(c => ((int)c).ToS
 
 **读出来 `LastRow` / `LastColumn` 比预期大。** 已用区域包含合并区域和"被有意创建的空单元格"——`GetCell` 一旦调用就会创建并计入。只探测存在性请用 `FindCell`。
 
-**公式算不出值。** 本库没有计算引擎，`Cell.Formula` 只是文本；写出时要同时给 `Cell.Value` 作为缓存结果，否则 Excel/WPS 打开后才会重算，而 `DisplayText()` 拿到的是空值。
+**公式算不出值。** `Cell.Formula` 只是文本；写出时如果 `Cell.Value` 为空，`DisplayText()` 先拿到空值，要等 Excel/WPS 打开后才会重算。可以在写出前显式触发重算：
+
+```csharp
+using Wisdom.Office.Core.Formulas;
+
+FormulaEngine.Calculate(workbook);          // 整簿重算，结果写回 Cell.Value，Formula 文本保留
+FormulaEngine.Calculate(workbook, "销售");   // 只算指定工作表
+object value = FormulaEngine.Evaluate(workbook, "SUM(D3:D6)");   // 单条公式求值
+```
+
+引擎覆盖数学、统计、文本、日期、查找与财务等 137 个函数（`SUM`、`AVERAGE`、`IF`、`VLOOKUP`、`INDEX`、`MATCH`、`TEXT`、`FV`/`PV`/`PMT` 等）；不实现数组公式（CSE）、外部工作簿引用与迭代计算，循环引用返回 `#VALUE!`。`.xls` 读出来只有缓存值，没有公式文本可重算。
 
 **图表导到 PDF / Word 里是占位文字。** 图表按 OOXML 落盘，由 Excel / WPS 渲染，本库不做位图渲染；要在 PDF/Word 中出现图形，请另存一份图片版并用 `ExcelImage` 锚定。
 
@@ -615,3 +625,7 @@ Console.WriteLine("读回码点=" + string.Join(" ", v2.Select(c => ((int)c).ToS
 **中文列宽换算困惑。** `SetColumnWidth` 用的是 Excel 的"字符宽"单位，磅值请走 `GetColumnWidthPoints`；反过来从磅设置字符宽会带来取整误差。
 
 **`.xls` 想写回。** 不支持——只能读。要产出 XLSX 就读成 `OfficeWorkbook` 再用 `XlsxWriter.Write`。
+
+**插入/删除行列后公式算错了。** `InsertRows` / `DeleteColumns` 会平移单元格、行高列宽、隐藏标记、合并区域、自动筛选、数据验证、打印区域、每页重复的标题行列，以及条件格式区域、图表与图片锚点（图表系列的取数区域连表名前缀和 `$` 锁定一起走，整行 / 整列引用 `2:8`、`A:A` 也按同一规则平移），但**不重写公式文本里的引用**：`B2` 上的 `=SUM(A1:A5)` 在插入一行后仍写着 `A1:A5`，于是少算了一格。要按新坐标自行改写公式，或改完直接 `FormulaEngine.Calculate(workbook)` 复核结果。
+
+**模板里的装饰填充后不见了。** 现在会跟着走：条件格式区域、自动筛选、数据验证、打印区域与重复标题行列、隐藏行列、图表锚点与系列取数区域、图片锚点，以及 `ShowZeros` / 居中打印 / 标签色，都按"模板行→输出行"的映射换算；圈住循环行的区域整体放大到展开后的行段，行段整体消失（空循环）时这条装饰直接丢掉而不是指向别处。工作簿的 1904 日期基准与定义名同样带走。不跟着变的只有引用文本——公式与定义名里的区域仍是模板里的写法。

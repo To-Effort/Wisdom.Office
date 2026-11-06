@@ -766,7 +766,7 @@ namespace Wisdom.Excel
                 foreach (Cell cell in Walk(sheet, firstRow, lastRow, firstColumn, lastColumn))
                 {
                     double number = 0;
-                    bool present = cell != null && TryReadNumber(cell.Value, out number);
+                    bool present = cell != null && TryReadNumber(cell.Value, workbook.Date1904, out number);
                     data.Numbers.Add(number);
                     data.Texts.Add(cell == null ? string.Empty : cell.DisplayText());
                     data.Present.Add(present);
@@ -925,11 +925,12 @@ namespace Wisdom.Excel
             return "$" + text.Substring(0, letters) + "$" + text.Substring(letters);
         }
 
-        /// <summary>从单元格取值转成 double（数值直取，日期取序列值，文本尽力解析）。 Reads a cell value as a double (numbers directly, dates as serial values, text parsed when possible).</summary>
+        /// <summary>从单元格取值转成 double（数值直取，日期按工作簿日期基准取序列值，文本尽力解析）。 Reads a cell value as a double (numbers directly, dates as serial values using the workbook epoch, text parsed when possible).</summary>
         /// <param name="value">单元格值。 Cell value.</param>
+        /// <param name="date1904">是否使用 1904 日期系统；用错基准会让图表里的日期序列整体偏移四年。 Whether the 1904 date system is in use; the wrong epoch shifts every chart date by four years.</param>
         /// <param name="number">输出数值。 Outputs the number.</param>
         /// <returns>可转成数值时返回 true。 True when the value converts to a number.</returns>
-        private static bool TryReadNumber(object value, out double number)
+        private static bool TryReadNumber(object value, bool date1904, out double number)
         {
             number = 0;
             if (value == null) return false;
@@ -946,7 +947,7 @@ namespace Wisdom.Excel
             }
             if (value is DateTime)
             {
-                number = ((DateTime)value - new DateTime(1899, 12, 30)).TotalDays;
+                number = DateUtils.DateTimeToExcelSerial((DateTime)value, date1904);
                 return true;
             }
             string text = value as string;

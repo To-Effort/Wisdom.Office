@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Wisdom.Office.Core;
 
 namespace Wisdom.Excel
@@ -59,6 +60,27 @@ namespace Wisdom.Excel
         /// <summary>区域的列数。The number of columns in the range.</summary>
         public int ColumnCount { get { return _column2 - _column1 + 1; } }
 
+        /// <summary>逐格操作的区域面积上限，与公式引擎 <c>Evaluator.MaxRangeCells</c> 同值。Cell-by-cell area cap for a range, matching the formula engine's <c>Evaluator.MaxRangeCells</c>.</summary>
+        private const long MaxWalkCells = 1000000L;
+
+        /// <summary>
+        /// 拒绝面积超出上限的区域：坐标合法不等于区域可用，A1:XFD1048576 是 172 亿格，
+        /// 逐格读写、快照或列宽自适应都会先把内存要光或转到天荒地老。
+        /// Legitimate corners do not make a usable area: A1:XFD1048576 is 17.2 billion cells, and walking,
+        /// snapshotting or auto-fitting it would exhaust memory or run forever before producing anything.
+        /// </summary>
+        private void RequireWalkableArea()
+        {
+            long cells = (long)RowCount * (long)ColumnCount;
+            if (cells > MaxWalkCells)
+            {
+                throw new ArgumentOutOfRangeException("this",
+                    "The range covers " + cells.ToString(CultureInfo.InvariantCulture)
+                    + " cells; a range walked cell by cell may hold at most "
+                    + MaxWalkCells.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+        }
+
         /// <summary>区域的 A1 引用（如 "B2:D10"）。The A1 reference of the range (such as "B2:D10").</summary>
         public string Address
         {
@@ -101,6 +123,7 @@ namespace Wisdom.Excel
         {
             get
             {
+                RequireWalkableArea();
                 object[,] values = new object[RowCount, ColumnCount];
                 for (int row = 0; row < RowCount; row++)
                 {
@@ -115,6 +138,7 @@ namespace Wisdom.Excel
             set
             {
                 if (value == null) throw new ArgumentNullException("value");
+                RequireWalkableArea();
                 if (value.GetLength(0) < RowCount || value.GetLength(1) < ColumnCount)
                 {
                     throw new ArgumentException("The value array is smaller than the range.", "value");
@@ -140,6 +164,7 @@ namespace Wisdom.Excel
         /// <param name="style">目标样式；写入前会复制一份，避免各单元格共享可变实例。The target style; it is cloned per cell so the cells do not share one mutable instance.</param>
         public void ApplyStyle(CellStyle style)
         {
+            RequireWalkableArea();
             for (int row = _row1; row <= _row2; row++)
             {
                 for (int column = _column1; column <= _column2; column++)
@@ -162,6 +187,7 @@ namespace Wisdom.Excel
         public void SetStyle(Action<CellStyle> configure)
         {
             if (configure == null) throw new ArgumentNullException("configure");
+            RequireWalkableArea();
             for (int row = _row1; row <= _row2; row++)
             {
                 for (int column = _column1; column <= _column2; column++)
@@ -175,6 +201,7 @@ namespace Wisdom.Excel
         /// <param name="value">填充值。The fill value.</param>
         public void SetValue(object value)
         {
+            RequireWalkableArea();
             for (int row = _row1; row <= _row2; row++)
             {
                 for (int column = _column1; column <= _column2; column++)
@@ -214,6 +241,7 @@ namespace Wisdom.Excel
         /// <summary>清空区域的值、公式与超链接，保留样式；清空后没有任何内容的单元格会被移除。Clears values, formulas and hyperlinks while keeping styles; cells left with no content are removed.</summary>
         public void Clear()
         {
+            RequireWalkableArea();
             for (int row = _row1; row <= _row2; row++)
             {
                 for (int column = _column1; column <= _column2; column++)
@@ -232,6 +260,7 @@ namespace Wisdom.Excel
         /// <summary>清空区域的全部内容与样式、解除区域内合并。Clears all content and styles in the range and removes merges inside it.</summary>
         public void ClearAll()
         {
+            RequireWalkableArea();
             for (int row = _row1; row <= _row2; row++)
             {
                 for (int column = _column1; column <= _column2; column++)
@@ -253,11 +282,34 @@ namespace Wisdom.Excel
             {
                 throw new ArgumentException("The target range must have the same size as the source.", "target");
             }
+            RequireWalkableArea();
+
+            // 源与目标交叠时（A1:A2 拷到 A2:A3）边读边写会让刚写入的值再被读出来，
+            // 结果是整片错位复制；先快照源矩形，再统一写回。
+            // Reading while writing an overlapping target (A1:A2 onto A2:A3) re-reads what was just written
+            // and shifts the whole copy, so the source rectangle is snapshotted first.
+            List<Cell> snapshot = null;
+            if (ReferenceEquals(target._sheet, _sheet) && Overlaps(target))
+            {
+                snapshot = new List<Cell>(RowCount * ColumnCount);
+                for (int row = 0; row < RowCount; row++)
+                {
+                    for (int column = 0; column < ColumnCount; column++)
+                    {
+                        Cell source = _sheet.FindCell(_row1 + row, _column1 + column);
+                        snapshot.Add(source == null ? null : CloneContent(source));
+                    }
+                }
+            }
+
+            int index = 0;
             for (int row = 0; row < RowCount; row++)
             {
                 for (int column = 0; column < ColumnCount; column++)
                 {
-                    Cell source = _sheet.FindCell(_row1 + row, _column1 + column);
+                    Cell source = snapshot == null
+                        ? _sheet.FindCell(_row1 + row, _column1 + column)
+                        : snapshot[index++];
                     int targetRow = target._row1 + row;
                     int targetColumn = target._column1 + column;
                     if (source == null)
@@ -273,6 +325,29 @@ namespace Wisdom.Excel
                     destination.Style = source.Style == null ? null : source.Style.Clone();
                 }
             }
+        }
+
+        /// <summary>判断两个区域是否在同一张表上交叠。Whether two ranges on the same sheet intersect.</summary>
+        /// <param name="other">另一个区域。The other range.</param>
+        /// <returns>true 表示交叠。True when they overlap.</returns>
+        private bool Overlaps(ExcelRange other)
+        {
+            return _row1 <= other._row2 && other._row1 <= _row2
+                && _column1 <= other._column2 && other._column1 <= _column2;
+        }
+
+        /// <summary>复制单元格的载荷（含样式副本），供交叠粘贴的快照使用。Copies a cell's payload, including a style clone, for the overlapping-paste snapshot.</summary>
+        /// <param name="cell">源单元格。The source cell.</param>
+        /// <returns>只承载数据的临时单元格。A detached cell carrying only the data.</returns>
+        private static Cell CloneContent(Cell cell)
+        {
+            Cell copy = new Cell(cell.Row, cell.Column);
+            copy.Value = cell.Value;
+            copy.Formula = cell.Formula;
+            copy.Hyperlink = cell.Hyperlink;
+            copy.HyperlinkTooltip = cell.HyperlinkTooltip;
+            copy.Style = cell.Style == null ? null : cell.Style.Clone();
+            return copy;
         }
 
         /// <summary>按索引器语义更新单格：值为 null 时清除值，不创建无意义的新单元格。Updates one cell with indexer semantics: a null value clears it and no needless cell is created.</summary>
@@ -298,6 +373,7 @@ namespace Wisdom.Excel
             if (double.IsNaN(minWidth) || minWidth < 0) throw new ArgumentOutOfRangeException("minWidth");
             if (double.IsNaN(maxWidth) || maxWidth < minWidth) throw new ArgumentOutOfRangeException("maxWidth");
             if (maxWidth > 255) maxWidth = 255;
+            RequireWalkableArea();
             for (int column = _column1; column <= _column2; column++)
             {
                 double width = 0;

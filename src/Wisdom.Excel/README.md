@@ -65,7 +65,7 @@ OfficeWorkbook all = XlsxReader.Load("sales.xlsx", new ExcelReadOptions
 });
 ```
 
-读取还原：值与缓存公式结果、`CellStyle`（字体、颜色、填充、对齐、边框、换行、数字格式）、合并区域、列宽行高、冻结窗格、打印区域与纸张方向、隐藏行列、以及图表 / 条件格式 / 锚定图片。
+读取还原：值与缓存公式结果、`CellStyle`（字体、颜色、填充、对齐、边框、换行、数字格式）、合并区域、列宽行高、冻结窗格、打印区域与纸张方向、每页重复的标题行列、隐藏行列、以及图表 / 条件格式 / 锚定图片。
 
 ## 写入 XLSX
 
@@ -101,6 +101,8 @@ sheet.SetColumnHidden(2, true);
 sheet.ShowGridLines = false;
 sheet.ShowZeros = false;                        // 关闭 0 值显示
 sheet.SetPrintArea("A1:C20");
+sheet.SetPrintTitleRows("1:2");                  // 每页顶端重复的表头行
+sheet.SetPrintTitleColumns("A:A");               // 每页左端重复的列
 sheet.PrintSetup = PageSetup.A4();
 sheet.PrintSetup.IsLandscape = true;            // 由 Width/Height 关系决定方向
 sheet.FitToPage = true;
@@ -199,7 +201,7 @@ sheet.InsertColumns(2, 1);     // 在第 2 列前插入 1 列
 sheet.DeleteColumns(2, 1);
 ```
 
-行列编辑会同步平移单元格、行高列宽、隐藏标记、合并区域、自动筛选、数据验证与打印区域；`ExcelRange.Clear()` 保留样式只清内容，`ClearAll()` 连同样式与区域内的合并一起清除。
+行列编辑会同步平移单元格、行高列宽、隐藏标记、合并区域、自动筛选、数据验证、打印区域与重复标题行列，条件格式区域、图表与图片锚点（含图表系列的取数区域，表名前缀与 `$` 锁定一并保留）也会跟着走；整行 / 整列引用（`2:8`、`A:A`）按同一规则平移，行编辑不动列引用、列编辑不动行引用；整段被删的条件格式规则随区域一起丢弃。公式里的单元格引用不会重写，需要按新坐标自行更新。`ExcelRange.Clear()` 保留样式只清内容，`ClearAll()` 连同样式与区域内的合并一起清除。
 
 ## 工作表管理与高级表设置
 
@@ -277,7 +279,7 @@ format.AddIconSet("3TrafficLights1", new double[] { 33, 67 });
 format.AddCellIs("greaterThan", "1000", new CellStyle { FontColor = OfficeColor.Red, Bold = true });
 sheet.ConditionalFormats.Add(format);
 
-// 锚定到单元格的图片（PNG / JPEG 自动识别尺寸）
+// 锚定到单元格的图片（PNG / JPEG / GIF / BMP / TIFF 自动识别尺寸，EMF / WMF 用默认显示尺寸）
 sheet.Images.Add(new ExcelImage(OfficeImage.FromFile("logo.png"))
 {
     Row = 2,
@@ -331,7 +333,9 @@ OfficeWorkbook filled = XlsxTemplate.Fill(wb, context, new TemplateOptions
 });
 ```
 
-循环按行展开时保留模板行的样式、行高与合并；空列表会清掉整个循环块。
+循环按行展开时保留模板行的样式、行高与合并；空列表会清掉整个循环块。模板里"行号写在文本里"的表级设置也按同一行映射换算过去——条件格式、自动筛选、数据验证、打印区域与重复标题行列、隐藏行列、图表与图片的锚点及其系列区域、`ShowZeros` / 居中打印 / 标签色，以及工作簿的 1904 日期基准和定义名，填充后都还在；循环展开成多行时，覆盖循环行的区域整体放大到展开后的行段（模板里圈住一行循环行，填充后圈住全部展开行）。区域随循环整体消失时该条装饰直接丢掉，不会留一个指向别处的空壳。
+
+不跟着变的只有引用文本：公式里的单元格引用、定义名指向的区域仍是模板里的写法（同插入/删除行列的口径）。
 
 ## 读取旧版 .xls
 
@@ -368,5 +372,9 @@ string text = XlsReader.ExtractText("legacy.xls");
 - 不支持写入 `.xls`；`.xlsx` 中的宏（`xlsm`）不保留 VBA 内容。
 - 加密工作簿、外部工作簿链接、数据透视表、切片器、形状/批注不解析；单元格超链接与定义名支持读写。
 - 图表按 OOXML 落盘，本包不做位图渲染；PDF/Word 导出只输出占位文本。
-- 公式文本可以写入，但本库不做计算引擎，值需由调用方提供或由 Excel 打开时重算。
+- 公式文本可以写入；写出前可调用 `FormulaEngine.Calculate`（`Wisdom.Office.Core.Formulas`）重算整簿或单表，把结果写回 `Cell.Value` 并保留公式文本。引擎覆盖数学、统计、文本、日期、查找与财务等 137 个函数，不实现数组公式（CSE）、外部工作簿引用与迭代计算，循环引用返回 `#VALUE!`；`.xls` 读出的只有缓存值，没有公式文本可重算。
+- 共享公式（`t="shared"`）读入后会展开成每条独立公式，写回不再产出共享公式；主题色与主题字体在读取时解析为具体 RGB / 字体名，写回不保留主题索引与 tint。
+- 图片按 PNG / JPEG / GIF / BMP / TIFF / EMF / WMF 识别并在 XLSX 内原样往返；转 PDF / Word 时只有 PNG / JPEG 能排版，其余格式显示占位。
+- 条件格式识别 `dataBar` / `colorScale` / `iconSet` / `cellIs` 四类规则；模板或旧文件里的其它类型（"包含文本"、"项目选自 Top 10"、公式型 `expression` 等）读入时被跳过，重写或模板填充后不再出现。
+- `date1904`（1904 日期系统）随读写保留，日期序列值与图表缓存的日期都按工作簿自己的纪元换算。日期样式的单元格如果带一个超出 `DateTime` 范围的序列号（例如 `1E+10`），读入时保留原始数值而不是转成日期——一个畸形单元格不会让整本工作簿读不出来。
 - CSV 只表示单个工作表；流式查询不构建模型，但共享字符串表仍需整体加载，且未提供异步枚举（`netstandard2.0` 无 `IAsyncEnumerable`）。

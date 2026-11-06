@@ -38,10 +38,17 @@ namespace Wisdom.Office.Core.Formulas
 
         // ---- 参数强制转换助手。 Argument coercion helpers. ----
 
+        /// <summary>把第 index 个参数强制成数值；缺参或不可转换都返回 false。Coerces the argument at <paramref name="index"/> to a number; a missing or unconvertible argument returns false.</summary>
+        /// <remarks>
+        /// 缺参不能当成 0：早先返回 true 加 0，等于所有 <c>NumOr(a, i, 默认值)</c> 的默认值都被 0 顶掉，
+        /// <c>CEILING(5)</c> 因此变成 0（Excel 给 #VALUE!，可选参数也该走各自的默认值）。
+        /// A missing argument must not read as zero: reporting success with 0 overwrote every <c>NumOr</c>
+        /// default, so CEILING(5) became 0 instead of falling back to the significance default.
+        /// </remarks>
         private static bool NumberAt(List<FxValue> args, int index, out double d)
         {
             d = 0;
-            if (index >= args.Count) { d = 0; return true; }
+            if (index >= args.Count) return false;
             FxValue v = Evaluator.Scalar(args[index]);
             if (v.IsError) { d = 0; return false; }
             return Evaluator.TryCoerceNumber(v, out d);
@@ -107,13 +114,13 @@ namespace Wisdom.Office.Core.Formulas
             r["ABS"] = (e, s, a) => U(a, Math.Abs);
             r["SIGN"] = (e, s, a) => U(a, v => v > 0 ? 1 : (v < 0 ? -1 : 0));
             r["INT"] = (e, s, a) => U(a, Math.Floor);
-            r["FIXED"] = (e, s, a) => { if (!NumArg(a, 0, out double d)) return Err(FxError.Value); return FxValue.Txt(d.ToString("N2", CultureInfo.InvariantCulture)); };
+            r["FIXED"] = (e, s, a) => FixedText(a);
             r["EVEN"] = (e, s, a) => { if (!NumArg(a, 0, out double d)) return Err(FxError.Value); return FxValue.Num(RoundAwayEven(d)); };
             r["ODD"] = (e, s, a) => { if (!NumArg(a, 0, out double d)) return Err(FxError.Value); return FxValue.Num(RoundAwayOdd(d)); };
-            r["TRUNC"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); double factor = Pow10(NumOr(a, 1, 0)); return FxValue.Num(TruncateTo(x, factor)); };
-            r["ROUND"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); int digits = (int)NumOr(a, 1, 0); return FxValue.Num(RoundHalfUp(x, digits)); };
-            r["ROUNDUP"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); int digits = (int)NumOr(a, 1, 0); return FxValue.Num(RoundMagnitude(x, digits, true)); };
-            r["ROUNDDOWN"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); int digits = (int)NumOr(a, 1, 0); return FxValue.Num(RoundMagnitude(x, digits, false)); };
+            r["TRUNC"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); return RoundLike(x, a, RoundTowardZero); };
+            r["ROUND"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); return RoundLike(x, a, RoundHalfAway); };
+            r["ROUNDUP"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); return RoundLike(x, a, RoundAwayFromZero); };
+            r["ROUNDDOWN"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); return RoundLike(x, a, RoundTowardZero); };
             r["CEILING"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); double sig = NumOr(a, 1, 1); if (sig == 0) return FxValue.Num(0); return FxValue.Num(Math.Ceiling(x / sig) * sig); };
             r["FLOOR"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); double sig = NumOr(a, 1, 1); if (sig == 0) return Err(FxError.Div0); return FxValue.Num(Math.Floor(x / sig) * sig); };
             r["MOD"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); if (!NumArg(a, 1, out double m)) return Err(FxError.Value); if (m == 0) return Err(FxError.Div0); return FxValue.Num(x - m * Math.Floor(x / m)); };
@@ -137,8 +144,8 @@ namespace Wisdom.Office.Core.Formulas
             r["FACT"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); if (x < 0) return Err(FxError.Num); return FxValue.Num(Factorial(Math.Floor(x))); };
             r["FACTDOUBLE"] = (e, s, a) => { if (!NumArg(a, 0, out double x)) return Err(FxError.Value); return FxValue.Num(DoubleFactorial(Math.Floor(x))); };
             r["COMBIN"] = (e, s, a) => { if (!NumArg(a, 0, out double n) || !NumArg(a, 1, out double k)) return Err(FxError.Value); return FxValue.Num(Combin(Math.Floor(n), Math.Floor(k))); };
-            r["RAND"] = (e, s, a) => FxValue.Num(new Random().NextDouble());
-            r["RANDBETWEEN"] = (e, s, a) => { if (!NumArg(a, 0, out double lo) || !NumArg(a, 1, out double hi)) return Err(FxError.Value); lo = Math.Ceiling(lo); hi = Math.Floor(hi); if (lo > hi) return Err(FxError.Value); return FxValue.Num(lo + new Random().NextDouble() * (hi - lo + 1 - 1e-9)); };
+            r["RAND"] = (e, s, a) => FxValue.Num(Rand.Shared.NextDouble());
+            r["RANDBETWEEN"] = RandBetween;
             r["PRODUCT"] = (e, s, a) => { List<double> n; FxValue err; if (!CollectNumbers(a, out n, out err)) return err; double p = 1; foreach (double v in n) p *= v; return FxValue.Num(p); };
             r["SUM"] = (e, s, a) => { List<double> n; FxValue err; if (!CollectNumbers(a, out n, out err)) return err; double t = 0; foreach (double v in n) t += v; return FxValue.Num(t); };
             r["SUMPRODUCT"] = SumProduct;
@@ -233,42 +240,114 @@ namespace Wisdom.Office.Core.Formulas
             return FxValue.Err(e);
         }
 
-        private static double Pow10(int digits)
-        {
-            double f = 1;
-            int n = digits < 0 ? -digits : digits;
-            for (int i = 0; i < n; i++) f *= 10;
-            return f;
-        }
+        private const int RoundHalfAway = 0;
+        private const int RoundAwayFromZero = 1;
+        private const int RoundTowardZero = 2;
 
-        private static double Pow10(double d)
+        /// <summary>
+        /// ROUND / ROUNDUP / ROUNDDOWN / TRUNC 共用的缩放取整。num_digits 向零截断，为负时把取整点移到小数点
+        /// 左侧（Excel 里 ROUND(12345,-3)=12000；早先的 Pow10 取了 10 的绝对次幂，负数位等于什么都不做）。
+        /// 缩放因子溢出或归零时按 Excel 返回 #NUM!，参数缺失则走默认的 0 位。
+        /// Shared scaled rounding for ROUND / ROUNDUP / ROUNDDOWN / TRUNC. num_digits is truncated toward zero and a
+        /// negative value moves the rounding point to the left of the decimal point (Excel: ROUND(12345,-3)=12000;
+        /// the old Pow10 used 10^abs(digits), so a negative count rounded nothing). An overflowing or zero factor
+        /// yields #NUM! like Excel, and an omitted num_digits defaults to 0.
+        /// </summary>
+        private static FxValue RoundLike(double x, List<FxValue> a, int mode)
         {
-            return Pow10((int)d);
-        }
-
-        private static double TruncateTo(double x, double factor)
-        {
+            double factor = 1.0;
+            if (a.Count > 1)
+            {
+                double digits;
+                if (!NumberAt(a, 1, out digits)) return FirstError(a) ?? Err(FxError.Value);
+                double whole = digits >= 0 ? Math.Floor(digits) : Math.Ceiling(digits);
+                if (whole < -300 || whole > 300) return Err(FxError.Num);
+                factor = Math.Pow(10.0, whole);
+                if (factor <= 0 || double.IsNaN(factor) || double.IsInfinity(factor)) return Err(FxError.Num);
+            }
             double scaled = x * factor;
-            double truncated = scaled >= 0 ? Math.Floor(scaled) : Math.Ceiling(scaled);
-            return truncated / factor;
+            if (double.IsNaN(scaled) || double.IsInfinity(scaled)) return Err(FxError.Num);
+            double rounded;
+            if (mode == RoundHalfAway) rounded = scaled >= 0 ? Math.Floor(scaled + 0.5) : Math.Ceiling(scaled - 0.5);
+            else if (mode == RoundAwayFromZero) rounded = x >= 0 ? Math.Ceiling(scaled) : Math.Floor(scaled);
+            else rounded = x >= 0 ? Math.Floor(scaled) : Math.Ceiling(scaled);
+            double result = rounded / factor;
+            return double.IsNaN(result) || double.IsInfinity(result) ? Err(FxError.Num) : FxValue.Num(result);
         }
 
-        private static double RoundHalfUp(double x, int digits)
+        /// <summary>
+        /// FIXED(number, [decimals], [use_commas])：小数点固定为 "."、千分位固定为 ","，不随区域设置变化。
+        /// decimals 四舍五入为整数、缺省 2，为负时先取整到小数点左侧再显示零位；use_commas 缺省 TRUE。
+        /// 早先实现写死 "N2" 并丢掉后两个参数，FIXED(1234.5,0) 也返回 "1,234.50"。
+        /// FIXED(number, [decimals], [use_commas]) always uses "." as the decimal point and "," as the thousands
+        /// separator, independent of locale. decimals is rounded to an integer, defaults to 2, and a negative value
+        /// rounds left of the decimal point while displaying zero decimals; use_commas defaults to TRUE.
+        /// The old implementation hard-coded "N2" and dropped both optional arguments, so even FIXED(1234.5,0)
+        /// returned "1,234.50".
+        /// </summary>
+        private static FxValue FixedText(List<FxValue> a)
         {
-            double f = Pow10(digits);
-            double scaled = x * f;
-            double rounded = scaled >= 0 ? Math.Floor(scaled + 0.5) : Math.Ceiling(scaled - 0.5);
-            return rounded / f;
+            double x;
+            if (!NumberAt(a, 0, out x)) return FirstError(a) ?? Err(FxError.Value);
+            int decimals = 2;
+            if (a.Count > 1)
+            {
+                double d;
+                if (!NumberAt(a, 1, out d)) return FirstError(a) ?? Err(FxError.Value);
+                decimals = (int)(d >= 0 ? Math.Floor(d + 0.5) : Math.Ceiling(d - 0.5));
+                if (decimals > 127) return Err(FxError.Value);
+            }
+            bool comma = a.Count > 2 ? BoolAt(a, 2) : true;
+            double factor = decimals >= 0 ? Math.Pow(10.0, Math.Min(decimals, 15)) : Math.Pow(10.0, decimals);
+            if (factor <= 0 || double.IsInfinity(factor)) return Err(FxError.Value);
+            double scaled = x * factor;
+            if (double.IsNaN(scaled) || double.IsInfinity(scaled)) return Err(FxError.Value);
+            double rounded = (scaled >= 0 ? Math.Floor(scaled + 0.5) : Math.Ceiling(scaled - 0.5)) / factor;
+            string text = rounded.ToString((comma ? "N" : "F") + Math.Max(decimals, 0), CultureInfo.InvariantCulture);
+            return FxValue.Txt(text);
         }
 
-        private static double RoundMagnitude(double x, int digits, bool up)
+        private static FxValue RandBetween(Evaluator ev, Worksheet sheet, List<FxValue> a)
         {
-            double f = Pow10(digits);
-            double scaled = x * f;
-            double rounded = x >= 0
-                ? (up ? Math.Ceiling(scaled) : Math.Floor(scaled))
-                : (up ? Math.Floor(scaled) : Math.Ceiling(scaled));
-            return rounded / f;
+            double lo, hi;
+            if (!NumArg(a, 0, out lo) || !NumArg(a, 1, out hi)) return FirstError(a) ?? Err(FxError.Value);
+            lo = Math.Ceiling(lo);
+            hi = Math.Floor(hi);
+            if (lo > hi) return Err(FxError.Value);
+            double count = hi - lo + 1.0;
+            // 闭区间整数：先取 floor，再夹到 hi，避免随机数上界取到 1.0 时越界。
+            // Inclusive integers: floor first, then clamp to hi so a random draw at the upper edge cannot overshoot.
+            double pick = lo + Math.Floor(Rand.Shared.NextDouble() * count);
+            if (pick > hi) pick = hi;
+            if (pick < lo) pick = lo;
+            return FxValue.Num(pick);
+        }
+
+        /// <summary>
+        /// 每线程一个 Random 实例。RAND/RANDBETWEEN 原先每次调用都 new Random()，同一天钟刻度内的连续调用会拿到
+        /// 相同种子、返回同一个"随机数"；.NET Framework 4.6.1 的 Random 也不是线程安全的。
+        /// One Random per thread. RAND/RANDBETWEEN used to construct a Random per call, so consecutive calls inside
+        /// the same clock tick shared a seed and returned the same "random" value; Random is also not thread-safe on
+        /// .NET Framework 4.6.1.
+        /// </summary>
+        private static class Rand
+        {
+            [ThreadStatic]
+            private static Random _shared;
+
+            public static Random Shared
+            {
+                get
+                {
+                    Random r = _shared;
+                    if (r == null)
+                    {
+                        r = new Random(unchecked(Environment.TickCount * 31) ^ System.Threading.Thread.CurrentThread.ManagedThreadId);
+                        _shared = r;
+                    }
+                    return r;
+                }
+            }
         }
 
         private static double RoundAwayEven(double x)

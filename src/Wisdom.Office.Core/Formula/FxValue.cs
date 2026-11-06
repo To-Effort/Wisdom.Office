@@ -161,7 +161,15 @@ namespace Wisdom.Office.Core.Formulas
             }
         }
 
-        /// <summary>把结果写回单元格 <see cref="Cell.Value"/>：错误写文本，空写 null，其余保留数值/文本/布尔。Writes the result into <see cref="Cell.Value"/>: errors become text, empty becomes null, numbers/strings/booleans are kept.</summary>
+        /// <summary>
+        /// 把结果写回单元格 <see cref="Cell.Value"/>：错误写文本，空写 null，其余保留数值/文本/布尔。
+        /// Writes the result into <see cref="Cell.Value"/>: errors become text, empty becomes null, numbers/strings/booleans are kept.
+        /// </summary>
+        /// <remarks>
+        /// 区域结果按 Excel 的隐式交集取左上角；原先 default 返回 null，<c>=A1:B2</c> 这类公式重算后会把已有值静默清空。
+        /// A range result uses Excel's implicit intersection (the top-left cell); the old <c>default</c> returned null,
+        /// so recalculating a formula such as <c>=A1:B2</c> silently wiped the existing cell value.
+        /// </remarks>
         /// <returns>适合存入单元格的值对象。A value object suitable for storing on a cell.</returns>
         public object ToCellValue()
         {
@@ -172,6 +180,9 @@ namespace Wisdom.Office.Core.Formulas
                 case FxKind.Text: return Text;
                 case FxKind.Logical: return Bool;
                 case FxKind.Error: return ErrorText();
+                case FxKind.Range:
+                    if (Cells != null && Cells.Count > 0 && Cells[0] != null && Cells[0].Count > 0) return Cells[0][0].ToCellValue();
+                    return null;
                 default: return null;
             }
         }

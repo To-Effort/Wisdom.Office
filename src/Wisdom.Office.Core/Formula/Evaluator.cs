@@ -336,7 +336,7 @@ namespace Wisdom.Office.Core.Formulas
 
             if (!node.IsRange)
             {
-                return CellValue(target, node.Row1, node.Col1);
+                return StampReference(CellValue(target, node.Row1, node.Col1), target, node.Row1, node.Col1);
             }
 
             int r1 = node.Row1;
@@ -388,6 +388,33 @@ namespace Wisdom.Office.Core.Formulas
                 if (name.StartsWith("[")) name = name.Substring(1);
             }
             return _workbook == null ? null : _workbook.FindWorksheet(name);
+        }
+
+        /// <summary>
+        /// 把单格引用的坐标盖到返回值上（复制一份，不改缓存实例与 <c>FxValue.Empty</c> 单例）。
+        /// 标量本身不带坐标，ROW(B2) 与 OFFSET(B2,1,0) 因此识别不出"这是个引用"而恒报 #VALUE!/#REF!；
+        /// 复制保留了值与类型，算术、比较、文本仍然按标量走，只有依赖坐标的函数会多看一眼 Sheet/R1/C1。
+        /// Stamps the coordinates of a single-cell reference onto the value it evaluates to (a copy, so neither the
+        /// cache entry nor the <c>FxValue.Empty</c> singleton is mutated). A bare scalar carries no coordinate, which
+        /// is why ROW(B2) and OFFSET(B2,1,0) could not recognise a reference and always returned #VALUE!/#REF!. The
+        /// copy keeps value and kind, so arithmetic, comparison and text still behave as scalars and only the
+        /// coordinate-dependent functions look at Sheet/R1/C1.
+        /// </summary>
+        private static FxValue StampReference(FxValue v, Worksheet sheet, int row, int col)
+        {
+            FxValue c = new FxValue();
+            c.Kind = v.Kind;
+            c.Number = v.Number;
+            c.Text = v.Text;
+            c.Bool = v.Bool;
+            c.Error = v.Error;
+            c.Cells = v.Cells;
+            c.Sheet = sheet;
+            c.R1 = row;
+            c.C1 = col;
+            c.R2 = row;
+            c.C2 = col;
+            return c;
         }
 
         /// <summary>读取单元格值；公式单元格触发递归求值，检测循环。Reads a cell value; a formula cell triggers recursive evaluation with cycle detection.</summary>

@@ -16,6 +16,9 @@ namespace Wisdom.Office.Tests
         private static void RunExcelEnhancementTest(string outputDirectory)
         {
             RunExcelRangeEditingTest();
+            RunExcelDecorationShiftTest(outputDirectory);
+            RunExcelPrintTitleTest(outputDirectory);
+            RunExcelTemplateDecorationTest(outputDirectory);
             RunExcelCollectionTest(outputDirectory);
             RunExcelCsvTest(outputDirectory);
             RunExcelSheetFeatureTest(outputDirectory);
@@ -89,6 +92,327 @@ namespace Wisdom.Office.Tests
                 "AutoFitColumns measures full-width text");
             ExcelRange used = sheet.UsedRange();
             Require(used.Column1 == 1 && used.Column2 == 4, "UsedRange covers written cells");
+        }
+
+        /// <summary>
+        /// 插入/删除行列时看板装饰（条件格式、图表、图片）随区域平移，整行 / 整列引用一并换算，并能在保存后原样读回。
+        /// Dashboard decorations (conditional formats, charts, images) shift with row/column edits — whole-row and
+        /// whole-column references included — and read back unchanged after a save.
+        /// </summary>
+        /// <param name="outputDirectory">输出目录。The output directory.</param>
+        private static void RunExcelDecorationShiftTest(string outputDirectory)
+        {
+            OfficeWorkbook workbook = new OfficeWorkbook();
+            Worksheet sheet = workbook.AddWorksheet("Board");
+            sheet.GetCell(5, 4).Value = 10d;
+            sheet.GetCell(5, 5).Value = 12d;
+
+            ExcelConditionalFormat bar = new ExcelConditionalFormat("D5:P5");
+            bar.AddDataBar(OfficeColor.Blue);
+            sheet.ConditionalFormats.Add(bar);
+            ExcelConditionalFormat inside = new ExcelConditionalFormat("D7:P10");
+            inside.AddColorScale(OfficeColor.Red, OfficeColor.Green);
+            sheet.ConditionalFormats.Add(inside);
+
+            ExcelChart chart = new ExcelChart { Type = ExcelChartType.Line, Row = 12, Column = 20 };
+            ExcelChartSeries series = chart.AddSeries("Board!$D$4", "Board!$E$5:$P$5", "Board!$E$5:$P$5");
+            sheet.Charts.Add(chart);
+
+            ExcelImage icon = new ExcelImage(new OfficeImage(CreateTestPng(1, 1))) { Row = 14, Column = 3 };
+            icon.WidthPoints = 12;
+            icon.HeightPoints = 12;
+            sheet.Images.Add(icon);
+
+            sheet.InsertRows(3, 2);
+            Require(bar.Range == "D7:P7", "InsertRows shifts the conditional-format range");
+            Require(inside.Range == "D9:P12", "InsertRows shifts a range below the edit");
+            Require(series.ValueRange == "Board!$E$7:$P$7", "InsertRows shifts a series range, keeping prefix and locks");
+            Require(chart.Row == 14 && chart.Column == 20, "InsertRows shifts the chart anchor");
+            Require(icon.Row == 16 && icon.Column == 3, "InsertRows shifts the image anchor");
+
+            sheet.InsertRows(11, 1);
+            Require(inside.Range == "D9:P13", "InsertRows inside a range extends it");
+            Require(chart.Row == 15 && icon.Row == 17, "InsertRows below an anchor pushes it down");
+
+            sheet.DeleteRows(11, 1);
+            Require(inside.Range == "D9:P12", "DeleteRows inside a range clips it back");
+            Require(chart.Row == 14 && icon.Row == 16, "DeleteRows restores anchors above the deleted row");
+
+            sheet.DeleteRows(3, 2);
+            Require(bar.Range == "D5:P5", "DeleteRows restores the conditional-format range");
+            Require(inside.Range == "D7:P10", "DeleteRows lifts the whole range back");
+            Require(series.ValueRange == "Board!$E$5:$P$5", "DeleteRows restores the series range");
+            Require(chart.Row == 12 && icon.Row == 14, "DeleteRows restores the anchors");
+
+            ExcelConditionalFormat doomed = new ExcelConditionalFormat("D30:D31");
+            doomed.AddIconSet("3TrafficLights1", new double[] { 30, 70 });
+            sheet.ConditionalFormats.Add(doomed);
+            sheet.DeleteRows(30, 3);
+            Require(!sheet.ConditionalFormats.Contains(doomed), "DeleteRows drops a swallowed conditional format");
+
+            ExcelConditionalFormat multi = new ExcelConditionalFormat("A1:A5 C1:C5");
+            multi.AddDataBar(OfficeColor.Green);
+            sheet.ConditionalFormats.Add(multi);
+            sheet.InsertRows(3, 2);
+            Require(multi.Range == "A1:A7 C1:C7", "InsertRows shifts every sqref fragment");
+            sheet.DeleteRows(3, 2);
+            Require(multi.Range == "A1:A5 C1:C5", "DeleteRows shifts every sqref fragment back");
+
+            ExcelConditionalFormat far = new ExcelConditionalFormat("D40:D41 F40:F41");
+            far.AddDataBar(OfficeColor.Red);
+            sheet.ConditionalFormats.Add(far);
+            sheet.DeleteRows(40, 3);
+            Require(!sheet.ConditionalFormats.Contains(far), "a rule whose fragments all vanish is dropped");
+            Require(sheet.ConditionalFormats.Contains(multi), "an untouched multi-fragment rule survives");
+
+            ExcelConditionalFormat wholeRows = new ExcelConditionalFormat("Board!$6:$8");
+            wholeRows.AddDataBar(OfficeColor.Blue);
+            sheet.ConditionalFormats.Add(wholeRows);
+            ExcelConditionalFormat swallowed = new ExcelConditionalFormat("900:902");
+            swallowed.AddDataBar(OfficeColor.Red);
+            sheet.ConditionalFormats.Add(swallowed);
+            sheet.InsertRows(3, 2);
+            Require(wholeRows.Range == "Board!$8:$10", "InsertRows shifts a whole-row reference, keeping prefix and locks");
+            sheet.DeleteRows(3, 2);
+            Require(wholeRows.Range == "Board!$6:$8", "DeleteRows restores a whole-row reference");
+            sheet.DeleteRows(900, 3);
+            Require(!sheet.ConditionalFormats.Contains(swallowed), "DeleteRows drops a swallowed whole-row rule");
+
+            ExcelConditionalFormat wholeColumns = new ExcelConditionalFormat("C:D");
+            wholeColumns.AddDataBar(OfficeColor.Green);
+            sheet.ConditionalFormats.Add(wholeColumns);
+            ExcelConditionalFormat lockedColumns = new ExcelConditionalFormat("Board!$C:$D");
+            lockedColumns.AddDataBar(OfficeColor.Blue);
+            sheet.ConditionalFormats.Add(lockedColumns);
+            sheet.InsertRows(5, 1);
+            Require(wholeColumns.Range == "C:D", "a row edit leaves a whole-column reference alone");
+            Require(lockedColumns.Range == "Board!$C:$D", "a row edit leaves a locked whole-column reference alone");
+            sheet.DeleteRows(5, 1);
+
+            sheet.InsertColumns(2, 1);
+            Require(wholeColumns.Range == "D:E", "InsertColumns shifts a whole-column reference");
+            Require(lockedColumns.Range == "Board!$D:$E", "InsertColumns shifts a locked whole-column reference");
+            Require(wholeRows.Range == "Board!$6:$8", "a column edit leaves a whole-row reference alone");
+            sheet.DeleteColumns(2, 1);
+            Require(wholeColumns.Range == "C:D", "DeleteColumns restores the whole-column reference");
+            Require(lockedColumns.Range == "Board!$C:$D", "DeleteColumns restores the locked whole-column reference");
+
+            sheet.InsertColumns(2, 1);
+            Require(bar.Range == "E5:Q5", "InsertColumns shifts the conditional-format columns");
+            Require(series.ValueRange == "Board!$F$5:$Q$5", "InsertColumns shifts the series columns");
+            Require(icon.Column == 4 && chart.Column == 21, "InsertColumns shifts the anchors");
+            sheet.DeleteColumns(2, 1);
+            Require(bar.Range == "D5:P5", "DeleteColumns restores the columns");
+            Require(series.ValueRange == "Board!$E$5:$P$5", "DeleteColumns restores the series columns");
+
+            string path = PrepareOutputPath(Path.Combine(outputDirectory, "excel-decoration-shift.xlsx"));
+            XlsxWriter.Write(workbook, path);
+            OfficeWorkbook reloaded = XlsxReader.Load(path);
+            Worksheet board = reloaded.FindWorksheet("Board");
+            Require(board.Charts.Count == 1, "the shifted chart survives the round trip");
+            Require(board.Images.Count == 1, "the shifted image survives the round trip");
+            Require(board.Charts[0].Series[0].ValueRange.Replace("'", string.Empty) == "Board!$E$5:$P$5",
+                "the reloaded series range points back at the shifted cells");
+            Require(!string.IsNullOrEmpty(board.ConditionalFormats[0].Range), "the reloaded rule keeps its range");
+        }
+
+        /// <summary>
+        /// 每页重复的标题行列写入 _xlnm.Print_Titles 并能在读取—保存往返后存活，插入删除时同步平移。
+        /// Repeated title rows and columns land in _xlnm.Print_Titles, survive a load-save round trip and shift
+        /// with row/column edits.
+        /// </summary>
+        /// <param name="outputDirectory">输出目录。The output directory.</param>
+        private static void RunExcelPrintTitleTest(string outputDirectory)
+        {
+            OfficeWorkbook workbook = new OfficeWorkbook();
+            Worksheet sheet = workbook.AddWorksheet("Report");
+            sheet.GetCell(1, 1).Value = "Month";
+            sheet.GetCell(2, 1).Value = "Jan";
+            sheet.SetPrintTitleRows("1:2");
+            sheet.SetPrintTitleColumns("A:B");
+            Require(sheet.HasPrintTitles, "print titles are set");
+
+            Worksheet plain = workbook.AddWorksheet("Plain");
+            plain.GetCell(1, 1).Value = 1d;
+
+            string path = PrepareOutputPath(Path.Combine(outputDirectory, "excel-print-titles.xlsx"));
+            XlsxWriter.Write(workbook, path);
+            string workbookXml;
+            using (ZipArchive archive = ZipFile.OpenRead(path))
+            {
+                workbookXml = ReadZipEntryText(archive, "xl/workbook.xml");
+            }
+            RequireContains(workbookXml, "_xlnm.Print_Titles");
+            RequireContains(workbookXml, "!$1:$2");
+            RequireContains(workbookXml, "!$A:$B");
+            Require(workbookXml.IndexOf("localSheetId=\"1\"", StringComparison.Ordinal) < 0,
+                "a sheet without titles emits no defined name");
+
+            OfficeWorkbook reloaded = XlsxReader.Load(path);
+            Worksheet report = reloaded.FindWorksheet("Report");
+            Require(report.PrintTitleFirstRow == 1 && report.PrintTitleLastRow == 2, "title rows reload");
+            Require(report.PrintTitleFirstColumn == 1 && report.PrintTitleLastColumn == 2, "title columns reload");
+            Require(!reloaded.FindWorksheet("Plain").HasPrintTitles, "the untitled sheet stays untitled");
+
+            report.InsertRows(1, 1);
+            Require(report.PrintTitleFirstRow == 2 && report.PrintTitleLastRow == 3, "InsertRows shifts title rows");
+            report.DeleteRows(1, 1);
+            Require(report.PrintTitleFirstRow == 1 && report.PrintTitleLastRow == 2, "DeleteRows restores title rows");
+            report.InsertColumns(1, 1);
+            Require(report.PrintTitleFirstColumn == 2 && report.PrintTitleLastColumn == 3, "InsertColumns shifts title columns");
+
+            report.SetPrintTitleRows("$3:$4");
+            Require(report.PrintTitleFirstRow == 3 && report.PrintTitleLastRow == 4, "title rows accept locks and prefixes");
+            report.SetPrintTitleRows(null);
+            Require(report.PrintTitleFirstRow == 0, "clearing title rows");
+            Require(report.PrintTitleFirstColumn == 2, "clearing rows leaves columns alone");
+
+            bool rejected = false;
+            try { report.SetPrintTitleRows("A:B"); }
+            catch (FormatException) { rejected = true; }
+            Require(rejected, "a column range is rejected as title rows");
+        }
+
+        /// <summary>
+        /// 模板填充带走工作簿日期基准与表级装饰：循环展开后条件格式、筛选、数据验证、打印区域/重复标题、
+        /// 隐藏行列与图表锚点都换算到输出行。
+        /// Template fill carries the workbook's date epoch and the sheet-level decorations: once a loop expands,
+        /// conditional formats, the filter, data validations, the print area and repeated titles, hidden rows and
+        /// columns and the chart anchor all convert to output rows.
+        /// </summary>
+        /// <param name="outputDirectory">输出目录。The output directory.</param>
+        private static void RunExcelTemplateDecorationTest(string outputDirectory)
+        {
+            OfficeWorkbook template = CreateDecorationTemplate();
+            Require(template.Date1904, "the fixture is a 1904 workbook");
+
+            OfficeWorkbook empty = XlsxTemplate.Fill(template, new TemplateContext());
+            Worksheet plain = empty.Worksheets[0];
+            Require(empty.Date1904, "fill carries date1904 over");
+            Require(plain.LastRow == 2, "an empty loop leaves the header and the total row");
+            Require(plain.ConditionalFormats.Count == 0,
+                "a rule that only covered the vanished loop rows is dropped instead of pointing at nothing");
+            Require(plain.DataValidations.Count == 0, "a validation over vanished rows is dropped");
+            Require(plain.Charts.Count == 0, "a chart whose series lost every value row is dropped");
+            Require(plain.HasPrintArea && plain.PrintAreaFirstRow == 1 && plain.PrintAreaLastRow == 47,
+                "a print area past the used range extrapolates through an empty loop");
+
+            OfficeWorkbook flat = CreateDecorationTemplate();
+            Worksheet flatSheet = flat.Worksheets[0];
+            flatSheet.GetCell(2, 1).Value = "行A";
+            flatSheet.GetCell(4, 1).Value = "行B";
+            Worksheet kept = XlsxTemplate.Fill(flat, new TemplateContext()).Worksheets[0];
+            Require(kept.Charts.Count == 1 && ReferenceEquals(kept.Charts[0], flatSheet.Charts[0]),
+                "when no row moves the chart is carried over as-is, literal caches intact");
+            Require(kept.ConditionalFormats[0].Range == "A3:B3", "with no row movement the conditional range only loses its prefix");
+            Require(kept.DataValidations[0].Range == "B3", "a degenerate range collapses to its single cell");
+            Require(kept.Images.Count == 1 && kept.Images[0].Row == 5, "with no row movement the image stays put");
+
+            TemplateContext context = new TemplateContext();
+            List<object> items = new List<object>();
+            for (int i = 0; i < 3; i++)
+            {
+                Dictionary<string, object> row = new Dictionary<string, object>();
+                row["name"] = "行" + (i + 1);
+                items.Add(row);
+            }
+            context.Set("items", items);
+            OfficeWorkbook filled = XlsxTemplate.Fill(template, context);
+            Worksheet sheet = filled.Worksheets[0];
+
+            Require(sheet.LastRow == 5, "three items plus two fixed rows give five rows");
+            Require(sheet.GetCell(2, 1).Value as string == "行1", "the loop starts right after the header");
+            Require(sheet.GetCell(5, 1).Value as string == "合计", "the total row follows the expanded loop");
+            Require(sheet.ConditionalFormats[0].Range == "A2:B4", "the conditional range follows the loop");
+            Require(sheet.AutoFilter != null && sheet.AutoFilter.Range == "A1:C4", "the filter end snaps to the last loop row");
+            Require(sheet.DataValidations[0].Range == "B2:B4", "the validation range follows the loop");
+            Require(sheet.HasPrintArea && sheet.PrintAreaLastRow == 50,
+                "a print area that runs past the used range is extrapolated, not dropped");
+            Require(sheet.PrintTitleFirstRow == 1 && sheet.PrintTitleLastRow == 1
+                && sheet.PrintTitleFirstColumn == 1 && sheet.PrintTitleLastColumn == 2,
+                "repeated title rows and columns carry over");
+            Require(sheet.HiddenColumns.Contains(3), "the hidden helper column stays hidden");
+            Require(sheet.HiddenRows.Contains(5), "the hidden total row maps to the output row");
+            Require(!sheet.ShowZeros && sheet.CenterHorizontally && sheet.TabColor != null,
+                "view flags and the tab color carry over");
+            Require(sheet.Charts.Count == 1 && sheet.Charts[0].Row == 6, "the chart anchor moves with the rows");
+            Require(sheet.Charts[0].Series[0].CategoryRange == "A2:A4", "series ranges follow the loop");
+            Require(sheet.Images.Count == 1 && sheet.Images[0].Row == 5, "the anchored image moves with the rows");
+            Require(sheet.Images[0] != template.Worksheets[0].Images[0], "a moved image is a copy, the template stays intact");
+            Require(template.Worksheets[0].ConditionalFormats[0].Range == "Report!$A$3:$B$3",
+                "fill never rewrites the template's own decorations");
+
+            string path = PrepareOutputPath(Path.Combine(outputDirectory, "excel-template-decorations.xlsx"));
+            XlsxWriter.Write(filled, path);
+            OfficeWorkbook reloaded = XlsxReader.Load(path);
+            Worksheet again = reloaded.Worksheets[0];
+            Require(reloaded.Date1904, "the written file keeps the 1904 epoch");
+            Require(again.GetCell(1, 1).Value is DateTime && (DateTime)again.GetCell(1, 1).Value == new DateTime(2024, 3, 5),
+                "a 1904 date does not drift through fill and save");
+            Require(again.ConditionalFormats.Count == 1 && again.ConditionalFormats[0].Range == "A2:B4",
+                "the mapped conditional range reads back");
+            Require(again.AutoFilter != null && again.AutoFilter.Range == "A1:C4", "the mapped filter reads back");
+            Require(again.DataValidations.Count == 1 && again.DataValidations[0].Range == "B2:B4",
+                "the mapped validation reads back");
+            Require(again.HasPrintArea && again.PrintAreaLastRow == 50, "the mapped print area reads back");
+            Require(again.PrintTitleFirstColumn == 1 && again.PrintTitleLastColumn == 2,
+                "the repeated title columns read back");
+            Require(again.Charts.Count == 1 && again.Charts[0].Row == 6, "the remapped chart anchor reads back");
+            Require(again.Images.Count == 1 && again.Images[0].Row == 5, "the moved image reads back");
+        }
+
+        /// <summary>
+        /// 构造带循环与各种表级装饰的模板工作簿。 Builds the template workbook that carries a loop and every sheet-level decoration.
+        /// </summary>
+        /// <returns>模板工作簿。 The template workbook.</returns>
+        private static OfficeWorkbook CreateDecorationTemplate()
+        {
+            OfficeWorkbook workbook = new OfficeWorkbook();
+            workbook.Date1904 = true;
+            Worksheet sheet = workbook.AddWorksheet("Report");
+            sheet.GetCell(1, 1).Value = new DateTime(2024, 3, 5);
+            sheet.GetCell(1, 1).EnsureStyle().NumberFormat = "yyyy-mm-dd";
+            sheet.GetCell(2, 1).Value = "{{#each items}}";
+            sheet.GetCell(3, 1).Value = "{{name}}";
+            sheet.GetCell(4, 1).Value = "{{/each}}";
+            sheet.GetCell(5, 1).Value = "合计";
+            sheet.SetColumnWidth(3, 12);
+            sheet.SetColumnHidden(3, true);
+            sheet.SetRowHidden(5, true);
+            sheet.ShowZeros = false;
+            sheet.CenterHorizontally = true;
+            sheet.TabColor = new OfficeColor(0xFF, 0x00, 0x00);
+            sheet.SetPrintArea("A1:C50");
+            sheet.SetPrintTitleRows("1:1");
+            sheet.SetPrintTitleColumns("A:B");
+
+            ExcelConditionalFormat format = new ExcelConditionalFormat("Report!$A$3:$B$3");
+            format.Rules.Add(new ExcelConditionalRule());
+            sheet.ConditionalFormats.Add(format);
+
+            ExcelDataValidation validation = new ExcelDataValidation();
+            validation.Range = "B3:B3";
+            validation.Type = DataValidationType.Whole;
+            validation.Operator = DataValidationOperator.Between;
+            validation.Formula1 = "1";
+            validation.Formula2 = "100";
+            sheet.DataValidations.Add(validation);
+
+            sheet.AutoFilter = new ExcelAutoFilter("A1:C4");
+
+            ExcelChart chart = new ExcelChart();
+            chart.Row = 6;
+            chart.Column = 5;
+            chart.AddSeries("$A$1", "$A$3", "$A$3");
+            sheet.Charts.Add(chart);
+
+            string png = Path.Combine(Path.GetTempPath(), "office-template-dot.png");
+            File.WriteAllBytes(png, CreateTestPng(4, 4));
+            ExcelImage image = new ExcelImage(OfficeImage.FromFile(png));
+            image.Row = 5;
+            image.Column = 8;
+            sheet.Images.Add(image);
+            return workbook;
         }
 
         /// <summary>集合与 DataTable 映射往返。Collection and DataTable mapping round trip.</summary>

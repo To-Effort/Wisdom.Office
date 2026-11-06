@@ -71,6 +71,21 @@ namespace Wisdom.Excel
             OfficeWorkbook result = new OfficeWorkbook();
             result.Metadata = CloneMetadata(template.Metadata);
             result.DefaultStyle = template.DefaultStyle != null ? template.DefaultStyle.Clone() : new CellStyle();
+            // 日期基准属于工作簿，不是某张表：漏掉它，1904 模板写出的每个日期都会整体偏移四年。
+            // The date epoch belongs to the workbook, not one sheet: drop it and every date in a 1904 template
+            // lands four years early.
+            result.Date1904 = template.Date1904;
+            // 定义名逐表按同一顺序生成，工作表下标不变，引用原样带走（填充不重写引用里的行号，与公式同一口径）。
+            // Sheets keep their order, so local-sheet indexes stay valid; references are carried over as written,
+            // the same no-rewrite rule template fill already follows for formulas.
+            for (int i = 0; i < template.DefinedNames.Count; i++)
+            {
+                ExcelDefinedName name = template.DefinedNames[i];
+                if (name == null || string.IsNullOrEmpty(name.Name)) continue;
+                ExcelDefinedName copy = new ExcelDefinedName(name.Name, name.Reference);
+                copy.LocalSheetId = name.LocalSheetId;
+                result.DefinedNames.Add(copy);
+            }
             for (int i = 0; i < template.Worksheets.Count; i++)
             {
                 Worksheet filled = ProcessSheet(template.Worksheets[i], context, options);
@@ -81,10 +96,12 @@ namespace Wisdom.Excel
 
         /// <summary>
         /// 处理单个工作表：复制表级属性与列宽，检测 {{#each}} 循环块，
-        /// 按行（循环行按数据条目重复）逐行拷贝到输出表，最后按行映射重建合并区域。
+        /// 按行（循环行按数据条目重复）逐行拷贝到输出表，最后按行映射重建合并区域，
+        /// 并把条件格式、筛选、数据验证、打印区域这些"行号写在文本里"的装饰换算到输出行。
         /// Processes one worksheet: copies sheet-level properties and column widths, detects {{#each}} loop
-        /// blocks, copies rows one by one to the output sheet (loop rows repeated per data item), and finally
-        /// rebuilds merged ranges from the row mapping.
+        /// blocks, copies rows one by one to the output sheet (loop rows repeated per data item), then rebuilds
+        /// merged ranges and converts the decorations whose row numbers live inside range text — conditional
+        /// formats, the filter, data validations and the print area — through the same row mapping.
         /// </summary>
         /// <param name="source">模板工作表。</param>
         /// <param name="context">外层令牌上下文。</param>
@@ -164,6 +181,7 @@ namespace Wisdom.Excel
             }
 
             CopyMergedRanges(source, target, placements);
+            CopyDecorations(source, target, new RowMap(lastRow, placements));
             return target;
         }
 
@@ -444,6 +462,341 @@ namespace Wisdom.Excel
             }
         }
 
+        /// <summary>
+        /// 复制模板里那些"不在单元格上"的设置：视图开关、隐藏行列、打印区域/重复标题、筛选、数据验证、
+        /// 条件格式与图表/图片；行号按模板行到输出行的映射换算。
+        /// Copies the settings that do not live on cells — view flags, hidden rows and columns, print area and
+        /// repeated titles, the filter, data validations, conditional formats, charts and images — converting
+        /// row numbers through the template-row to output-row mapping.
+        /// </summary>
+        /// <param name="source">模板工作表。</param>
+        /// <param name="target">输出工作表。</param>
+        /// <param name="rows">模板行到输出行的映射。</param>
+        private static void CopyDecorations(Worksheet source, Worksheet target, RowMap rows)
+        {
+            target.IsHidden = source.IsHidden;
+            target.ShowZeros = source.ShowZeros;
+            target.CenterHorizontally = source.CenterHorizontally;
+            target.TabColor = source.TabColor;
+            foreach (int column in source.HiddenColumns) target.HiddenColumns.Add(column);
+            foreach (int row in source.HiddenRows)
+            {
+                int mapped = rows.MappedRow(row);
+                if (mapped > 0) target.HiddenRows.Add(mapped);
+            }
+
+            if (source.HasPrintArea)
+            {
+                int first = rows.RangeStart(source.PrintAreaFirstRow);
+                int last = rows.RangeEnd(source.PrintAreaLastRow);
+                if (first > 0 && last >= first)
+                {
+                    target.SetPrintArea(CellAddress.Format(first, source.PrintAreaFirstColumn) + ":"
+                        + CellAddress.Format(last, source.PrintAreaLastColumn));
+                }
+            }
+            if (source.PrintTitleFirstRow > 0)
+            {
+                int first = rows.RangeStart(source.PrintTitleFirstRow);
+                int last = rows.RangeEnd(source.PrintTitleLastRow);
+                if (first > 0 && last >= first)
+                {
+                    target.SetPrintTitleRows(first + ":" + last);
+                }
+            }
+            if (source.PrintTitleFirstColumn > 0)
+            {
+                // 列方向不受行展开影响，原样带走。 Columns are untouched by row expansion, so copy as written.
+                target.SetPrintTitleColumns(CellAddress.ColumnName(source.PrintTitleFirstColumn) + ":"
+                    + CellAddress.ColumnName(source.PrintTitleLastColumn));
+            }
+
+            if (source.AutoFilter != null)
+            {
+                string range = MapRangeText(source.AutoFilter.Range, rows);
+                if (range.Length > 0)
+                {
+                    ExcelAutoFilter filter = new ExcelAutoFilter(range);
+                    for (int i = 0; i < source.AutoFilter.Columns.Count; i++)
+                    {
+                        ExcelFilterColumn column = source.AutoFilter.Columns[i];
+                        ExcelFilterColumn copy = filter.ForColumn(column.ColumnId);
+                        copy.IncludeBlanks = column.IncludeBlanks;
+                        copy.Values.AddRange(column.Values);
+                    }
+                    target.AutoFilter = filter;
+                }
+            }
+
+            for (int i = 0; i < source.DataValidations.Count; i++)
+            {
+                ExcelDataValidation validation = source.DataValidations[i];
+                if (validation == null) continue;
+                string range = MapRangeText(validation.Range, rows);
+                if (range.Length == 0) continue;
+                target.DataValidations.Add(new ExcelDataValidation
+                {
+                    Range = range,
+                    Type = validation.Type,
+                    Operator = validation.Operator,
+                    Formula1 = validation.Formula1,
+                    Formula2 = validation.Formula2,
+                    AllowBlank = validation.AllowBlank,
+                    ShowDropDown = validation.ShowDropDown,
+                    ShowInputMessage = validation.ShowInputMessage,
+                    ShowErrorMessage = validation.ShowErrorMessage,
+                    PromptTitle = validation.PromptTitle,
+                    Prompt = validation.Prompt,
+                    ErrorTitle = validation.ErrorTitle,
+                    ErrorMessage = validation.ErrorMessage,
+                    ErrorStyle = validation.ErrorStyle
+                });
+            }
+
+            for (int i = 0; i < source.ConditionalFormats.Count; i++)
+            {
+                ExcelConditionalFormat format = source.ConditionalFormats[i];
+                if (format == null || format.Rules.Count == 0) continue;
+                string range = MapRangeText(format.Range, rows);
+                if (range.Length == 0) continue;
+                ExcelConditionalFormat copy = new ExcelConditionalFormat(range);
+                for (int r = 0; r < format.Rules.Count; r++) copy.Rules.Add(format.Rules[r]);
+                target.ConditionalFormats.Add(copy);
+            }
+
+            for (int i = 0; i < source.Charts.Count; i++)
+            {
+                ExcelChart chart = source.Charts[i];
+                if (chart == null) continue;
+                if (rows.IsIdentity)
+                {
+                    target.Charts.Add(chart);
+                    continue;
+                }
+                ExcelChart copy = CopyChart(chart, rows);
+                if (chart.Series.Count > 0 && copy.Series.Count == 0) continue;
+                target.Charts.Add(copy);
+            }
+            for (int i = 0; i < source.Images.Count; i++)
+            {
+                ExcelImage image = source.Images[i];
+                if (image == null) continue;
+                if (!rows.IsIdentity)
+                {
+                    int anchorRow = rows.MappedRow(image.Row);
+                    if (anchorRow <= 0) continue;
+                    ExcelImage copy = new ExcelImage(image.Image);
+                    copy.Row = anchorRow;
+                    copy.Column = image.Column;
+                    copy.OffsetXPoints = image.OffsetXPoints;
+                    copy.OffsetYPoints = image.OffsetYPoints;
+                    copy.WidthPoints = image.WidthPoints;
+                    copy.HeightPoints = image.HeightPoints;
+                    target.Images.Add(copy);
+                    continue;
+                }
+                target.Images.Add(image);
+            }
+        }
+
+        /// <summary>
+        /// 行号发生位移时重建图表：锚点与四条系列区域都换成输出行。字面量列表按引用共享，
+        /// 与 <c>CopyWorksheet</c> 同一口径（填充结果不再回写模板）。
+        /// Rebuilds a chart once rows moved: the anchor and the four series ranges become output rows. Literal
+        /// caches are shared by reference, the same way <c>CopyWorksheet</c> shares them (a filled workbook is
+        /// never written back into the template).
+        /// </summary>
+        /// <param name="source">模板图表。</param>
+        /// <param name="rows">模板行到输出行的映射。</param>
+        /// <returns>输出图表。</returns>
+        private static ExcelChart CopyChart(ExcelChart source, RowMap rows)
+        {
+            ExcelChart copy = new ExcelChart();
+            copy.Type = source.Type;
+            copy.Title = source.Title;
+            copy.Column = source.Column;
+            copy.WidthPoints = source.WidthPoints;
+            copy.HeightPoints = source.HeightPoints;
+            copy.ShowLegend = source.ShowLegend;
+            copy.LegendPosition = source.LegendPosition;
+            copy.HoleSize = source.HoleSize;
+            copy.ValueAxisFormat = source.ValueAxisFormat;
+            int anchorRow = rows.MappedRow(source.Row);
+            copy.Row = anchorRow > 0 ? anchorRow : rows.RangeStart(source.Row);
+            if (copy.Row <= 0) copy.Row = 1;
+            for (int i = 0; i < source.Series.Count; i++)
+            {
+                ExcelChartSeries series = source.Series[i];
+                if (series == null) continue;
+                string valueRange = MapSeriesRange(series.ValueRange, rows);
+                if (string.IsNullOrEmpty(valueRange) && !string.IsNullOrEmpty(series.ValueRange)
+                    && (series.Values == null || series.Values.Count == 0))
+                {
+                    // 数据行随空循环一起消失，这条系列已无值可画；空系列会让图表部件不合法。
+                    // Its data rows vanished with an empty loop, so the series has nothing left to plot, and an
+                    // empty series would make the chart part illegal.
+                    continue;
+                }
+                // 构造函数是字面量类目/数值唯一的写入口，区域与样式属性随后补齐。
+                // The constructor is the only way to hand over the literal categories and values, so the ranges
+                // and style properties are filled in afterwards.
+                ExcelChartSeries copySeries = new ExcelChartSeries(series.Name, series.Categories, series.Values);
+                copySeries.NameRange = MapSeriesRange(series.NameRange, rows);
+                copySeries.CategoryRange = MapSeriesRange(series.CategoryRange, rows);
+                copySeries.ValueRange = valueRange;
+                copySeries.SizeRange = MapSeriesRange(series.SizeRange, rows);
+                copySeries.ChartType = series.ChartType;
+                copySeries.SecondaryAxis = series.SecondaryAxis;
+                copySeries.FillColor = series.FillColor;
+                copySeries.ShowDataLabels = series.ShowDataLabels;
+                copySeries.DataLabelFormat = series.DataLabelFormat;
+                copySeries.Marker = series.Marker;
+                copySeries.Smooth = series.Smooth;
+                for (int c = 0; c < series.PointColors.Count; c++) copySeries.PointColors.Add(series.PointColors[c]);
+                copy.Series.Add(copySeries);
+            }
+            return copy;
+        }
+
+        /// <summary>
+        /// 把模板区域文本换算成输出区域：逐片段剥表前缀、按行映射换行号；认不出的整列引用（<c>A:A</c>）
+        /// 不含行号，原样保留，其余无法换算的片段丢弃。
+        /// Converts template range text into output ranges: each fragment loses its sheet prefix and has its rows
+        /// remapped. Whole-column references such as <c>A:A</c> carry no row numbers and stay verbatim; other
+        /// fragments that cannot be converted are dropped.
+        /// </summary>
+        /// <param name="text">模板区域文本。</param>
+        /// <param name="rows">模板行到输出行的映射。</param>
+        /// <returns>换算后的区域文本；无有效片段时为空串。</returns>
+        private static string MapRangeText(string text, RowMap rows)
+        {
+            System.Text.StringBuilder builder = new System.Text.StringBuilder();
+            if (text == null) return string.Empty;
+            string[] fragments = text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < fragments.Length; i++)
+            {
+                string fragment = fragments[i];
+                int bang = fragment.LastIndexOf('!');
+                if (bang >= 0) fragment = fragment.Substring(bang + 1);
+                int row1, column1, row2, column2;
+                try
+                {
+                    CellAddress.ParseRange(fragment, out row1, out column1, out row2, out column2);
+                }
+                catch (FormatException)
+                {
+                    if (fragment.Length == 0) continue;
+                    // 整行引用（2:2）只有行号，换算后仍写成整行；整列引用（A:A）不含行号，原样带走。
+                    // A whole-row reference carries row numbers only and stays whole-row after mapping; a
+                    // whole-column reference has no rows at all and stays verbatim.
+                    int rowFirst, rowLast;
+                    if (TryReadRowPair(fragment, out rowFirst, out rowLast))
+                    {
+                        int mappedFirst = rows.RangeStart(rowFirst);
+                        int mappedLast = rows.RangeEnd(rowLast);
+                        if (mappedFirst > 0 && mappedLast >= mappedFirst)
+                        {
+                            AppendFragment(builder, mappedFirst.ToString(CultureInfo.InvariantCulture)
+                                + ":" + mappedLast.ToString(CultureInfo.InvariantCulture));
+                        }
+                        continue;
+                    }
+                    if (HasDigit(fragment)) continue;
+                    AppendFragment(builder, fragment);
+                    continue;
+                }
+                int first = rows.RangeStart(Math.Min(row1, row2));
+                int last = rows.RangeEnd(Math.Max(row1, row2));
+                if (first <= 0 || last < first) continue;
+                int firstColumn = Math.Min(column1, column2);
+                int lastColumn = Math.Max(column1, column2);
+                AppendFragment(builder, last == first && lastColumn == firstColumn
+                    ? CellAddress.Format(first, firstColumn)
+                    : CellAddress.Format(first, firstColumn) + ":" + CellAddress.Format(last, lastColumn));
+            }
+            return builder.ToString();
+        }
+
+        /// <summary>换算系列区域，模板端为 null 时保持 null，不写出空引用。</summary>
+        /// <param name="text">模板区域文本。</param>
+        /// <param name="rows">模板行到输出行的映射。</param>
+        /// <returns>换算后的区域文本，或 null。</returns>
+        private static string MapSeriesRange(string text, RowMap rows)
+        {
+            if (text == null) return null;
+            if (text.Length == 0) return string.Empty;
+            return MapRangeText(text, rows);
+        }
+
+        /// <summary>识别整行引用（<c>2:2</c>，可带 <c>$</c>）并读出起止行号。</summary>
+        /// <param name="fragment">区域片段。</param>
+        /// <param name="first">输出起始行号。</param>
+        /// <param name="last">输出结束行号。</param>
+        /// <returns>是整行引用时返回 true。</returns>
+        private static bool TryReadRowPair(string fragment, out int first, out int last)
+        {
+            first = 0;
+            last = 0;
+            string[] parts = fragment.Split(':');
+            if (parts.Length != 2) return false;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string text = parts[i].Trim();
+                if (text.StartsWith("$", StringComparison.Ordinal)) text = text.Substring(1);
+                if (text.Length == 0 || !IsAllDigits(text)) return false;
+                int value;
+                if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value)) return false;
+                if (value <= 0) return false;
+                if (i == 0) first = value;
+                else last = value;
+            }
+            if (last < first)
+            {
+                int swap = first;
+                first = last;
+                last = swap;
+            }
+            return true;
+        }
+
+        /// <summary>判断文本是否全为数字。</summary>
+        /// <param name="text">待判定的文本。</param>
+        /// <returns>全数字时返回 true。</returns>
+        private static bool IsAllDigits(string text)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!char.IsDigit(text[i])) return false;
+            }
+            return true;
+        }
+
+        /// <summary>把一片区域并入结果文本，重复片段不再追加。</summary>
+        /// <param name="builder">结果文本累加器。</param>
+        /// <param name="fragment">区域片段。</param>
+        private static void AppendFragment(System.Text.StringBuilder builder, string fragment)
+        {
+            string existing = builder.ToString();
+            foreach (string token in existing.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (string.Equals(token, fragment, StringComparison.OrdinalIgnoreCase)) return;
+            }
+            if (builder.Length > 0) builder.Append(' ');
+            builder.Append(fragment);
+        }
+
+        /// <summary>判断文本是否含数字，用于区分整列引用与坏掉的位置引用。</summary>
+        /// <param name="text">区域片段。</param>
+        /// <returns>含数字时返回 true。</returns>
+        private static bool HasDigit(string text)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (char.IsDigit(text[i])) return true;
+            }
+            return false;
+        }
+
         /// <summary>逐项复制页面尺寸与页边距设置。</summary>
         /// <param name="source">源打印设置。</param>
         /// <param name="target">目标打印设置。</param>
@@ -522,6 +875,110 @@ namespace Wisdom.Excel
                 OutputRow = outputRow;
                 Loop = loop;
                 ItemIndex = itemIndex;
+            }
+        }
+
+        /// <summary>
+        /// 模板行到输出行的映射：一行模板可能展开成多行输出，也可能被整块跳过（空循环、纯标记行）。
+        /// 区域起点往后找最近的实存行，终点往前找，越界的行按累计位移外推。
+        /// The template-row to output-row mapping: one template row may expand to several output rows or vanish
+        /// entirely (an empty loop, a marker-only row). A range start looks forward for the nearest surviving row
+        /// and a range end looks backward, while rows past the template's used range are extrapolated by the
+        /// accumulated shift.
+        /// </summary>
+        private sealed class RowMap
+        {
+            /// <summary>每个模板行的首个输出行，0 表示该行没有落位。The first output row per template row; 0 when the row vanished.</summary>
+            private readonly int[] _first;
+            /// <summary>每个模板行的末个输出行。The last output row per template row.</summary>
+            private readonly int[] _last;
+            /// <summary>模板的最大实存行号。The largest used row of the template.</summary>
+            private readonly int _lastSourceRow;
+            /// <summary>输出的最后一行。The final output row.</summary>
+            private readonly int _maxOutputRow;
+            /// <summary>行号是否一行对一行（没有循环展开也没有行被吃掉）。Whether rows map one to one, with no expansion or dropped rows.</summary>
+            private readonly bool _identity;
+
+            /// <summary>由落位记录建立映射表。</summary>
+            /// <param name="lastSourceRow">模板最大行号。</param>
+            /// <param name="placements">落位记录列表。</param>
+            public RowMap(int lastSourceRow, List<Placement> placements)
+            {
+                _lastSourceRow = lastSourceRow < 0 ? 0 : lastSourceRow;
+                _first = new int[_lastSourceRow + 2];
+                _last = new int[_lastSourceRow + 2];
+                int maxOutputRow = 0;
+                for (int i = 0; i < placements.Count; i++)
+                {
+                    Placement placement = placements[i];
+                    if (placement.SourceRow < 1 || placement.SourceRow > _lastSourceRow) continue;
+                    if (_first[placement.SourceRow] == 0) _first[placement.SourceRow] = placement.OutputRow;
+                    _last[placement.SourceRow] = placement.OutputRow;
+                    if (placement.OutputRow > maxOutputRow) maxOutputRow = placement.OutputRow;
+                }
+                _maxOutputRow = maxOutputRow;
+                bool identity = true;
+                for (int row = 1; row <= _lastSourceRow; row++)
+                {
+                    if (_first[row] != row || _last[row] != row)
+                    {
+                        identity = false;
+                        break;
+                    }
+                }
+                _identity = identity;
+            }
+
+            /// <summary>映射是否保持行号不变；不变时图表等装饰可直接共用实例。Whether the map keeps row numbers, letting charts and images be shared as-is.</summary>
+            public bool IsIdentity { get { return _identity; } }
+
+            /// <summary>取单个锚点行的落位；模板行被跳过时返回 0。Resolves one anchor row, returning 0 when the template row vanished.</summary>
+            /// <param name="sourceRow">模板行号。</param>
+            /// <returns>输出行号或 0。</returns>
+            public int MappedRow(int sourceRow)
+            {
+                if (sourceRow < 1) return 0;
+                if (sourceRow > _lastSourceRow) return Overflow(sourceRow);
+                return _first[sourceRow];
+            }
+
+            /// <summary>取区域起点的落位：本行没落位时向后找最近的实存行。Resolves a range start, falling forward to the nearest surviving row.</summary>
+            /// <param name="sourceRow">模板行号。</param>
+            /// <returns>输出行号或 0。</returns>
+            public int RangeStart(int sourceRow)
+            {
+                if (sourceRow > _lastSourceRow) return Overflow(sourceRow);
+                for (int row = sourceRow < 1 ? 1 : sourceRow; row <= _lastSourceRow; row++)
+                {
+                    if (_first[row] > 0) return _first[row];
+                }
+                return _maxOutputRow;
+            }
+
+            /// <summary>取区域终点的落位：本行没落位时向前找最近的实存行。Resolves a range end, falling back to the nearest surviving row.</summary>
+            /// <param name="sourceRow">模板行号。</param>
+            /// <returns>输出行号或 0。</returns>
+            public int RangeEnd(int sourceRow)
+            {
+                if (sourceRow > _lastSourceRow) return Overflow(sourceRow);
+                for (int row = sourceRow > _lastSourceRow ? _lastSourceRow : sourceRow; row >= 1; row--)
+                {
+                    if (_last[row] > 0) return _last[row];
+                }
+                for (int row = 1; row <= _lastSourceRow; row++)
+                {
+                    if (_first[row] > 0) return _first[row];
+                }
+                return 0;
+            }
+
+            /// <summary>模板用尽范围之外的行按累计位移外推，打印区域这类"延伸到空白"的引用才不会凭空消失。Extrapolates rows past the template's used range by the accumulated shift, so print areas that run into the blank area do not vanish.</summary>
+            /// <param name="sourceRow">模板行号。</param>
+            /// <returns>输出行号；无任何落位时返回 0。</returns>
+            private int Overflow(int sourceRow)
+            {
+                if (_maxOutputRow == 0) return 0;
+                return _maxOutputRow + (sourceRow - _lastSourceRow);
             }
         }
     }

@@ -58,15 +58,18 @@ namespace Wisdom.Word
             End
         }
 
+        /// <summary>标记匹配超时，防止畸形段落里的超长空白把合并拖成假死。Match timeout for the marker patterns; a malformed paragraph of very long whitespace must not hang the merge.</summary>
+        private static readonly TimeSpan MarkerTimeout = TimeSpan.FromSeconds(2);
+
         /// <summary>匹配 {{key}} 与 {{key:format}} 标记，排除 #each 循环标记。Matches {{key}} and {{key:format}} tokens, excluding #each loop markers.</summary>
         private static readonly Regex TokenRegex = new Regex(
             @"\{\{\s*([^#/{}][^{}:]*?)\s*(?::\s*([^{}]+?))?\s*\}\}",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, MarkerTimeout);
 
         /// <summary>解析 MERGEFIELD 的数字/日期格式开关（\# 或 \@）。Parses the numeric/date format switch (\# or \@) of a MERGEFIELD instruction.</summary>
         private static readonly Regex FieldFormatRegex = new Regex(
             @"\\\s*([#@])\s*(?:""([^""]*)""|([^\s\\]+))",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+            RegexOptions.Compiled | RegexOptions.CultureInvariant, MarkerTimeout);
 
         /// <summary>
         /// 用字符串字典合并文档中的域与标记。

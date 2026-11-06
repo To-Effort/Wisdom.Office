@@ -696,7 +696,10 @@ namespace Wisdom.Markdown
                 builder.Append("![image](image.png)");
                 return;
             }
-            string mime = data.Format == OfficeImageFormat.Jpeg ? "image/jpeg" : "image/png";
+            string mime = data.Format == OfficeImageFormat.Jpeg ? "image/jpeg"
+                : data.Format == OfficeImageFormat.Gif ? "image/gif"
+                : data.Format == OfficeImageFormat.Bmp ? "image/bmp"
+                : "image/png";
             builder.Append("![image](data:").Append(mime).Append(";base64,")
                    .Append(Convert.ToBase64String(data.Data)).Append(')');
         }

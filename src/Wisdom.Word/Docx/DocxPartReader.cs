@@ -903,7 +903,10 @@ namespace Wisdom.Word
                 double padding = Math.Max(left, right);
                 if (padding > 0) table.CellPadding = padding;
             }
-            XElement alignment = Wml.Child(properties, "tblJc");
+            // 表格对齐按 ECMA-376 读 w:jc；早先读的是自造的 w:tblJc，Word 生成的表格因此一直是左对齐。
+            // Table alignment follows ECMA-376 and reads w:jc; the code used to read the invented w:tblJc, so
+            // Word-authored centered tables always came back left-aligned.
+            XElement alignment = Wml.Child(properties, "jc");
             string alignmentValue = Wml.AttributeValue(alignment, "val");
             if (alignmentValue == "center") table.Alignment = TableAlignment.Center;
             else if (alignmentValue == "right" || alignmentValue == "end") table.Alignment = TableAlignment.Right;

@@ -18,15 +18,21 @@ namespace Wisdom.Excel
         /// <summary>一磅对应的 EMU 数值。 EMU units per point.</summary>
         private const double EmuPerPoint = 12700.0;
 
+        /// <summary>图表缓存点的分配上限，与超链接区域遍历同一口径。 Ceiling on chart cache point allocation, the same bound the hyperlink range walk uses.</summary>
+        private const int MaxCachedChartPoints = 65536;
+
         /// <summary>读取单张工作表的装饰部件并写入模型。 Reads one worksheet's decorations into the model.</summary>
         /// <param name="package">包访问器。 Package accessor.</param>
         /// <param name="sheet">目标工作表模型。 Target worksheet model.</param>
         /// <param name="sheetPart">工作表部件路径。 Worksheet part path.</param>
         /// <param name="root">工作表 XML 根元素。 Root element of the worksheet XML.</param>
         /// <param name="stylesXml">styles.xml 文档（用于解析 dxf）。 The styles.xml document, used to resolve dxf entries.</param>
-        public static void Read(XlsxPackage package, Worksheet sheet, string sheetPart, XElement root, XDocument stylesXml)
+        /// <param name="theme">主题调色板（条件格式色可能是主题色）。 Theme palette, since conditional-format colours may be themed.</param>
+        public static void Read(XlsxPackage package, Worksheet sheet, string sheetPart, XElement root,
+            XDocument stylesXml, XlsxThemeColors theme)
         {
-            ReadConditionalFormats(sheet, root, stylesXml);
+            if (theme == null) theme = XlsxThemeColors.None;
+            ReadConditionalFormats(sheet, root, stylesXml, theme);
             ReadDrawings(package, sheet, sheetPart, root);
         }
 
@@ -66,23 +72,64 @@ namespace Wisdom.Excel
         }
 
         /// <summary>读取 conditionalFormatting 元素并按区域聚合成模型。 Reads conditionalFormatting elements, grouping rules by range.</summary>
+        /// <remarks>
+        /// sqref 是空格分隔的多区域列表："看板!D5:P5 看板!Q5:R5" 早先只留最后一片，前面的区域静默消失。
+        /// 现在逐片剥掉表名引用并保留其余片段，模型里的 Range 文本原样再写回 sqref。
+        /// A sqref is a space-separated list: the old code kept only the last fragment of
+        /// "看板!D5:P5 看板!Q5:R5" and silently dropped everything before it. Each fragment is now stripped of its
+        /// sheet reference and kept, and the model's Range text is written straight back into sqref.
+        /// </remarks>
         /// <param name="sheet">工作表模型。 Worksheet model.</param>
         /// <param name="root">工作表根元素。 Worksheet root element.</param>
         /// <param name="stylesXml">styles.xml 文档。 The styles.xml document.</param>
-        private static void ReadConditionalFormats(Worksheet sheet, XElement root, XDocument stylesXml)
+        /// <param name="theme">主题调色板。 Theme palette.</param>
+        private static void ReadConditionalFormats(Worksheet sheet, XElement root, XDocument stylesXml, XlsxThemeColors theme)
         {
             foreach (XElement block in Xlsx.Children(root, "conditionalFormatting"))
             {
                 string sqref = Xlsx.Attribute(block, "sqref");
                 if (string.IsNullOrEmpty(sqref)) continue;
-                sqref = sqref.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
-                ExcelConditionalFormat format = FindOrCreateFormat(sheet, sqref);
+                string[] fragments = sqref.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (fragments.Length == 0) continue;
+                ExcelConditionalFormat format = null;
+                for (int i = 0; i < fragments.Length; i++)
+                {
+                    // 同一块的规则共享全部片段：按第一片建/找集合，其余片段并入同一对象，避免一条规则拆成多份。
+                    // Rules of one block apply to every fragment: the first fragment finds or creates the set and the
+                    // rest join it, so one rule never splits into several copies.
+                    if (format == null) format = FindOrCreateFormat(sheet, LocalRange(fragments[i]));
+                    else MergeRange(format, LocalRange(fragments[i]));
+                }
                 foreach (XElement ruleElement in Xlsx.Children(block, "cfRule"))
                 {
-                    ExcelConditionalRule rule = ReadRule(ruleElement, stylesXml);
+                    ExcelConditionalRule rule = ReadRule(ruleElement, stylesXml, theme);
                     if (rule != null) format.Rules.Add(rule);
                 }
             }
+        }
+
+        /// <summary>把一片 sqref 片段折成本表坐标（剥掉表名引用）。 Folds one sqref fragment into local coordinates.</summary>
+        /// <param name="fragment">区域片段。 Range fragment.</param>
+        /// <returns>本表坐标文本。 The local range text.</returns>
+        private static string LocalRange(string fragment)
+        {
+            int bang = fragment.LastIndexOf('!');
+            return bang >= 0 ? fragment.Substring(bang + 1) : fragment;
+        }
+
+        /// <summary>把另一片区域并入同一个条件格式集合。 Appends another range fragment to the same conditional-format set.</summary>
+        /// <param name="format">条件格式集合。 The conditional-format set.</param>
+        /// <param name="range">本表坐标文本。 Local range text.</param>
+        private static void MergeRange(ExcelConditionalFormat format, string range)
+        {
+            if (string.IsNullOrEmpty(range)) return;
+            string existing = format.Range == null ? string.Empty : format.Range.Trim();
+            if (existing.Length == 0) { format.Range = range; return; }
+            foreach (string token in existing.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (string.Equals(token, range, StringComparison.OrdinalIgnoreCase)) return;
+            }
+            format.Range = existing + " " + range;
         }
 
         /// <summary>查找同区域的既有条件格式集合，缺失时新建并加入。 Finds the format set for a range, creating and appending one when missing.</summary>
@@ -106,8 +153,9 @@ namespace Wisdom.Excel
         /// <summary>把一条 cfRule 还原为规则模型；类型未知时返回 null。 Restores one cfRule into a rule model, returning null for unknown types.</summary>
         /// <param name="element">cfRule 元素。 The cfRule element.</param>
         /// <param name="stylesXml">styles.xml 文档。 The styles.xml document.</param>
+        /// <param name="theme">主题调色板。 Theme palette.</param>
         /// <returns>规则模型或 null。 The rule or null.</returns>
-        private static ExcelConditionalRule ReadRule(XElement element, XDocument stylesXml)
+        private static ExcelConditionalRule ReadRule(XElement element, XDocument stylesXml, XlsxThemeColors theme)
         {
             string type = Xlsx.Attribute(element, "type");
             ExcelConditionalRule rule = new ExcelConditionalRule();
@@ -121,7 +169,7 @@ namespace Wisdom.Excel
                 if (bounds.Count >= 1) ApplyBound(rule, bounds[0], true);
                 if (bounds.Count >= 2) ApplyBound(rule, bounds[1], false);
                 OfficeColor color;
-                if (Xlsx.TryParseColor(Xlsx.Attribute(Xlsx.Child(dataBar, "color"), "rgb"), out color))
+                if (XlsxColors.TryRead(Xlsx.Child(dataBar, "color"), theme, out color))
                 {
                     rule.Colors.Add(color);
                 }
@@ -137,7 +185,7 @@ namespace Wisdom.Excel
                 foreach (XElement colorElement in Xlsx.Children(scale, "color"))
                 {
                     OfficeColor color;
-                    if (Xlsx.TryParseColor(Xlsx.Attribute(colorElement, "rgb"), out color)) rule.Colors.Add(color);
+                    if (XlsxColors.TryRead(colorElement, theme, out color)) rule.Colors.Add(color);
                 }
                 if (cfvos.Count >= 1) ApplyBound(rule, cfvos[0], true);
                 if (cfvos.Count >= 3) ApplyBound(rule, cfvos[cfvos.Count - 1], false);
@@ -173,7 +221,7 @@ namespace Wisdom.Excel
                 foreach (XElement formula in Xlsx.Children(element, "formula")) formulas.Add(formula);
                 if (formulas.Count >= 1) rule.Formula = formulas[0].Value;
                 if (formulas.Count >= 2) rule.SecondFormula = formulas[1].Value;
-                rule.Format = ReadDxf(stylesXml, Xlsx.IntAttribute(element, "dxfId", -1));
+                rule.Format = ReadDxf(stylesXml, Xlsx.IntAttribute(element, "dxfId", -1), theme);
                 return rule;
             }
             return null;
@@ -204,8 +252,9 @@ namespace Wisdom.Excel
         /// Restores a differential style from the dxfs list of styles.xml, returning null when missing or out of range.</summary>
         /// <param name="stylesXml">styles.xml 文档。 The styles.xml document.</param>
         /// <param name="index">dxfId 索引。 The dxfId index.</param>
+        /// <param name="theme">主题调色板。 Theme palette.</param>
         /// <returns>差量样式或 null。 The style or null.</returns>
-        private static CellStyle ReadDxf(XDocument stylesXml, int index)
+        private static CellStyle ReadDxf(XDocument stylesXml, int index, XlsxThemeColors theme)
         {
             if (stylesXml == null || stylesXml.Root == null || index < 0) return null;
             XElement dxfs = MainChild(stylesXml.Root, "dxfs");
@@ -214,24 +263,25 @@ namespace Wisdom.Excel
             if (index >= list.Count) return null;
 
             CellStyle style = new CellStyle();
+            // dxf 里的字体颜色经常是 theme 索引（例如高亮规则的 theme="1"），只认 rgb 会读成黑色。
+            // Font colours inside a dxf are often theme indices (highlight rules use theme="1"), so reading only rgb
+            // came back as black.
+            style.FontColor = XlsxColors.Read(Xlsx.Child(MainChild(list[index], "font"), "color"), theme, style.FontColor);
             XElement font = MainChild(list[index], "font");
             if (font != null)
             {
                 style.Bold = Xlsx.ParseBool(Xlsx.Attribute(MainChild(font, "b"), "val"), true);
                 style.Italic = Xlsx.ParseBool(Xlsx.Attribute(MainChild(font, "i"), "val"), true);
-                OfficeColor fontColor;
-                if (Xlsx.TryParseColor(Xlsx.Attribute(Xlsx.Child(font, "color"), "rgb"), out fontColor))
-                {
-                    style.FontColor = fontColor;
-                }
+                style.Underline = MainChild(font, "u") != null;
             }
             XElement fill = MainChild(list[index], "fill");
             XElement pattern = MainChild(fill, "patternFill");
-            OfficeColor background;
-            if (Xlsx.TryParseColor(Xlsx.Attribute(MainChild(pattern, "bgColor"), "rgb"), out background))
+            XElement background = MainChild(pattern, "bgColor");
+            if (background != null && !XlsxColors.IsAutomatic(background))
             {
-                style.FillColor = background;
+                style.FillColor = XlsxColors.Read(background, theme, OfficeColor.White);
             }
+            XlsxStyles.ApplyBorder(style, MainChild(list[index], "border"), theme);
             XElement numFmt = MainChild(list[index], "numFmt");
             string formatCode = Xlsx.Attribute(numFmt, "formatCode");
             if (!string.IsNullOrEmpty(formatCode)) style.NumberFormat = formatCode;
@@ -580,7 +630,7 @@ namespace Wisdom.Excel
             if (cache == null) return result;
             XElement inner = LocalChild(cache, "strCache");
             if (inner != null) cache = inner;
-            int count = Xlsx.IntAttribute(LocalChild(cache, "ptCount"), "val", 0);
+            int count = ClampCachedPoints(Xlsx.IntAttribute(LocalChild(cache, "ptCount"), "val", 0));
             for (int i = 0; i < count; i++) result.Add(string.Empty);
             foreach (XElement point in LocalChildren(cache, "pt"))
             {
@@ -590,6 +640,21 @@ namespace Wisdom.Excel
                 result[index] = value == null ? string.Empty : value.Value;
             }
             return result;
+        }
+
+        /// <summary>
+        /// 图表缓存点数声明值的上限。ptCount 是文件里写的数字，真实序列远小于此，
+        /// 直接按声明值分配列表会让一个 2 KB 的 xlsx 把内存吃光（与区域遍历同一口径）。
+        /// The ceiling on a chart cache's declared point count. ptCount is a number read from the file and real
+        /// series are far smaller; allocating by the declared value lets a 2 KB workbook exhaust memory, so the
+        /// same bound as the range walk applies here.
+        /// </summary>
+        /// <param name="declared">文件声明的点数。The count declared by the file.</param>
+        /// <returns>上限内的点数。The count clamped into the ceiling.</returns>
+        private static int ClampCachedPoints(int declared)
+        {
+            if (declared <= 0) return 0;
+            return declared > MaxCachedChartPoints ? MaxCachedChartPoints : declared;
         }
 
         /// <summary>读取 numLit/numCache 里的数值点序列。 Reads the numeric points of a numLit or numCache cache.</summary>
@@ -604,7 +669,7 @@ namespace Wisdom.Excel
             if (cache == null) return result;
             XElement inner = LocalChild(cache, "numCache");
             if (inner != null) cache = inner;
-            int count = Xlsx.IntAttribute(LocalChild(cache, "ptCount"), "val", 0);
+            int count = ClampCachedPoints(Xlsx.IntAttribute(LocalChild(cache, "ptCount"), "val", 0));
             for (int i = 0; i < count; i++) result.Add(0);
             foreach (XElement point in LocalChildren(cache, "pt"))
             {

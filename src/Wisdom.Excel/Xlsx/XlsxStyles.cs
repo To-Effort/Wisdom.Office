@@ -81,43 +81,6 @@ namespace Wisdom.Excel
     /// </summary>
     internal sealed class XlsxStyles
     {
-        /// <summary>BIFF/旧式索引颜色表（65 项，按 indexed 属性取值）。 BIFF/legacy indexed palette (65 entries) indexed by the indexed attribute.</summary>
-        private static readonly byte[][] IndexedColors =
-        {
-            new byte[] { 0x00, 0x00, 0x00 }, new byte[] { 0xFF, 0xFF, 0xFF },
-            new byte[] { 0xFF, 0x00, 0x00 }, new byte[] { 0x00, 0xFF, 0x00 },
-            new byte[] { 0x00, 0x00, 0xFF }, new byte[] { 0xFF, 0xFF, 0x00 },
-            new byte[] { 0xFF, 0x00, 0xFF }, new byte[] { 0x00, 0xFF, 0xFF },
-            new byte[] { 0x00, 0x00, 0x00 }, new byte[] { 0xFF, 0xFF, 0xFF },
-            new byte[] { 0xFF, 0x00, 0x00 }, new byte[] { 0x00, 0xFF, 0x00 },
-            new byte[] { 0x00, 0x00, 0xFF }, new byte[] { 0xFF, 0xFF, 0x00 },
-            new byte[] { 0xFF, 0x00, 0xFF }, new byte[] { 0x00, 0xFF, 0xFF },
-            new byte[] { 0x80, 0x00, 0x00 }, new byte[] { 0x00, 0x80, 0x00 },
-            new byte[] { 0x00, 0x00, 0x80 }, new byte[] { 0x80, 0x80, 0x00 },
-            new byte[] { 0x80, 0x00, 0x80 }, new byte[] { 0x00, 0x80, 0x80 },
-            new byte[] { 0xC0, 0xC0, 0xC0 }, new byte[] { 0x80, 0x80, 0x80 },
-            new byte[] { 0x99, 0x99, 0xFF }, new byte[] { 0x99, 0x33, 0x66 },
-            new byte[] { 0xFF, 0xFF, 0xCC }, new byte[] { 0xCC, 0xFF, 0xFF },
-            new byte[] { 0x66, 0x00, 0x66 }, new byte[] { 0xFF, 0x80, 0x80 },
-            new byte[] { 0x00, 0x66, 0xCC }, new byte[] { 0xCC, 0xCC, 0xFF },
-            new byte[] { 0x00, 0x00, 0x80 }, new byte[] { 0xFF, 0x00, 0xFF },
-            new byte[] { 0xFF, 0xFF, 0x00 }, new byte[] { 0x00, 0xFF, 0xFF },
-            new byte[] { 0x80, 0x00, 0x80 }, new byte[] { 0x80, 0x00, 0x00 },
-            new byte[] { 0x00, 0x80, 0x80 }, new byte[] { 0x00, 0x00, 0xFF },
-            new byte[] { 0x00, 0xCC, 0xFF }, new byte[] { 0xCC, 0xFF, 0xFF },
-            new byte[] { 0xCC, 0xFF, 0xCC }, new byte[] { 0xFF, 0xFF, 0x99 },
-            new byte[] { 0x99, 0xCC, 0xFF }, new byte[] { 0xFF, 0x99, 0xCC },
-            new byte[] { 0xCC, 0x99, 0xFF }, new byte[] { 0xFF, 0xCC, 0x99 },
-            new byte[] { 0x33, 0x66, 0xFF }, new byte[] { 0x33, 0xCC, 0xCC },
-            new byte[] { 0x99, 0xCC, 0x00 }, new byte[] { 0xFF, 0xCC, 0x00 },
-            new byte[] { 0xFF, 0x99, 0x00 }, new byte[] { 0xFF, 0x66, 0x00 },
-            new byte[] { 0x66, 0x66, 0x99 }, new byte[] { 0x96, 0x96, 0x96 },
-            new byte[] { 0x00, 0x33, 0x66 }, new byte[] { 0x33, 0x99, 0x66 },
-            new byte[] { 0x00, 0x33, 0x00 }, new byte[] { 0x33, 0x33, 0x00 },
-            new byte[] { 0x99, 0x33, 0x33 }, new byte[] { 0x33, 0x33, 0x99 },
-            new byte[] { 0x99, 0x99, 0x33 }
-        };
-
         /// <summary>展开后的样式列表，列表下标即 cellXfs 的样式索引。 Expanded style list whose position matches the cellXfs style index.</summary>
         private readonly List<CellStyle> _styles = new List<CellStyle>();
         /// <summary>自定义数字格式表（numFmtId 到 formatCode 的映射）。 Custom number-format table mapping numFmtId to formatCode.</summary>
@@ -132,8 +95,17 @@ namespace Wisdom.Excel
 
         /// <summary>从 styles.xml 文档解析样式表；文档为 null 时仅保留默认样式。 Parses the style table from a styles.xml document; when the document is null only the default style is kept.</summary>
         /// <param name="document">xl/styles.xml 对应的 XML 文档。 The XML document of xl/styles.xml.</param>
-        public XlsxStyles(XDocument document)
+        public XlsxStyles(XDocument document) : this(document, XlsxThemeColors.None)
         {
+        }
+
+        /// <summary>带主题调色板解析样式表，使 theme/tint 颜色能落成具体 RGB。
+        /// Parses the style table with a theme palette so themed colors with a tint land on a concrete RGB value.</summary>
+        /// <param name="document">xl/styles.xml 对应的 XML 文档。 The XML document of xl/styles.xml.</param>
+        /// <param name="theme">主题调色板。 The theme palette.</param>
+        public XlsxStyles(XDocument document, XlsxThemeColors theme)
+        {
+            if (theme == null) theme = XlsxThemeColors.None;
             DefaultStyle = new CellStyle();
             if (document == null || document.Root == null) return;
 
@@ -158,9 +130,9 @@ namespace Wisdom.Excel
                 int borderId = Xlsx.IntAttribute(xf, "borderId", 0);
                 int numFmtId = Xlsx.IntAttribute(xf, "numFmtId", 0);
 
-                if (fontId >= 0 && fontId < fonts.Count) ApplyFont(style, fonts[fontId]);
-                if (fillId >= 0 && fillId < fills.Count) ApplyFill(style, fills[fillId]);
-                if (borderId >= 0 && borderId < borders.Count) ApplyBorder(style, borders[borderId]);
+                if (fontId >= 0 && fontId < fonts.Count) ApplyFont(style, fonts[fontId], theme);
+                if (fillId >= 0 && fillId < fills.Count) ApplyFill(style, fills[fillId], theme);
+                if (borderId >= 0 && borderId < borders.Count) ApplyBorder(style, borders[borderId], theme);
                 style.NumberFormat = GetFormat(numFmtId);
 
                 XElement alignment = Xlsx.Child(xf, "alignment");
@@ -235,7 +207,8 @@ namespace Wisdom.Excel
         /// <summary>将 font 元素（名称、字号、加粗、斜体、下划线、颜色）应用到目标样式。 Applies a font element (name, size, bold, italic, underline, color) to the target style.</summary>
         /// <param name="style">目标样式。 Target style to write into.</param>
         /// <param name="font">fonts 集合中的单个 font 元素。 A single font element from the fonts collection.</param>
-        private static void ApplyFont(CellStyle style, XElement font)
+        /// <param name="theme">主题调色板。 Theme palette.</param>
+        private static void ApplyFont(CellStyle style, XElement font, XlsxThemeColors theme)
         {
             XElement name = Xlsx.Child(font, "name");
             if (name != null) style.FontFamily = Xlsx.Attribute(name, "val") ?? style.FontFamily;
@@ -252,13 +225,14 @@ namespace Wisdom.Excel
                 style.Underline = value == null || value != "none";
             }
             XElement color = Xlsx.Child(font, "color");
-            if (color != null) style.FontColor = ReadColor(color, style.FontColor);
+            if (color != null) style.FontColor = XlsxColors.Read(color, theme, style.FontColor);
         }
 
         /// <summary>从 patternFill 的 fgColor 提取填充色；无填充、none 图案或索引 64/auto 时跳过。 Extracts the fill color from the patternFill fgColor, skipping absent fills, none patterns and indexed 64/auto colors.</summary>
         /// <param name="style">目标样式。 Target style to write into.</param>
         /// <param name="fill">fills 集合中的单个 fill 元素。 A single fill element from the fills collection.</param>
-        private static void ApplyFill(CellStyle style, XElement fill)
+        /// <param name="theme">主题调色板。 Theme palette.</param>
+        private static void ApplyFill(CellStyle style, XElement fill, XlsxThemeColors theme)
         {
             XElement pattern = Xlsx.Child(fill, "patternFill");
             if (pattern == null) return;
@@ -266,26 +240,27 @@ namespace Wisdom.Excel
             if (string.IsNullOrEmpty(patternType) || patternType == "none") return;
             XElement foreground = Xlsx.Child(pattern, "fgColor");
             if (foreground == null) return;
-            OfficeColor color = ReadColor(foreground, OfficeColor.White);
-            if (Xlsx.Attribute(foreground, "indexed") == "64" || Xlsx.Attribute(foreground, "auto") == "1") return;
-            style.FillColor = color;
+            if (XlsxColors.IsAutomatic(foreground)) return;
+            style.FillColor = XlsxColors.Read(foreground, theme, OfficeColor.White);
         }
 
         /// <summary>读取 border 元素的左、右、上、下四条边线并写入样式。 Reads the left, right, top and bottom edges of a border element into the style.</summary>
         /// <param name="style">目标样式。 Target style to write into.</param>
         /// <param name="border">borders 集合中的单个 border 元素。 A single border element from the borders collection.</param>
-        private static void ApplyBorder(CellStyle style, XElement border)
+        /// <param name="theme">主题调色板。 Theme palette.</param>
+        internal static void ApplyBorder(CellStyle style, XElement border, XlsxThemeColors theme)
         {
-            style.LeftBorder = ReadBorderLine(Xlsx.Child(border, "left"));
-            style.RightBorder = ReadBorderLine(Xlsx.Child(border, "right"));
-            style.TopBorder = ReadBorderLine(Xlsx.Child(border, "top"));
-            style.BottomBorder = ReadBorderLine(Xlsx.Child(border, "bottom"));
+            style.LeftBorder = ReadBorderLine(Xlsx.Child(border, "left"), theme);
+            style.RightBorder = ReadBorderLine(Xlsx.Child(border, "right"), theme);
+            style.TopBorder = ReadBorderLine(Xlsx.Child(border, "top"), theme);
+            style.BottomBorder = ReadBorderLine(Xlsx.Child(border, "bottom"), theme);
         }
 
         /// <summary>将单边线元素映射为 BorderLine；省略线型统一近似为单线，粗细按样式名取近似宽度。 Maps one border-edge element to a BorderLine; omitted line styles are approximated as a single line and the weight is taken as an approximate width from the style name.</summary>
         /// <param name="element">left/right/top/bottom 边元素。 A left/right/top/bottom edge element.</param>
+        /// <param name="theme">主题调色板。 Theme palette.</param>
         /// <returns>边线描述；无有效线型时返回 null。 The border line description, or null when there is no valid line style.</returns>
-        private static BorderLine ReadBorderLine(XElement element)
+        private static BorderLine ReadBorderLine(XElement element, XlsxThemeColors theme)
         {
             if (element == null) return null;
             string styleName = Xlsx.Attribute(element, "style");
@@ -300,35 +275,8 @@ namespace Wisdom.Excel
             else if (styleName == "thick") line.Width = 2.5;
             else if (styleName == "thin") line.Width = 0.5;
             XElement color = Xlsx.Child(element, "color");
-            if (color != null) line.Color = ReadColor(color, OfficeColor.Black);
+            if (color != null) line.Color = XlsxColors.Read(color, theme, OfficeColor.Black);
             return line;
-        }
-
-        /// <summary>解析 color 元素：优先 rgb 十六进制，其次 indexed 索引色（64 黑、65 白），否则回退。 Parses a color element: rgb hexadecimal first, then indexed palette color (64 black, 65 white), otherwise the fallback.</summary>
-        /// <param name="element">color 元素。 The color element.</param>
-        /// <param name="fallback">无法解析时的回退颜色。 Fallback color used when parsing fails.</param>
-        /// <returns>解析出的颜色。 The resolved color.</returns>
-        private static OfficeColor ReadColor(XElement element, OfficeColor fallback)
-        {
-            string rgb = Xlsx.Attribute(element, "rgb");
-            if (!string.IsNullOrEmpty(rgb))
-            {
-                OfficeColor parsed;
-                if (Xlsx.TryParseColor(rgb, out parsed)) return parsed;
-            }
-            string indexed = Xlsx.Attribute(element, "indexed");
-            int index;
-            if (!string.IsNullOrEmpty(indexed) && int.TryParse(indexed, out index))
-            {
-                if (index >= 0 && index < IndexedColors.Length)
-                {
-                    byte[] value = IndexedColors[index];
-                    return new OfficeColor(value[0], value[1], value[2]);
-                }
-                if (index == 64) return OfficeColor.Black;
-                if (index == 65) return OfficeColor.White;
-            }
-            return fallback;
         }
     }
 }

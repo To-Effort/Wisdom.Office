@@ -142,7 +142,9 @@ table.Table.AddRow("华南", "384", "30%");
 ```
 
 `AutoShapeKind` 支持 `Rectangle`、`RoundedRectangle`、`Ellipse`、`Triangle`、`Diamond`、`Pentagon`、`Hexagon`、`RightArrow`、`Chevron`、`Line`，逐个映射到 PresentationML 的 `prstGeom`。
+宽或高为 `0` 的形状是合法几何，照原样写出也照原样读回：水平分隔线就是一条 `Height = 0` 的 `Line`，读回时不会因为「`cy` 是 0」被当成几何缺失而换成按幻灯片比例推算的默认大框（只有负值才判为坏几何）。
 `SlideTransitionKind` 支持 `None`、`Fade`、`Push`、`Wipe`、`Split`，配合 `TransitionDuration`（秒）。
+方向、速度与「是否需要单击」也各有字段：`TransitionDirection`（`SlideTransitionDirection` 的 `Left`/`Right`/`Up`/`Down`，对应 `dir` 的 `l`/`r`/`u`/`d`）、`TransitionSpeed`（`SlideTransitionSpeed` 的 `Slow`/`Medium`/`Fast`，对应 `spd` 的 `slow`/`med`/`fast`）与 `AdvanceOnClick`（默认 `true`，写 `advClick="1"`；置 `false` 表示自动换片、不接受点击）。三者都是可空/带默认的：没设过就不写，写出形状与旧稿一致，读回时也保持「未设置」而不是猜一个值——推入的原生默认方向仍然是向左；配合 `AdvanceAfterSeconds` 设成自动换片时，`advClick="0"` 现在能原值往返，不会再被还原成必须点击。
 
 文本运行只写你**显式设过**的字符属性。`new TextFormat()` 预置的 Arial、11 磅、黑色是模型内置默认值，不算意图：一个只设了 `Bold = true` 的 run 写出的是 `<a:rPr b="1"/>`，字号、字体、颜色都留给版式与母版的继承链，不会被钉成 11 磅的 Calibri。`TextFormat` 上的 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor` 三个只读标记就是这条判定，赋过值才点亮；`new TextFormat("Calibri", 18)` 这类显式构造则三项都算设过。整段没有任何格式的文本沿用演示文稿的默认字体（`DefaultTextFormat` / `DefaultTitleFormat`，未显式设置时取主题主/次字体）。
 
@@ -221,7 +223,7 @@ string plain = PptxReader.ExtractText("review.pptx");          // 只要纯文�
 
 读取覆盖页数与幻灯片尺寸、版式类别、占位符类型、形状几何与填充、段落与行内格式（粗体、斜体、下划线、删除线、上下标、字号、字体、颜色）、项目符号、表格（含合并单元格）、图片字节与替代文字、图片自身的底色与描边（`p:spPr` 上的 `a:solidFill` 与 `a:ln`）、演讲者备注、切换效果、入场动画（类别 / 延迟 / 时长）、`advTm` 自动换页、主题深改字段（`PresentationTheme`，`.potx` 同样可加载）以及 `core.xml` 里的文档元数据。
 
-`.pptx` 里没有可直接对照的"版式类别"字段，读回时按形状推断（`PptxReader.InferLayoutKind`）：先看图片形状或 `pic` 占位符，再看表格形状与 `tbl` / `chart` 占位符，都没有时按标题与内容占位符的个数归入 `TitleAndContent` / `TwoContent` / `Title` / `Blank`。因此往返后版式名可能被"修正"，实测两条：`AddSlide(TitleAndTable)` 生成的表格占位符按 `obj` 类型写出，回读变成 `TitleAndContent`；反过来，`AddSlide(TitleAndContent)` 上手工 `AddTable(...)` 的真实表格形状，回读会被推断成 `TitleAndTable`。占位符几何（实测 `Left` 60 原样读回）、图片字节与 alt 文本、备注、切换类型与时长（`Push` / 2.25 秒）、背景色（`#F2F7FF`）与自选图形（`RoundedRectangle` 填充 `#00B050`、`CornerRadius` 默认 0.15）都按原值读回；表格的列定义 `Table.Columns` 写出时不入库（实测写出为 2 行 0 列），回读按每行单元格数补齐（2 行 2 列）。
+`.pptx` 里没有可直接对照的"版式类别"字段，读回时分两层：先看幻灯片所用版式部件自己声明的 `p:sldLayout@type`（`secHead`，或 `cSld@name` 为 `Section Header` / `节标题`），命中即是 `SectionHeader`——章节过渡页只有一个标题占位符，与「仅标题页」形状完全一样，形状推断永远分不开，这是唯一能带回它的证据；其余一律按形状推断（`PptxReader.InferLayoutKind`）：先看图片形状或 `pic` 占位符，再看表格形状与 `tbl` / `chart` 占位符，都没有时按标题与内容占位符的个数归入 `TitleAndContent` / `TwoContent` / `Title` / `Blank`。因此往返后版式名仍可能被"修正"，实测两条：`AddSlide(TitleAndTable)` 生成的表格占位符按 `obj` 类型写出，回读变成 `TitleAndContent`；反过来，`AddSlide(TitleAndContent)` 上手工 `AddTable(...)` 的真实表格形状，回读会被推断成 `TitleAndTable`。占位符几何（实测 `Left` 60 原样读回）、图片字节与 alt 文本、备注、切换类型与时长（`Push` / 2.25 秒）、背景色（`#F2F7FF`）与自选图形（`RoundedRectangle` 填充 `#00B050`、`CornerRadius` 默认 0.15）都按原值读回；表格的列定义 `Table.Columns` 写出时不入库（实测写出为 2 行 0 列），回读按每行单元格数补齐（2 行 2 列）。
 
 ## 经 `Wisdom.Office` 门面使用
 

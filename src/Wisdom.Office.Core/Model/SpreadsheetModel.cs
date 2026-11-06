@@ -957,6 +957,14 @@ namespace Wisdom.Office.Core
         public int PrintAreaFirstColumn { get; set; }
         /// <summary>打印区域末列。The last column of the print area.</summary>
         public int PrintAreaLastColumn { get; set; }
+        /// <summary>每页顶端重复的行首末（1 基，闭区间）；两者同为 0 表示未设置。First/last row repeated at the top of every page (1-based, inclusive); both 0 means unset.</summary>
+        public int PrintTitleFirstRow { get; set; }
+        /// <summary>每页顶端重复的行末。The last row repeated at the top of every page.</summary>
+        public int PrintTitleLastRow { get; set; }
+        /// <summary>每页左端重复的列首末（1 基，闭区间）；两者同为 0 表示未设置。First/last column repeated at the left of every page (1-based, inclusive); both 0 means unset.</summary>
+        public int PrintTitleFirstColumn { get; set; }
+        /// <summary>每页左端重复的列末。The last column repeated at the left of every page.</summary>
+        public int PrintTitleLastColumn { get; set; }
         /// <summary>默认列宽，单位 Excel 字符（默认 8.43）。The default column width in Excel character units (8.43 by default).</summary>
         public double DefaultColumnWidth { get; set; }
         /// <summary>默认行高，单位磅（默认 15）。The default row height in points (15 by default).</summary>
@@ -997,21 +1005,60 @@ namespace Wisdom.Office.Core
             DefaultStyle = new CellStyle();
         }
 
-        /// <summary>将 1 基行/列号打包为排序键：行号左移 20 位后按列号取序。Packs 1-based row/column numbers into a sort key: the row is shifted left by 20 bits and ordered by column.</summary>
+        /// <summary>将 1 基行/列号打包为排序键：行号占据高 32 位，列号占据低 32 位。
+        /// Packs 1-based row/column numbers into a sort key: the row owns the high 32 bits, the column the low 32.</summary>
+        /// <remarks>
+        /// 移位必须是 32 位：早先左移 20 位时，列号超过 2^20 就会串进行号位段，
+        /// (1, 2097153) 与 (3, 1) 打成同一个键，两个单元格变成同一个对象，写出的引用也成了非法字符串。
+        /// The shift has to be 32 bits: with 20 the column spills into the row bits past 2^20, so (1, 2097153)
+        /// and (3, 1) collapse onto one key, one cell object and one illegal written reference.
+        /// </remarks>
         /// <param name="row">行号。The row number.</param>
         /// <param name="column">列号。The column number.</param>
         /// <returns>单元格字典键。The cell dictionary key.</returns>
         internal static long MakeKey(int row, int column)
         {
-            return ((long)row << 20) | (uint)column;
+            return ((long)row << 32) | (uint)column;
+        }
+
+        /// <summary>校验坐标落在 Excel 网格内（1 ≤ 行 ≤ 1048576、1 ≤ 列 ≤ 16384）。Validates that the coordinates lie inside the Excel grid (row 1 to 1048576, column 1 to 16384).</summary>
+        /// <remarks>
+        /// 越界坐标会写进 <c>dimension</c>、<c>&lt;row r&gt;</c> 与 <c>&lt;col min&gt;</c>，Excel 判定整个包损坏并弹修复提示；
+        /// 读取端本来就丢弃这类坐标，因此模型入口同样拒绝，避免"写得出去、读不回来"的静默丢数据。
+        /// Out-of-grid coordinates land in <c>dimension</c>, <c>&lt;row r&gt;</c> and <c>&lt;col min&gt;</c>, and Excel
+        /// declares the package corrupt; the reader already drops them, so the model refuses them at the entry
+        /// point instead of silently losing the data on a round trip.
+        /// </remarks>
+        /// <param name="row">行号。The row number.</param>
+        /// <param name="column">列号。The column number.</param>
+        private static void RequireGrid(int row, int column)
+        {
+            RequireGridRow(row);
+            RequireGridColumn(column);
+        }
+
+        /// <summary>校验行号落在 1..1048576。Validates that the row number lies in 1 to 1048576.</summary>
+        /// <param name="row">行号。The row number.</param>
+        private static void RequireGridRow(int row)
+        {
+            if (row < 1 || row > CellAddress.MaxRowLiteral) throw new ArgumentOutOfRangeException("row");
+        }
+
+        /// <summary>校验列号落在 1..16384。Validates that the column number lies in 1 to 16384.</summary>
+        /// <param name="column">列号。The column number.</param>
+        private static void RequireGridColumn(int column)
+        {
+            if (column < 1 || column > CellAddress.MaxColumnLiteral) throw new ArgumentOutOfRangeException("column");
         }
 
         /// <summary>取得指定坐标的单元格；不存在时自动创建。Gets the cell at the given coordinates, creating it when absent.</summary>
-        /// <param name="row">行号（从 1 开始）。The row number (starting from 1).</param>
-        /// <param name="column">列号（从 1 开始）。The column number (starting from 1).</param>
+        /// <param name="row">行号（从 1 开始，至 1048576）。The row number (1 to 1048576).</param>
+        /// <param name="column">列号（从 1 开始，至 16384）。The column number (1 to 16384).</param>
         /// <returns>已有或新建的单元格。The existing or newly created cell.</returns>
+        /// <exception cref="ArgumentOutOfRangeException">坐标超出网格。The coordinates fall outside the grid.</exception>
         public Cell GetCell(int row, int column)
         {
+            RequireGrid(row, column);
             long key = MakeKey(row, column);
             Cell cell;
             if (!_cells.TryGetValue(key, out cell))
@@ -1109,13 +1156,22 @@ namespace Wisdom.Office.Core
             return null;
         }
 
-        /// <summary>按范围引用（如 "A1:B3"）添加一个合并区域。Adds a merged range from a range reference (such as "A1:B3").</summary>
+        /// <summary>按范围引用（如 "A1:B3"）添加一个合并区域；反写的引用（"C3:A1"）自动归一化。Adds a merged range from a range reference (such as "A1:B3"); a reversed reference ("C3:A1") is normalized.</summary>
         /// <param name="rangeReference">A1 风格范围引用。An A1-style range reference.</param>
         public void Merge(string rangeReference)
         {
             int row1, column1, row2, column2;
             CellAddress.ParseRange(rangeReference, out row1, out column1, out row2, out column2);
-            MergedRanges.Add(new MergedRange(row1, column1, row2 - row1 + 1, column2 - column1 + 1));
+            // 引用可能反着写，跨度必须按 min/max 算；否则负跨度把 C3:A1 缩成 C3:C3，合并区域静默变形。
+            // A reference may be written backwards, so the span has to come from min/max; with a negative span
+            // C3:A1 shrank to C3:C3 and the merge silently changed shape.
+            int firstRow = Math.Min(row1, row2);
+            int lastRow = Math.Max(row1, row2);
+            int firstColumn = Math.Min(column1, column2);
+            int lastColumn = Math.Max(column1, column2);
+            RequireGrid(firstRow, firstColumn);
+            RequireGrid(lastRow, lastColumn);
+            MergedRanges.Add(new MergedRange(firstRow, firstColumn, lastRow - firstRow + 1, lastColumn - firstColumn + 1));
         }
 
         /// <summary>解析范围引用并设置打印区域，自动规范化首末行列顺序。Parses a range reference and sets the print area, normalizing the first/last row and column order.</summary>
@@ -1134,6 +1190,107 @@ namespace Wisdom.Office.Core
         public bool HasPrintArea
         {
             get { return PrintAreaFirstRow > 0 && PrintAreaFirstColumn > 0; }
+        }
+
+        /// <summary>
+        /// 设置每页顶端重复的行区域，如 <c>"1:2"</c>；传 null 或空串清除。Sets the rows repeated at the top of
+        /// every page, such as <c>"1:2"</c>; null or empty clears them.
+        /// </summary>
+        /// <param name="reference">行区域文本（可带 <c>$</c> 与表前缀）。The row-range text, <c>$</c> marks and a sheet prefix allowed.</param>
+        /// <exception cref="FormatException">文本不是行区域。Thrown when the text is not a row range.</exception>
+        public void SetPrintTitleRows(string reference)
+        {
+            int first, last;
+            if (!TryReadTitleRange(reference, true, out first, out last))
+            {
+                PrintTitleFirstRow = 0;
+                PrintTitleLastRow = 0;
+                return;
+            }
+            PrintTitleFirstRow = first;
+            PrintTitleLastRow = last;
+        }
+
+        /// <summary>
+        /// 设置每页左端重复的列区域，如 <c>"A:C"</c>；传 null 或空串清除。Sets the columns repeated at the left of
+        /// every page, such as <c>"A:C"</c>; null or empty clears them.
+        /// </summary>
+        /// <param name="reference">列区域文本（可带 <c>$</c> 与表前缀）。The column-range text, <c>$</c> marks and a sheet prefix allowed.</param>
+        /// <exception cref="FormatException">文本不是列区域。Thrown when the text is not a column range.</exception>
+        public void SetPrintTitleColumns(string reference)
+        {
+            int first, last;
+            if (!TryReadTitleRange(reference, false, out first, out last))
+            {
+                PrintTitleFirstColumn = 0;
+                PrintTitleLastColumn = 0;
+                return;
+            }
+            PrintTitleFirstColumn = first;
+            PrintTitleLastColumn = last;
+        }
+
+        /// <summary>是否设置了重复行或重复列。Whether repeated title rows or columns are set.</summary>
+        public bool HasPrintTitles
+        {
+            get { return PrintTitleFirstRow > 0 || PrintTitleFirstColumn > 0; }
+        }
+
+        /// <summary>
+        /// 解析重复标题区域文本：行方向只认数字，列方向只认字母，多余部分（表前缀、<c>$</c>）忽略。
+        /// Reads a repeated-title range: the row form accepts digits only and the column form letters only,
+        /// ignoring a sheet prefix and <c>$</c> marks.
+        /// </summary>
+        /// <param name="reference">区域文本。The range text.</param>
+        /// <param name="rows">true 解析行区域，false 解析列区域。True parses rows, false parses columns.</param>
+        /// <param name="first">输出首坐标。Outputs the first coordinate.</param>
+        /// <param name="last">输出末坐标。Outputs the last coordinate.</param>
+        /// <returns>空文本返回 false（表示清除）。False for empty text, which means clearing.</returns>
+        /// <exception cref="FormatException">文本与方向不符或坐标越界。Thrown when the text does not match the direction or a coordinate is out of range.</exception>
+        private static bool TryReadTitleRange(string reference, bool rows, out int first, out int last)
+        {
+            first = 0;
+            last = 0;
+            string text = reference == null ? null : reference.Trim();
+            if (string.IsNullOrEmpty(text)) return false;
+            text = text.Replace("$", string.Empty);
+            int bang = text.LastIndexOf('!');
+            if (bang >= 0) text = text.Substring(bang + 1);
+            string[] parts = text.Split(':');
+            if (parts.Length > 2) throw new FormatException("Invalid repeated-title range: " + reference);
+            int head = ReadTitleCoordinate(parts[0], rows, reference);
+            int tail = parts.Length == 1 ? head : ReadTitleCoordinate(parts[1], rows, reference);
+            first = Math.Min(head, tail);
+            last = Math.Max(head, tail);
+            return true;
+        }
+
+        /// <summary>按方向解析重复标题区域的单个坐标。Reads one repeated-title coordinate in the given direction.</summary>
+        /// <param name="part">坐标文本。The coordinate text.</param>
+        /// <param name="rows">true 按行号解析，false 按列名解析。True parses a row number, false a column name.</param>
+        /// <param name="reference">完整区域文本，用于报错信息。The whole range text, for the error message.</param>
+        /// <returns>1 基坐标。The 1-based coordinate.</returns>
+        /// <exception cref="FormatException">坐标与方向不符或越界。Thrown when the coordinate mismatches the direction or is out of range.</exception>
+        private static int ReadTitleCoordinate(string part, bool rows, string reference)
+        {
+            string text = part == null ? string.Empty : part.Trim();
+            if (text.Length == 0) throw new FormatException("Invalid repeated-title range: " + reference);
+            if (rows)
+            {
+                int row;
+                if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out row) || row < 1)
+                {
+                    throw new FormatException("Repeated titles need rows, got: " + reference);
+                }
+                if (row > CellAddress.MaxRowLiteral) throw new FormatException("Repeated titles out of range: " + reference);
+                return row;
+            }
+            int column = CellAddress.ColumnIndex(text);
+            if (column < 1 || column > CellAddress.MaxColumnLiteral)
+            {
+                throw new FormatException("Repeated titles out of range: " + reference);
+            }
+            return column;
         }
 
         /// <summary>取得指定列宽（Excel 字符单位），未自定义时返回默认列宽。Gets the width of a column in Excel character units, returning the default width when it is not customized.</summary>
@@ -1176,6 +1333,7 @@ namespace Wisdom.Office.Core
         /// <param name="width">列宽。The column width.</param>
         public void SetColumnWidth(int column, double width)
         {
+            RequireGridColumn(column);
             ColumnWidths[column] = width;
         }
 
@@ -1184,6 +1342,7 @@ namespace Wisdom.Office.Core
         /// <param name="height">行高。The row height.</param>
         public void SetRowHeight(int row, double height)
         {
+            RequireGridRow(row);
             RowHeights[row] = height;
         }
 
@@ -1192,7 +1351,7 @@ namespace Wisdom.Office.Core
         /// <param name="hidden">true 隐藏，false 显示。True hides the row, false shows it.</param>
         public void SetRowHidden(int row, bool hidden)
         {
-            if (hidden) HiddenRows.Add(row);
+            if (hidden) { RequireGridRow(row); HiddenRows.Add(row); }
             else HiddenRows.Remove(row);
         }
 
@@ -1201,7 +1360,7 @@ namespace Wisdom.Office.Core
         /// <param name="hidden">true 隐藏，false 显示。True hides the column, false shows it.</param>
         public void SetColumnHidden(int column, bool hidden)
         {
-            if (hidden) HiddenColumns.Add(column);
+            if (hidden) { RequireGridColumn(column); HiddenColumns.Add(column); }
             else HiddenColumns.Remove(column);
         }
 
@@ -1213,7 +1372,7 @@ namespace Wisdom.Office.Core
             _cells.Remove(MakeKey(row, column));
         }
 
-        /// <summary>在指定行之前插入空行：单元格、行高、隐藏标记、合并区域、自动筛选、数据验证与打印区域随之下移或扩展。Inserts empty rows before the given row; cells, row heights, hidden flags, merged ranges, the auto-filter, data validations and the print area shift down or expand.</summary>
+        /// <summary>在指定行之前插入空行：单元格、行高、隐藏标记、合并区域、自动筛选、数据验证、打印区域与看板装饰（条件格式、图表、图片）随之下移或扩展。Inserts empty rows before the given row; cells, row heights, hidden flags, merged ranges, the auto-filter, data validations, the print area and the dashboard decorations (conditional formats, charts, images) shift down or expand.</summary>
         /// <param name="rowIndex">插入位置的行号（从 1 开始）。The row number where rows are inserted (1-based).</param>
         /// <param name="count">插入的行数。The number of rows to insert.</param>
         /// <exception cref="ArgumentOutOfRangeException">行号小于 1，或插入后超过 Excel 最大行数。The row is below 1, or the insertion exceeds the Excel row limit.</exception>
@@ -1232,9 +1391,11 @@ namespace Wisdom.Office.Core
             ShiftFilterRows(rowIndex, count, true);
             ShiftValidationRows(rowIndex, count, true);
             InsertPrintAreaRows(rowIndex, count);
+            ShiftTitleRows(rowIndex, count, true);
+            ShiftDecorationRows(rowIndex, count, true);
         }
 
-        /// <summary>删除指定范围的整行：范围内的单元格与行设置被移除，下方内容上移。Deletes whole rows in the given range: cells and row settings inside the range are removed and content below moves up.</summary>
+        /// <summary>删除指定范围的整行：范围内的单元格与行设置被移除，下方内容上移，看板装饰同步平移；整段被删的条件格式随区域一起丢弃。Deletes whole rows in the given range: cells and row settings inside the range are removed, content below moves up and the dashboard decorations shift with it; a conditional format swallowed by the deletion is dropped with its range.</summary>
         /// <param name="rowIndex">起始行号（从 1 开始）。The first row number (1-based).</param>
         /// <param name="count">删除的行数。The number of rows to delete.</param>
         public void DeleteRows(int rowIndex, int count)
@@ -1249,9 +1410,11 @@ namespace Wisdom.Office.Core
             ShiftFilterRows(rowIndex, count, false);
             ShiftValidationRows(rowIndex, count, false);
             DeletePrintAreaRows(rowIndex, end, count);
+            ShiftTitleRows(rowIndex, count, false);
+            ShiftDecorationRows(rowIndex, count, false);
         }
 
-        /// <summary>在指定列之前插入空列：单元格、列宽、隐藏标记、合并区域、自动筛选、数据验证与打印区域随之右移或扩展。Inserts empty columns before the given column; cells, column widths, hidden flags, merged ranges, the auto-filter, data validations and the print area shift right or expand.</summary>
+        /// <summary>在指定列之前插入空列：单元格、列宽、隐藏标记、合并区域、自动筛选、数据验证、打印区域与看板装饰随之右移或扩展。Inserts empty columns before the given column; cells, column widths, hidden flags, merged ranges, the auto-filter, data validations, the print area and the dashboard decorations (conditional formats, charts, images) shift right or expand.</summary>
         /// <param name="columnIndex">插入位置的列号（从 1 开始）。The column number where columns are inserted (1-based).</param>
         /// <param name="count">插入的列数。The number of columns to insert.</param>
         /// <exception cref="ArgumentOutOfRangeException">列号小于 1，或插入后超过 Excel 最大列数。The column is below 1, or the insertion exceeds the Excel column limit.</exception>
@@ -1270,9 +1433,11 @@ namespace Wisdom.Office.Core
             ShiftFilterColumns(columnIndex, count, true);
             ShiftValidationColumns(columnIndex, count, true);
             InsertPrintAreaColumns(columnIndex, count);
+            ShiftTitleColumns(columnIndex, count, true);
+            ShiftDecorationColumns(columnIndex, count, true);
         }
 
-        /// <summary>删除指定范围的整列：范围内的单元格与列设置被移除，右侧内容左移。Deletes whole columns in the given range: cells and column settings inside the range are removed and content on the right moves left.</summary>
+        /// <summary>删除指定范围的整列：范围内的单元格与列设置被移除，右侧内容左移，看板装饰同步平移。Deletes whole columns in the given range: cells and column settings inside the range are removed, content on the right moves left and the dashboard decorations shift with it.</summary>
         /// <param name="columnIndex">起始列号（从 1 开始）。The first column number (1-based).</param>
         /// <param name="count">删除的列数。The number of columns to delete.</param>
         public void DeleteColumns(int columnIndex, int count)
@@ -1287,6 +1452,8 @@ namespace Wisdom.Office.Core
             ShiftFilterColumns(columnIndex, count, false);
             ShiftValidationColumns(columnIndex, count, false);
             DeletePrintAreaColumns(columnIndex, end, count);
+            ShiftTitleColumns(columnIndex, count, false);
+            ShiftDecorationColumns(columnIndex, count, false);
         }
 
         /// <summary>取得单元格、合并区域、行高与隐藏行覆盖的最大行号。Gets the largest row covered by cells, merged ranges, row heights and hidden rows.</summary>
@@ -1654,6 +1821,342 @@ namespace Wisdom.Office.Core
             }
         }
 
+        /// <summary>
+        /// 插入/删除行后平移看板装饰：条件格式区域、图表锚点与系列取数区域、图片锚点。
+        /// Shifts dashboard decorations for a row edit: conditional-format ranges, chart anchors and their
+        /// series ranges, and image anchors.
+        /// </summary>
+        /// <param name="rowIndex">编辑起点行号。The first edited row number.</param>
+        /// <param name="count">编辑行数。The edited row count.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        private void ShiftDecorationRows(int rowIndex, int count, bool insert)
+        {
+            for (int i = ConditionalFormats.Count - 1; i >= 0; i--)
+            {
+                string reference = ShiftDecorRange(ConditionalFormats[i].Range, rowIndex, count, insert, true);
+                if (string.IsNullOrEmpty(reference)) ConditionalFormats.RemoveAt(i);
+                else ConditionalFormats[i].Range = reference;
+            }
+            for (int i = 0; i < Charts.Count; i++)
+            {
+                ExcelChart chart = Charts[i];
+                chart.Row = ShiftAnchor(chart.Row, rowIndex, count, insert);
+                for (int s = 0; s < chart.Series.Count; s++)
+                {
+                    ExcelChartSeries series = chart.Series[s];
+                    series.NameRange = ShiftSeriesRange(series.NameRange, rowIndex, count, insert, true);
+                    series.CategoryRange = ShiftSeriesRange(series.CategoryRange, rowIndex, count, insert, true);
+                    series.ValueRange = ShiftSeriesRange(series.ValueRange, rowIndex, count, insert, true);
+                    series.SizeRange = ShiftSeriesRange(series.SizeRange, rowIndex, count, insert, true);
+                }
+            }
+            for (int i = 0; i < Images.Count; i++)
+            {
+                Images[i].Row = ShiftAnchor(Images[i].Row, rowIndex, count, insert);
+            }
+        }
+
+        /// <summary>
+        /// 插入/删除列后平移看板装饰，规则与行方向一致。
+        /// Shifts dashboard decorations for a column edit, following the same rules as the row direction.
+        /// </summary>
+        /// <param name="columnIndex">编辑起点列号。The first edited column number.</param>
+        /// <param name="count">编辑列数。The edited column count.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        private void ShiftDecorationColumns(int columnIndex, int count, bool insert)
+        {
+            for (int i = ConditionalFormats.Count - 1; i >= 0; i--)
+            {
+                string reference = ShiftDecorRange(ConditionalFormats[i].Range, columnIndex, count, insert, false);
+                if (string.IsNullOrEmpty(reference)) ConditionalFormats.RemoveAt(i);
+                else ConditionalFormats[i].Range = reference;
+            }
+            for (int i = 0; i < Charts.Count; i++)
+            {
+                ExcelChart chart = Charts[i];
+                chart.Column = ShiftAnchor(chart.Column, columnIndex, count, insert);
+                for (int s = 0; s < chart.Series.Count; s++)
+                {
+                    ExcelChartSeries series = chart.Series[s];
+                    series.NameRange = ShiftSeriesRange(series.NameRange, columnIndex, count, insert, false);
+                    series.CategoryRange = ShiftSeriesRange(series.CategoryRange, columnIndex, count, insert, false);
+                    series.ValueRange = ShiftSeriesRange(series.ValueRange, columnIndex, count, insert, false);
+                    series.SizeRange = ShiftSeriesRange(series.SizeRange, columnIndex, count, insert, false);
+                }
+            }
+            for (int i = 0; i < Images.Count; i++)
+            {
+                Images[i].Column = ShiftAnchor(Images[i].Column, columnIndex, count, insert);
+            }
+        }
+
+        /// <summary>锚点单元格在插入/删除后的新坐标；落在被删区间内的锚点贴到删除起点。The anchor cell's new coordinate after an edit; an anchor inside the deleted block sticks to the deletion start.</summary>
+        /// <param name="value">原坐标。The original coordinate.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <returns>平移后的坐标。The shifted coordinate.</returns>
+        private static int ShiftAnchor(int value, int index, int count, bool insert)
+        {
+            if (insert) return value >= index ? value + count : value;
+            int end = index + count - 1;
+            if (value > end) return value - count;
+            return value >= index ? index : value;
+        }
+
+        /// <summary>
+        /// 平移区域引用，同时保留表前缀与 <c>$</c> 锁定标记；整行 / 整列片段（<c>2:8</c>、<c>A:A</c>）同样换算。
+        /// Shifts a range reference, keeping the sheet prefix and the <c>$</c> lock markers; whole-row and
+        /// whole-column fragments (2:8, A:A) convert under the same rule.
+        /// </summary>
+        /// <remarks>
+        /// 条件格式与筛选都只作用于本表，丢掉表名无害；图表系列的取数区域却常指向别的表，
+        /// 表名一丢，系列就静默改读本表同位置的单元格。<c>$</c> 标记保留是为了读取—保存往返不改动原文。
+        /// Conditional formats and filters only touch their own sheet, so dropping the sheet name is harmless,
+        /// but a chart series often reads from another sheet — lose the prefix and the series silently starts
+        /// reading this sheet instead. The locks survive so a load-save round trip leaves the text unchanged.
+        /// </remarks>
+        /// <param name="reference">区域引用文本。The range reference text.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="rows">true 平移行，false 平移列。True shifts rows, false shifts columns.</param>
+        /// <returns>平移后的引用；区域被整段删除时为空串或 null。The shifted reference, empty or null when the range disappears.</returns>
+        private static string ShiftDecorRange(string reference, int index, int count, bool insert, bool rows)
+        {
+            if (string.IsNullOrEmpty(reference)) return reference;
+            // sqref 可以多段（"A1:A5 C1:C5"），逐段平移再按原分隔符拼回；整串交给解析器只会因非法格式原样返回。
+            // An sqref can hold several fragments ("A1:A5 C1:C5"): shift each and rejoin, because handing the
+            // whole text to the parser just returns it untouched as unparseable.
+            StringBuilder output = new StringBuilder(reference.Length);
+            StringBuilder segment = new StringBuilder();
+            bool quoted = false;
+            for (int i = 0; i < reference.Length; i++)
+            {
+                char c = reference[i];
+                if (c == '\'')
+                {
+                    quoted = !quoted;
+                    segment.Append(c);
+                    continue;
+                }
+                if (!quoted && (c == ' ' || c == ',' || c == '\t'))
+                {
+                    AppendFragment(output, segment.ToString(), index, count, insert, rows);
+                    segment.Length = 0;
+                    continue;
+                }
+                segment.Append(c);
+            }
+            AppendFragment(output, segment.ToString(), index, count, insert, rows);
+            return output.ToString();
+        }
+
+        /// <summary>平移一段区域并接到结果尾部；空段直接跳过，不留悬空分隔符。Shifts one fragment and appends it, skipping empty fragments so no dangling separator is left.</summary>
+        /// <param name="output">结果尾部。The result builder.</param>
+        /// <param name="segment">待平移的片段。The fragment to shift.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="rows">true 平移行，false 平移列。True shifts rows, false shifts columns.</param>
+        private static void AppendFragment(StringBuilder output, string segment, int index, int count,
+            bool insert, bool rows)
+        {
+            string shifted = ShiftSingleRange(segment, index, count, insert, rows);
+            if (string.IsNullOrEmpty(shifted)) return;
+            if (output.Length > 0) output.Append(' ');
+            output.Append(shifted);
+        }
+
+        /// <summary>平移单段区域引用，保留表前缀与 <c>$</c> 锁定标记。Shifts one range fragment, keeping the sheet prefix and the <c>$</c> locks.</summary>
+        /// <param name="segment">单段引用文本。One range fragment.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="rows">true 平移行，false 平移列。True shifts rows, false shifts columns.</param>
+        /// <returns>平移后的片段；整段被删时为空。The shifted fragment, empty when the fragment disappears.</returns>
+        private static string ShiftSingleRange(string segment, int index, int count, bool insert, bool rows)
+        {
+            if (string.IsNullOrEmpty(segment)) return string.Empty;
+            int bang = LastSheetSeparator(segment);
+            string prefix = bang < 0 ? string.Empty : segment.Substring(0, bang + 1);
+            string body = bang < 0 ? segment : segment.Substring(bang + 1);
+
+            // 整行 / 整列引用（2:7、A:C）没有行列两侧，ParseRange 认不出，早先原样留着就成了平移的漏网之鱼。
+            // A whole-row or whole-column reference (2:7, A:C) has no coordinates on both axes, so the range
+            // parser rejects it and it used to slip past the shift untouched.
+            string whole = ShiftWholeAxisReference(body, index, count, insert, rows);
+            if (whole != null)
+            {
+                if (whole.Length == 0) return string.Empty;
+                return prefix + whole;
+            }
+
+            string shifted = rows
+                ? ShiftReferenceRows(body, index, count, insert)
+                : ShiftReferenceColumns(body, index, count, insert);
+            if (shifted == null) return string.Empty;
+            // 解析器认不出的写法（锁定的整列引用 "$A:$A"）会原样返回，这时再补一次 <c>$</c> 就成了 "$$A:$$A"。
+            // An unparseable form such as the locked whole-column "$A:$A" comes back verbatim, and re-applying
+            // the locks on top of it would yield "$$A:$$A".
+            if (string.Equals(shifted, body, StringComparison.Ordinal)) return prefix + shifted;
+            return prefix + RestoreLocks(body, shifted);
+        }
+
+        /// <summary>
+        /// 平移整行 / 整列引用；片段与方向不符时返回 null 交给普通区域解析，被删光时返回空串。
+        /// Shifts a whole-row or whole-column reference, returning null when the fragment does not match this
+        /// direction (so the ordinary range parser takes it) and an empty string when the range is deleted away.
+        /// </summary>
+        /// <param name="body">不含表前缀的区域正文。The range body without a sheet prefix.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="rows">true 平移行，false 平移列。True shifts rows, false shifts columns.</param>
+        /// <returns>平移后的引用，或不匹配时的 null。The shifted reference, or null when the form does not match.</returns>
+        private static string ShiftWholeAxisReference(string body, int index, int count, bool insert, bool rows)
+        {
+            string[] parts = body.Split(':');
+            if (parts.Length != 2) return null;
+            int first;
+            int last;
+            if (!TryReadWholeCoordinate(parts[0], rows, out first)) return null;
+            if (!TryReadWholeCoordinate(parts[1], rows, out last)) return null;
+            bool swap = first > last;
+            int low = swap ? last : first;
+            int high = swap ? first : last;
+            int shiftedLow;
+            int shiftedHigh;
+            ShiftSpan(index, count, insert, low, high, out shiftedLow, out shiftedHigh);
+            if (shiftedLow <= 0 || shiftedHigh <= 0) return string.Empty;
+            StringBuilder text = new StringBuilder(body.Length + 4);
+            AppendWholeCoordinate(text, parts[0], swap ? shiftedHigh : shiftedLow, rows);
+            text.Append(':');
+            // 反向写法（7:2）平移后保持原来的先后顺序。A reversed pair (7:2) keeps its original order after shifting.
+            AppendWholeCoordinate(text, parts[1], swap ? shiftedLow : shiftedHigh, rows);
+            return text.ToString();
+        }
+
+        /// <summary>识别一段只含行号或只含列名的坐标（可带一个 <c>$</c>）。</summary>
+        /// <param name="part">坐标文本。</param>
+        /// <param name="rows">true 认行号，false 认列名。</param>
+        /// <param name="value">输出坐标序号（1 基）。</param>
+        /// <returns>匹配时返回 true。</returns>
+        private static bool TryReadWholeCoordinate(string part, bool rows, out int value)
+        {
+            value = 0;
+            string text = part == null ? string.Empty : part.Trim();
+            if (text.StartsWith("$", StringComparison.Ordinal)) text = text.Substring(1);
+            if (text.Length == 0) return false;
+            if (rows)
+            {
+                long number = 0;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char c = text[i];
+                    if (c < '0' || c > '9') return false;
+                    number = number * 10 + (c - '0');
+                    if (number > CellAddress.MaxRowLiteral) return false;
+                }
+                if (number <= 0) return false;
+                value = (int)number;
+                return true;
+            }
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                bool letter = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+                if (!letter) return false;
+            }
+            // 最后一列是 XFD：超过三个字母的"列名"只会把累乘绕回一个合法数字，直接拒掉。
+            // The last column is XFD, so a "name" longer than three letters could only wrap around into a legal
+            // index by accident; refuse it outright.
+            if (text.Length > 3) return false;
+            value = CellAddress.ColumnIndex(text);
+            return value > 0 && value <= CellAddress.MaxColumnLiteral;
+        }
+
+        /// <summary>按原片段的 <c>$</c> 习惯写出平移后的整行 / 整列坐标。</summary>
+        /// <param name="text">结果尾部。</param>
+        /// <param name="original">原坐标文本。</param>
+        /// <param name="value">平移后的坐标序号。</param>
+        /// <param name="rows">true 写行号，false 写列名。</param>
+        private static void AppendWholeCoordinate(StringBuilder text, string original, int value, bool rows)
+        {
+            if (original != null && original.StartsWith("$", StringComparison.Ordinal)) text.Append('$');
+            text.Append(rows
+                ? value.ToString(CultureInfo.InvariantCulture)
+                : CellAddress.ColumnName(value));
+        }
+
+        /// <summary>
+        /// 平移图表系列的取数区域；整段被删光时保留原文。
+        /// Shifts a chart series range, keeping the original text when the whole range disappears.
+        /// </summary>
+        /// <remarks>
+        /// 系列引用一旦丢掉，图表就去读本表同名的空区域，画出来的是错觉而不是"没数据"；留着原文宁可显示空系列。
+        /// A series that loses its reference silently reads an empty area of its own sheet, which draws a
+        /// convincing lie rather than "no data", so the original text stays.
+        /// </remarks>
+        /// <param name="reference">区域文本。The range text.</param>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="rows">true 平移行，false 平移列。True shifts rows, false shifts columns.</param>
+        /// <returns>平移后的区域文本。The shifted range text.</returns>
+        private static string ShiftSeriesRange(string reference, int index, int count, bool insert, bool rows)
+        {
+            string shifted = ShiftDecorRange(reference, index, count, insert, rows);
+            return string.IsNullOrEmpty(shifted) ? reference : shifted;
+        }
+
+        /// <summary>取区域文本里最后一个不在引号内的表名分隔符。Finds the last sheet separator outside quoted names.</summary>
+        /// <param name="reference">区域引用文本。The range reference text.</param>
+        /// <returns>分隔符下标，无表前缀时为 -1。The separator index, or -1 when there is no sheet prefix.</returns>
+        private static int LastSheetSeparator(string reference)
+        {
+            bool quoted = false;
+            int last = -1;
+            for (int i = 0; i < reference.Length; i++)
+            {
+                char c = reference[i];
+                if (c == '\'') quoted = !quoted;
+                else if (c == '!' && !quoted) last = i;
+            }
+            return last;
+        }
+
+        /// <summary>把平移后的裸引用按原样的 <c>$</c> 标记重新拼装。Re-applies the original <c>$</c> locks onto the shifted bare reference.</summary>
+        /// <param name="original">平移前的区域正文。The range body before the shift.</param>
+        /// <param name="shifted">平移后的区域正文。The range body after the shift.</param>
+        /// <returns>保留锁定标记的引用。The reference with its locks restored.</returns>
+        private static string RestoreLocks(string original, string shifted)
+        {
+            string[] from = original.Split(':');
+            string[] to = shifted.Split(':');
+            if (from.Length != 2 || to.Length != 2) return shifted;
+            return RestoreLock(from[0], to[0]) + ":" + RestoreLock(from[1], to[1]);
+        }
+
+        /// <summary>按原坐标的锁定标记给裸坐标补回 <c>$</c>。Re-adds the <c>$</c> markers a bare coordinate had.</summary>
+        /// <param name="original">原坐标文本。The original coordinate text.</param>
+        /// <param name="coordinate">平移后的裸坐标。The shifted bare coordinate.</param>
+        /// <returns>补回标记后的坐标。The coordinate with markers restored.</returns>
+        private static string RestoreLock(string original, string coordinate)
+        {
+            bool lockColumn = original.Length > 0 && original[0] == '$';
+            bool lockRow = original.IndexOf('$', lockColumn ? 1 : 0) >= 0;
+            if (!lockColumn && !lockRow) return coordinate;
+            int letters = 0;
+            while (letters < coordinate.Length && (coordinate[letters] < '0' || coordinate[letters] > '9')) letters++;
+            StringBuilder text = new StringBuilder(coordinate.Length + 2);
+            if (lockColumn) text.Append('$');
+            text.Append(coordinate, 0, letters);
+            if (lockRow) text.Append('$');
+            text.Append(coordinate, letters, coordinate.Length - letters);
+            return text.ToString();
+        }
+
         /// <summary>插入/删除行后调整打印区域。Adjusts the print area after a row edit.</summary>
         /// <param name="rowIndex">编辑起点行号。The first edited row number.</param>
         /// <param name="count">编辑行数。The edited row count.</param>
@@ -1671,12 +2174,82 @@ namespace Wisdom.Office.Core
             }
         }
 
+        /// <summary>
+        /// 按插入/删除语义平移一个闭区间坐标；整段落在删除范围内时清零。
+        /// Shifts an inclusive coordinate span for an insertion or deletion, clearing it when the whole span
+        /// falls inside the deleted block.
+        /// </summary>
+        /// <param name="index">编辑起点。The first edited index.</param>
+        /// <param name="count">编辑跨度。The edited span.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        /// <param name="first">区间首坐标。The first coordinate.</param>
+        /// <param name="last">区间末坐标。The last coordinate.</param>
+        /// <param name="shiftedFirst">输出平移后的首坐标。Outputs the shifted first coordinate.</param>
+        /// <param name="shiftedLast">输出平移后的末坐标。Outputs the shifted last coordinate.</param>
+        private static void ShiftSpan(int index, int count, bool insert, int first, int last,
+            out int shiftedFirst, out int shiftedLast)
+        {
+            shiftedFirst = first;
+            shiftedLast = last;
+            if (first <= 0) return;
+            if (insert)
+            {
+                if (first >= index)
+                {
+                    shiftedFirst = first + count;
+                    shiftedLast = last + count;
+                }
+                else if (last >= index)
+                {
+                    shiftedLast = last + count;
+                }
+                return;
+            }
+            int end = index + count - 1;
+            if (first > end)
+            {
+                shiftedFirst = first - count;
+                shiftedLast = last - count;
+                return;
+            }
+            if (last < index) return;
+            shiftedLast = last - count;
+            if (shiftedLast < first)
+            {
+                shiftedFirst = 0;
+                shiftedLast = 0;
+            }
+        }
+
+        /// <summary>平移每页顶端重复的行区域。Shifts the repeated title rows.</summary>
+        /// <param name="rowIndex">编辑起点行号。The first edited row number.</param>
+        /// <param name="count">编辑行数。The edited row count.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        private void ShiftTitleRows(int rowIndex, int count, bool insert)
+        {
+            int first, last;
+            ShiftSpan(rowIndex, count, insert, PrintTitleFirstRow, PrintTitleLastRow, out first, out last);
+            PrintTitleFirstRow = first;
+            PrintTitleLastRow = last;
+        }
+
+        /// <summary>平移每页左端重复的列区域。Shifts the repeated title columns.</summary>
+        /// <param name="columnIndex">编辑起点列号。The first edited column number.</param>
+        /// <param name="count">编辑列数。The edited column count.</param>
+        /// <param name="insert">true 表示插入，false 表示删除。True for insertion, false for deletion.</param>
+        private void ShiftTitleColumns(int columnIndex, int count, bool insert)
+        {
+            int first, last;
+            ShiftSpan(columnIndex, count, insert, PrintTitleFirstColumn, PrintTitleLastColumn, out first, out last);
+            PrintTitleFirstColumn = first;
+            PrintTitleLastColumn = last;
+        }
+
         /// <summary>删除行后收缩或清除打印区域。Shrinks or clears the print area after rows are deleted.</summary>
         /// <param name="rowIndex">删除起点行号。The first deleted row number.</param>
         /// <param name="endRow">删除终点行号。The last deleted row number.</param>
         /// <param name="count">删除行数。The deleted row count.</param>
-        private void DeletePrintAreaRows(int rowIndex, int endRow, int count)
-        {
+        private void DeletePrintAreaRows(int rowIndex, int endRow, int count)        {
             if (!HasPrintArea) return;
             if (PrintAreaFirstRow > endRow)
             {
@@ -1842,6 +2415,13 @@ namespace Wisdom.Office.Core
         public CellStyle DefaultStyle { get; set; }
         /// <summary>工作簿定义名集合（全局或绑定到工作表）。The workbook defined names (global or scoped to a worksheet).</summary>
         public List<ExcelDefinedName> DefinedNames { get; private set; }
+        /// <summary>
+        /// 是否使用 1904 日期系统（Mac 版 Excel 旧默认）：日期序列号的基准由此决定，
+        /// 读入的 1904 工作簿写出时必须带同样的标记，否则所有日期整体偏移四年。
+        /// Whether the workbook uses the 1904 date system (the old Mac Excel default): it sets the epoch of date
+        /// serials, and a workbook read with it must be written with the same flag or every date shifts by four years.
+        /// </summary>
+        public bool Date1904 { get; set; }
 
         /// <summary>默认构造：空工作表列表、默认元数据与样式。Default constructor: an empty worksheet list with default metadata and style.</summary>
         public OfficeWorkbook()
@@ -1998,6 +2578,10 @@ namespace Wisdom.Office.Core
             copy.PrintAreaLastRow = source.PrintAreaLastRow;
             copy.PrintAreaFirstColumn = source.PrintAreaFirstColumn;
             copy.PrintAreaLastColumn = source.PrintAreaLastColumn;
+            copy.PrintTitleFirstRow = source.PrintTitleFirstRow;
+            copy.PrintTitleLastRow = source.PrintTitleLastRow;
+            copy.PrintTitleFirstColumn = source.PrintTitleFirstColumn;
+            copy.PrintTitleLastColumn = source.PrintTitleLastColumn;
             copy.DefaultColumnWidth = source.DefaultColumnWidth;
             copy.DefaultRowHeight = source.DefaultRowHeight;
             copy.DefaultStyle = source.DefaultStyle == null ? new CellStyle() : source.DefaultStyle.Clone();
@@ -2100,7 +2684,12 @@ namespace Wisdom.Office.Core
             int index = 0;
             long col = 0;
             bool hasColumn = false;
-            while (index < value.Length && char.IsLetter(value[index]))
+            // 只认 ASCII 列字母与数字：char.IsLetter/IsDigit 会把 "Å" 当列名、把全角 "１" 当数字 65249，
+            // 结果 "Å5" 变成第 133 列、"A１" 变成第 65249 行；尾随垃圾（"B2x"）也会被静默吞掉。
+            // Only ASCII letters and digits count: char.IsLetter/IsDigit read "Å" as a column name and the
+            // full-width "１" as 65249, turning "Å5" into column 133 and "A１" into row 65249, while trailing
+            // junk such as "B2x" was swallowed silently.
+            while (index < value.Length && IsColumnLetter(value[index]))
             {
                 char c = char.ToUpperInvariant(value[index]);
                 col = col * 26 + (c - 'A' + 1);
@@ -2115,12 +2704,17 @@ namespace Wisdom.Office.Core
 
             long rowNumber = 0;
             bool hasRow = false;
-            while (index < value.Length && char.IsDigit(value[index]))
+            while (index < value.Length && value[index] >= '0' && value[index] <= '9')
             {
                 rowNumber = rowNumber * 10 + (value[index] - '0');
                 if (rowNumber > MaxRowLiteral) throw new FormatException("Invalid cell reference: " + reference);
                 hasRow = true;
                 index++;
+            }
+
+            if (index != value.Length)
+            {
+                throw new FormatException("Invalid cell reference: " + reference);
             }
 
             if (!hasColumn || !hasRow || col <= 0 || rowNumber <= 0)
@@ -2130,6 +2724,14 @@ namespace Wisdom.Office.Core
 
             row = (int)rowNumber;
             column = (int)col;
+        }
+
+        /// <summary>是否为 A1 引用认可的列字母（仅 ASCII）。Whether the character is an A1 column letter (ASCII only).</summary>
+        /// <param name="c">待判定的字符。The character to test.</param>
+        /// <returns>true 表示可作列名。True when it may name a column.</returns>
+        private static bool IsColumnLetter(char c)
+        {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
         }
 
         /// <summary>解析范围引用（如 "A1:B5"）；单个引用时末坐标等于首坐标。Parses a range reference (such as "A1:B5"); for a single reference the end coordinates equal the start coordinates.</summary>

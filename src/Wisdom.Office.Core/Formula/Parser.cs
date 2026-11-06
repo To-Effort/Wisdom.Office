@@ -122,9 +122,12 @@ namespace Wisdom.Office.Core.Formulas
             if (t.Kind == TokKind.Operator && (t.Text == "-" || t.Text == "+"))
             {
                 Advance();
-                // 一元正负号优先级低于乘幂：-3^2 解析为 -(3^2)，与 Excel 一致。
-                // Unary sign binds looser than power: -3^2 parses as -(3^2), matching Excel.
-                Node operand = ParseBinary(5);
+                // 一元正负号优先级高于乘幂：-3^2 解析为 (-3)^2 = 9，与 Excel 一致（数学惯例的 -9 在 Excel 里不成立）。
+                // 操作数用 6 级（高于 ^ 的 5 级）解析，只吃掉一个原子，剩下的 ^ 交回外层循环结合到负号之后。
+                // The unary sign binds tighter than power: -3^2 parses as (-3)^2 = 9, matching Excel (the
+                // mathematical -9 is not what Excel returns). Parsing the operand at level 6, above ^'s 5,
+                // consumes only the atom and hands the ^ back to the outer loop, where it binds to the negation.
+                Node operand = ParseBinary(6);
                 if (t.Text == "+") return operand;
                 UnaryNode node = new UnaryNode();
                 node.Kind = NodeKind.Unary;
@@ -247,6 +250,37 @@ namespace Wisdom.Office.Core.Formulas
             int col;
             bool absRow;
             bool absCol;
+
+            // 整列 / 整行引用展开成满高或满宽的矩形，行列越界沿用 ParseCell 同级的网格校验。
+            // Whole-column and whole-row references expand to a full-height or full-width rectangle; out-of-grid
+            // bounds raise the same FormatException ParseCell would.
+            if (parts.Length == 2 && IsWholeColumnPart(parts[0]) && IsWholeColumnPart(parts[1]))
+            {
+                int left = ColumnOfParts(parts[0]);
+                int right = ColumnOfParts(parts[1]);
+                node.IsRange = true;
+                node.AbsRow1 = true;
+                node.AbsCol1 = parts[0][0] == '$';
+                node.Col1 = Math.Min(left, right);
+                node.Col2 = Math.Max(left, right);
+                node.Row1 = 1;
+                node.Row2 = CellAddress.MaxRowLiteral;
+                return node;
+            }
+            if (parts.Length == 2 && IsWholeRowPart(parts[0]) && IsWholeRowPart(parts[1]))
+            {
+                int first = RowOfParts(parts[0]);
+                int last = RowOfParts(parts[1]);
+                node.IsRange = true;
+                node.AbsCol1 = true;
+                node.AbsRow1 = parts[0][0] == '$';
+                node.Row1 = Math.Min(first, last);
+                node.Row2 = Math.Max(first, last);
+                node.Col1 = 1;
+                node.Col2 = CellAddress.MaxColumnLiteral;
+                return node;
+            }
+
             ParseCell(parts[0], out row, out col, out absRow, out absCol);
             node.Row1 = row;
             node.Col1 = col;
@@ -302,6 +336,54 @@ namespace Wisdom.Office.Core.Formulas
             if (digits == 0 || rowNumber > CellAddress.MaxRowLiteral) throw new FormatException("Invalid row in reference: " + text);
             col = (int)column;
             row = (int)rowNumber;
+        }
+
+        /// <summary>整列引用的一段（可选 $ + 列字母）。One side of a whole-column reference (optional $ plus column letters).</summary>
+        private static bool IsWholeColumnPart(string part)
+        {
+            int i = 0;
+            if (i < part.Length && part[i] == '$') i++;
+            int letters = 0;
+            while (i < part.Length && char.IsLetter(part[i])) { i++; letters++; }
+            return letters > 0 && i == part.Length;
+        }
+
+        /// <summary>整行引用的一段（可选 $ + 行号）。One side of a whole-row reference (optional $ plus a row number).</summary>
+        private static bool IsWholeRowPart(string part)
+        {
+            int i = 0;
+            if (i < part.Length && part[i] == '$') i++;
+            int digits = 0;
+            while (i < part.Length && char.IsDigit(part[i])) { i++; digits++; }
+            return digits > 0 && i == part.Length;
+        }
+
+        /// <summary>把整列引用的一段换算成列号，超界按 ParseCell 的方式报错。Converts a whole-column side to a column number, failing like ParseCell when out of grid.</summary>
+        private static int ColumnOfParts(string part)
+        {
+            long column = 0;
+            for (int i = 0; i < part.Length; i++)
+            {
+                char c = part[i];
+                if (c == '$') continue;
+                column = column * 26 + (char.ToUpperInvariant(c) - 'A' + 1);
+            }
+            if (column > CellAddress.MaxColumnLiteral) throw new FormatException("Invalid column in reference: " + part);
+            return (int)column;
+        }
+
+        /// <summary>把整行引用的一段换算成行号，超界按 ParseCell 的方式报错。Converts a whole-row side to a row number, failing like ParseCell when out of grid.</summary>
+        private static int RowOfParts(string part)
+        {
+            long rowNumber = 0;
+            for (int i = 0; i < part.Length; i++)
+            {
+                char c = part[i];
+                if (c == '$') continue;
+                rowNumber = rowNumber * 10 + (c - '0');
+                if (rowNumber > CellAddress.MaxRowLiteral) throw new FormatException("Invalid row in reference: " + part);
+            }
+            return (int)rowNumber;
         }
 
         /// <summary>把列号（1 基）转成字母文本。Converts a 1-based column number to letters.</summary>

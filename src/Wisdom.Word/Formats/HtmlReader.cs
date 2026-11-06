@@ -24,6 +24,8 @@ namespace Wisdom.Word
         private const int MaxImageBytes = 32 * 1024 * 1024;
         /// <summary>单个文档最多读取的内嵌图片数。The maximum number of embedded images read from one document.</summary>
         private const int MaxImages = 512;
+        /// <summary>单元格跨行/跨列上限，与 DOCX 读取端的 gridSpan 同一口径。The cap on a cell's row/column span, matching the DOCX reader's gridSpan ceiling.</summary>
+        private const int MaxCellSpan = 1024;
 
         /// <summary>从磁盘文件加载 HTML 文档（UTF-8，自动识别 BOM）。Loads an HTML document from a disk file (UTF-8 with BOM detection).</summary>
         /// <param name="path">HTML 文件路径。The HTML file path.</param>
@@ -224,6 +226,12 @@ namespace Wisdom.Word
                     ElementNode element = new ElementNode { Name = tagName };
                     bool selfClosing = ParseAttributes(element, ref cursor);
                     _position = cursor;
+                    // HTML 允许省略 </li>：新的 li 开始时先把同一列表里还没闭合的 li 关掉，
+                    // 否则后续条目会被当成前一条的子元素，整张列表塌成一段。
+                    // HTML allows the </li> end tag to be omitted: a new li first closes the still-open li of the
+                    // same list, otherwise the following items nest inside the previous one and the whole list
+                    // collapses into a single paragraph.
+                    if (!selfClosing && tagName == "li") CloseOpenListItem(stack);
                     AddNode(stack, element);
 
                     if (!selfClosing && IsRawText(tagName))
@@ -264,6 +272,26 @@ namespace Wisdom.Word
                 if (_nodeCount >= MaxNodes) return;
                 stack[stack.Count - 1].Children.Add(node);
                 _nodeCount++;
+            }
+
+            /// <summary>
+            /// 关闭同一列表里仍未闭合的 li；遇到 ul/ol 边界即停止，避免把外层条目的祖先一起弹掉（嵌套列表依赖它）。
+            /// Closes the still-open li of the same list, stopping at the ul/ol boundary so the ancestors of an
+            /// outer item survive; nested lists rely on that boundary.
+            /// </summary>
+            /// <param name="stack">当前元素栈。The current element stack.</param>
+            private static void CloseOpenListItem(List<ElementNode> stack)
+            {
+                for (int i = stack.Count - 1; i >= 1; i--)
+                {
+                    string name = stack[i].Name;
+                    if (name == "li")
+                    {
+                        stack.RemoveRange(i, stack.Count - i);
+                        return;
+                    }
+                    if (name == "ul" || name == "ol") return;
+                }
             }
 
             /// <summary>从当前位置解析属性列表，直到标签结束；返回是否自闭合。Parses the attribute list up to the end of the tag and returns whether it is self-closing.</summary>
@@ -1067,8 +1095,18 @@ namespace Wisdom.Word
                     ElementNode cellElement = cells[c];
                     TableCell cell = new TableCell();
                     int span;
-                    if (int.TryParse(GetAttribute(cellElement, "colspan"), out span) && span > 1) cell.ColSpan = span;
-                    if (int.TryParse(GetAttribute(cellElement, "rowspan"), out span) && span > 1) cell.RowSpan = span;
+                    // 跨度必须设上限（与 DOCX 读取端的 gridSpan 同一口径）：colspan="2147483647" 会让下游
+                    // 导出按列数分配数组，直接把这个进程的内存炸掉。
+                    // Spans need a cap (the same ceiling the DOCX reader applies to gridSpan): a hostile
+                    // colspan="2147483647" makes downstream exports size arrays by the column count and OOMs.
+                    if (int.TryParse(GetAttribute(cellElement, "colspan"), out span) && span > 1)
+                    {
+                        cell.ColSpan = Math.Min(span, MaxCellSpan);
+                    }
+                    if (int.TryParse(GetAttribute(cellElement, "rowspan"), out span) && span > 1)
+                    {
+                        cell.RowSpan = Math.Min(span, MaxCellSpan);
+                    }
                     Dictionary<string, string> cellStyle = ParseStyle(GetAttribute(cellElement, "style"));
                     OfficeColor background;
                     if (ParseColor(GetStyle(cellStyle, "background-color", "background"), out background))
@@ -1210,7 +1248,7 @@ namespace Wisdom.Word
             return borders;
         }
 
-        /// <summary>创建图片行内元素：只接受 data: 内嵌 PNG/JPEG，外部 URL 不请求、仅回退 alt 文本。Creates an image inline: only data: embedded PNG/JPEG is accepted; external URLs are never requested and only the alt text is kept.</summary>
+        /// <summary>创建图片行内元素：只接受 data: 内嵌的 PNG/JPEG/GIF/BMP，魔数对不上或外部 URL 一律回退 alt 文本。Creates an image inline: only data: embedded PNG, JPEG, GIF or BMP is accepted; bytes whose magic does not match, and external URLs, keep only the alt text.</summary>
         private static Inline CreateImageInline(ElementNode element, Context context)
         {
             string source = GetAttribute(element, "src").Trim();
@@ -1224,7 +1262,8 @@ namespace Wisdom.Word
             string header = source.Substring(5, comma - 5).ToLowerInvariant();
             if (!header.EndsWith(";base64", StringComparison.Ordinal)) return string.IsNullOrEmpty(alt) ? null : new TextRun(alt);
             string mime = header.Substring(0, header.Length - 7).Trim();
-            if (mime != "image/png" && mime != "image/jpeg" && mime != "image/jpg") return null;
+            if (mime != "image/png" && mime != "image/jpeg" && mime != "image/jpg"
+                && mime != "image/gif" && mime != "image/bmp") return null;
             if (source.Length > MaxImageBytes * 2) return null;
             byte[] data;
             try
@@ -1238,6 +1277,10 @@ namespace Wisdom.Word
             if (data.Length == 0 || data.Length > MaxImageBytes) return null;
             context.ImageCount++;
             OfficeImage image = new OfficeImage(data);
+            // 魔数认不出来的字节不能进模型：写成 .bin 媒体部件的 docx 在 Word 眼里就是文档损坏。
+            // Bytes whose magic is not recognised may not enter the model: a docx whose media part is .bin is
+            // simply a corrupt document to Word.
+            if (image.Format == OfficeImageFormat.Unknown) return string.IsNullOrEmpty(alt) ? null : new TextRun(alt);
             double width = ReadImageLength(element, "width");
             double height = ReadImageLength(element, "height");
             return new ImageRun(image, width, height);

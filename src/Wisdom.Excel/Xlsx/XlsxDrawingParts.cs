@@ -173,7 +173,7 @@ namespace Wisdom.Excel
             }
         }
 
-        /// <summary>按扩展名给出图片 MIME 类型。 Maps an extension to its image MIME type.</summary>
+        /// <summary>按扩展名给出图片 MIME 类型；识别不出的扩展名仍按 PNG 处理，避免写出空的 Default 类型。 Maps an extension to its image MIME type; an unrecognised extension still maps to PNG so no empty Default type is written.</summary>
         /// <param name="extension">不含点的扩展名。 Extension without the dot.</param>
         /// <returns>MIME 类型。 The MIME type.</returns>
         private static string ImageContentType(string extension)
@@ -182,6 +182,10 @@ namespace Wisdom.Excel
                 || string.Equals(extension, "jpeg", StringComparison.OrdinalIgnoreCase)) return "image/jpeg";
             if (string.Equals(extension, "gif", StringComparison.OrdinalIgnoreCase)) return "image/gif";
             if (string.Equals(extension, "bmp", StringComparison.OrdinalIgnoreCase)) return "image/bmp";
+            if (string.Equals(extension, "tif", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, "tiff", StringComparison.OrdinalIgnoreCase)) return "image/tiff";
+            if (string.Equals(extension, "emf", StringComparison.OrdinalIgnoreCase)) return "image/x-emf";
+            if (string.Equals(extension, "wmf", StringComparison.OrdinalIgnoreCase)) return "image/x-wmf";
             return "image/png";
         }
 

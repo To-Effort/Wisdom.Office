@@ -11,10 +11,22 @@ namespace Wisdom.Office.Core
         /// <summary>PNG 格式。The PNG format.</summary>
         Png = 1,
         /// <summary>JPEG 格式。The JPEG format.</summary>
-        Jpeg = 2
+        Jpeg = 2,
+        /// <summary>GIF 格式。The GIF format.</summary>
+        Gif = 3,
+        /// <summary>BMP（位图）格式。The BMP (device-independent bitmap) format.</summary>
+        Bmp = 4,
+        /// <summary>TIFF 格式。The TIFF format.</summary>
+        Tiff = 5,
+        /// <summary>Windows 图元文件。The Windows metafile format.</summary>
+        Emf = 6,
+        /// <summary>Windows 位图图元文件。The Windows bitmap-metafile format.</summary>
+        Wmf = 7
     }
 
-    /// <summary>内存图片：构造时自动嗅探 PNG/JPEG 编码并读出像素尺寸。An in-memory image: sniffs PNG/JPEG encoding and reads pixel dimensions at construction.</summary>
+    /// <summary>内存图片：构造时自动嗅探编码格式与扩展名并尽量读出像素尺寸；位图栅格化只支持 PNG 与 JPEG。
+    /// An in-memory image: sniffs the encoding, extension and pixel dimensions at construction; only PNG and JPEG
+    /// can be rasterised, the other formats are carried through documents unchanged.</summary>
     public sealed class OfficeImage
     {
         /// <summary>原始图片字节。The raw image bytes.</summary>
@@ -83,9 +95,137 @@ namespace Wisdom.Office.Core
                 return;
             }
 
+            if (IsGif(Data))
+            {
+                Format = OfficeImageFormat.Gif;
+                ContentType = "image/gif";
+                FileExtension = ".gif";
+                PixelWidth = ReadUInt16LittleEndian(Data, 6);
+                PixelHeight = ReadUInt16LittleEndian(Data, 8);
+                return;
+            }
+
+            if (IsBmp(Data))
+            {
+                Format = OfficeImageFormat.Bmp;
+                ContentType = "image/bmp";
+                FileExtension = ".bmp";
+                int headerSize = ReadInt32LittleEndian(Data, 14);
+                if (headerSize == 12)
+                {
+                    PixelWidth = ReadUInt16LittleEndian(Data, 18);
+                    PixelHeight = ReadUInt16LittleEndian(Data, 20);
+                }
+                else
+                {
+                    PixelWidth = ReadInt32LittleEndian(Data, 18);
+                    PixelHeight = Math.Abs(ReadInt32LittleEndian(Data, 22));
+                }
+                if (PixelWidth < 0 || PixelHeight < 0 || PixelWidth > 65535 || PixelHeight > 65535)
+                {
+                    PixelWidth = 0;
+                    PixelHeight = 0;
+                }
+                return;
+            }
+
+            if (IsTiff(Data))
+            {
+                // TIFF 尺寸要遍历 IFD 标签，这里只登记格式：字节原样带出文档，栅格化交给 Word 与 Excel。
+                // Reading a TIFF size means walking the IFD tags, so only the format is recorded here: the bytes
+                // travel through the documents unchanged and Word or Excel rasterises them.
+                Format = OfficeImageFormat.Tiff;
+                ContentType = "image/tiff";
+                FileExtension = ".tiff";
+                return;
+            }
+
+            if (IsEmf(Data))
+            {
+                Format = OfficeImageFormat.Emf;
+                ContentType = "image/x-emf";
+                FileExtension = ".emf";
+                return;
+            }
+
+            if (IsWmf(Data))
+            {
+                Format = OfficeImageFormat.Wmf;
+                ContentType = "image/x-wmf";
+                FileExtension = ".wmf";
+                return;
+            }
+
             Format = OfficeImageFormat.Unknown;
             ContentType = "application/octet-stream";
             FileExtension = ".bin";
+        }
+
+        /// <summary>嗅探 GIF：魔数 GIF87a/GIF89a，尺寸取自逻辑屏幕描述符（偏移 6~9，小端）。 Sniffs GIF: the GIF87a/GIF89a magic, with the size taken from the logical screen descriptor (offsets 6-9, little-endian).</summary>
+        /// <param name="data">图片字节。The image bytes.</param>
+        /// <returns>识别成功时返回 true。True when the bytes are a GIF.</returns>
+        private static bool IsGif(byte[] data)
+        {
+            return data.Length > 9 && data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38;
+        }
+
+        /// <summary>嗅探 BMP：BM 魔数加 BITMAPINFOHEADER/BITMAPCOREHEADER 的头长度。 Sniffs BMP: the BM magic plus a BITMAPINFOHEADER or BITMAPCOREHEADER header length.</summary>
+        /// <param name="data">图片字节。The image bytes.</param>
+        /// <returns>识别成功时返回 true。True when the bytes are a BMP.</returns>
+        private static bool IsBmp(byte[] data)
+        {
+            if (data.Length < 26 || data[0] != 0x42 || data[1] != 0x4D) return false;
+            int headerSize = ReadInt32LittleEndian(data, 14);
+            return headerSize == 12 || headerSize >= 40;
+        }
+
+        /// <summary>嗅探 TIFF：II/MM 字节序标记加魔数 42。 Sniffs TIFF: the II/MM byte-order mark plus the 42 magic.</summary>
+        /// <param name="data">图片字节。The image bytes.</param>
+        /// <returns>识别成功时返回 true。True when the bytes are a TIFF.</returns>
+        private static bool IsTiff(byte[] data)
+        {
+            if (data.Length < 8) return false;
+            if (data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00) return true;
+            return data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A;
+        }
+
+        /// <summary>嗅探 EMF：首记录类型 1 且偏移 40 处是 " EMF" 签名。 Sniffs EMF: the first record type is 1 and the " EMF" signature sits at offset 40.</summary>
+        /// <param name="data">图片字节。The image bytes.</param>
+        /// <returns>识别成功时返回 true。True when the bytes are an EMF.</returns>
+        private static bool IsEmf(byte[] data)
+        {
+            if (data.Length < 44) return false;
+            if (ReadInt32LittleEndian(data, 0) != 1) return false;
+            return data[40] == 0x20 && data[41] == 0x45 && data[42] == 0x4D && data[43] == 0x46;
+        }
+
+        /// <summary>嗅探 WMF：可放置头（D7 CDC6 9A）或磁盘元文件的 "PM" 魔数。 Sniffs WMF: the placeable header (D7 CDC6 9A) or the "PM" magic of a disk metafile.</summary>
+        /// <param name="data">图片字节。The image bytes.</param>
+        /// <returns>识别成功时返回 true。True when the bytes are a WMF.</returns>
+        private static bool IsWmf(byte[] data)
+        {
+            if (data.Length < 20) return false;
+            if (ReadInt32LittleEndian(data, 0) == unchecked((int)0x9AC6CDD7)) return true;
+            return data[0] == 0x01 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x00
+                && data[18] == 0x50 && data[19] == 0x4D;
+        }
+
+        /// <summary>读取小端 32 位整数。Reads a little-endian 32-bit integer.</summary>
+        /// <param name="data">字节缓冲。The byte buffer.</param>
+        /// <param name="offset">起始偏移（调用方保证可读）。The offset; the caller guarantees it is readable.</param>
+        /// <returns>整数值。The value.</returns>
+        private static int ReadInt32LittleEndian(byte[] data, int offset)
+        {
+            return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+        }
+
+        /// <summary>读取小端 16 位无符号整数。Reads a little-endian 16-bit unsigned integer.</summary>
+        /// <param name="data">字节缓冲。The byte buffer.</param>
+        /// <param name="offset">起始偏移（调用方保证可读）。The offset; the caller guarantees it is readable.</param>
+        /// <returns>整数值。The value.</returns>
+        private static int ReadUInt16LittleEndian(byte[] data, int offset)
+        {
+            return data[offset] | (data[offset + 1] << 8);
         }
 
         /// <summary>按 96 DPI 换算的默认显示宽度（像素×72/96 磅）；无尺寸信息时回退 200 磅。The default display width converted at 96 DPI (pixels × 72/96 points); falls back to 200 points when no size is known.</summary>

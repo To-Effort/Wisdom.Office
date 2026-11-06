@@ -262,6 +262,11 @@ namespace Wisdom.Excel
                 OfficeWorkbook workbook = new OfficeWorkbook();
                 _defaultStyle = _styles.Count > 0 ? _styles[0].Clone() : new CellStyle();
                 workbook.DefaultStyle = _defaultStyle.Clone();
+                // DATEMODE 记录决定单元格日期是按 1900 还是 1904 基准算出来的；不把这个标记带到模型上，
+                // 读入的 1904 工作簿再写出就会丢掉 date1904，所有日期整体偏移四年。
+                // The DATEMODE record decides which epoch cell dates were computed from; without carrying the
+                // flag onto the model, a re-written 1904 workbook loses date1904 and every date shifts by four years.
+                workbook.Date1904 = _date1904;
 
                 int fallbackIndex = globalEnd;
                 HashSet<int> parsed = new HashSet<int>();
@@ -755,6 +760,15 @@ namespace Wisdom.Excel
                                     int lastRow = ByteUtils.ReadUInt16LittleEndian(data, position + 2);
                                     int firstColumn = ByteUtils.ReadUInt16LittleEndian(data, position + 4);
                                     int lastColumn = ByteUtils.ReadUInt16LittleEndian(data, position + 6);
+                                    // 坐标直接来自 ushort，损坏文件能把合并区写到 65535 列；used-range 计算会
+                                    // 把这份跨度当真，Excel 转 Word 时就按它铺出六万列表格。
+                                    // The coordinates are raw ushorts, so a corrupt file can claim a region 65,535
+                                    // columns wide; the used-range calculation believes it and Excel-to-Word then
+                                    // builds a table with that many columns.
+                                    if (firstRow >= LegacyMaxRows) continue;
+                                    if (firstColumn >= LegacyMaxColumns) continue;
+                                    if (lastRow >= LegacyMaxRows) lastRow = LegacyMaxRows - 1;
+                                    if (lastColumn >= LegacyMaxColumns) lastColumn = LegacyMaxColumns - 1;
                                     if (lastRow < firstRow || lastColumn < firstColumn) continue;
                                     sheet.MergedRanges.Add(new MergedRange(firstRow + 1, firstColumn + 1,
                                         lastRow - firstRow + 1, lastColumn - firstColumn + 1));

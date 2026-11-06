@@ -16,7 +16,11 @@ namespace Wisdom.Office.Tests
             Fx(wb, "1+2*3", 7.0);
             Fx(wb, "(1+2)*3", 9.0);
             Fx(wb, "2^3^2", 512.0);
-            Fx(wb, "-3^2", -9.0);
+            // Excel 把一元负号绑得比乘幂紧，-3^2 是 (-3)^2；数学惯例的 -9 不是 Excel 的结果。
+            // Excel binds the unary sign tighter than power, so -3^2 is (-3)^2; the mathematical -9 is not Excel's answer.
+            Fx(wb, "-3^2", 9.0);
+            Fx(wb, "2^-3", 0.125);
+            Fx(wb, "-3%+1", 0.97);
             Fx(wb, "50%", 0.5);
             Fx(wb, "\"a\"&\"b\"", "ab");
             Fx(wb, "10/0", "#DIV/0!");
@@ -31,6 +35,42 @@ namespace Wisdom.Office.Tests
             Fx(wb, "ROUND(2.5,0)", 3.0);
             Fx(wb, "INT(3.9)", 3.0);
             Fx(wb, "SUM(A1:A3)", 60.0);
+
+            // 取整与可选参数：num_digits 为负时取整到小数点左侧，缺省参数走 Excel 的默认值。
+            // Rounding and optional arguments: a negative num_digits rounds left of the decimal point and omitted
+            // arguments fall back to Excel's defaults.
+            Fx(wb, "ROUND(12345,-3)", 12000.0);
+            Fx(wb, "ROUNDUP(1499,-2)", 1500.0);
+            Fx(wb, "ROUNDDOWN(1299,-2)", 1200.0);
+            Fx(wb, "TRUNC(12345.9,-3)", 12000.0);
+            Fx(wb, "TRUNC(-1.9)", -1.0);
+            Fx(wb, "ROUND(2.1234,1.9)", 2.1);
+            Fx(wb, "CEILING(5)", 5.0);
+            Fx(wb, "CEILING(5,3)", 6.0);
+            Fx(wb, "FLOOR(5)", 5.0);
+            Fx(wb, "LOG(100)", 2.0);
+            Fx(wb, "ROUND(1,-400)", "#NUM!");
+
+            // 单元格引用坐标：单格引用求值后仍带坐标，ROW/COLUMN/OFFSET 才认得出它是引用。
+            // Single-cell references keep their coordinate after evaluation so ROW/COLUMN/OFFSET can see a reference.
+            Fx(wb, "ROW(B2)", 2.0);
+            Fx(wb, "COLUMN(B2)", 2.0);
+            Fx(wb, "ROW(A1:A3)", 1.0);
+            // 绝对引用 $A1 / $A$1：旧词法只读到列字母，整条公式落到名称分支报 #NAME?。
+            // Absolute references $A1 / $A$1: the old scan stopped at the column letters, so the whole formula
+            // fell through to the name branch and returned #NAME?.
+            Fx(wb, "$A$1+$B1", 12.0);
+            Fx(wb, "SUM($A$1:$A$2)", 30.0);
+            Fx(wb, "OFFSET(A1,2,0)", 30.0);
+            Fx(wb, "SUM(OFFSET(A1,0,0,3,1))", 60.0);
+
+            // 整列/整行引用按已用范围收敛。 Whole-column and whole-row references clamp to the used range.
+            Fx(wb, "SUM(A:A)", 60.0);
+            Fx(wb, "SUM(1:1)", 17.0);
+
+            // RANDBETWEEN 只给闭区间整数（早先返回带小数的值）。 RANDBETWEEN must return integers in the closed interval.
+            double rb = Convert.ToDouble(FormulaEngine.Evaluate(wb, "RANDBETWEEN(1,3)"), CultureInfo.InvariantCulture);
+            Require(rb >= 1.0 && rb <= 3.0 && rb == Math.Floor(rb), "RANDBETWEEN(1,3) returned " + rb);
 
             // 统计聚合。 Statistical aggregates.
             Fx(wb, "AVERAGE(A1:A3)", 20.0);
@@ -49,6 +89,22 @@ namespace Wisdom.Office.Tests
             Fx(wb, "SUBSTITUTE(\"aaa\",\"a\",\"b\",2)", "aba");
             Fx(wb, "TRIM(\"  a  b  \")", "a b");
 
+            // TEXTJOIN 的分隔符在前、ignore_empty 在后；FIXED 的两个可选参数生效。
+            // TEXTJOIN takes the delimiter before ignore_empty; both optional FIXED arguments now take effect.
+            Fx(wb, "TEXTJOIN(\",\",TRUE,A1:A2)", "10,20");
+            Fx(wb, "TEXTJOIN(\"-\",FALSE,A1:A2,\"x\")", "10-20-x");
+            Fx(wb, "LEFT(\"excel\")", "e");
+            Fx(wb, "FIXED(1234.5)", "1,234.50");
+            Fx(wb, "FIXED(1234.5,0)", "1,235");
+            Fx(wb, "FIXED(1234.5,0,FALSE)", "1235");
+            Fx(wb, "FIXED(12345.678,-2)", "12,300");
+
+            // 错误字面量整体成词：旧词法在 "/" 处断开，=#DIV/0! 直接抛格式异常。
+            // Error literals lex as one run: the old tokenizer broke at "/", so =#DIV/0! threw a FormatException.
+            Fx(wb, "#DIV/0!", "#DIV/0!");
+            Fx(wb, "#N/A", "#N/A");
+            Fx(wb, "ISERROR(#VALUE!)", true);
+
             // 条件聚合。 Conditional aggregation.
             Fx(wb, "SUMIF(A1:A3,\">=20\")", 50.0);
             Fx(wb, "COUNTIF(A1:A3,\">15\")", 2.0);
@@ -64,6 +120,11 @@ namespace Wisdom.Office.Tests
 
             // 跨表与查找。 Cross-sheet and lookup.
             Fx(wb, "Data!A1+Data!A2", 300.0);
+            Fx(wb, "SUM('Data'!A1:A2)", 300.0);
+            // 带空格的表名必须整体成词：旧词法没吃掉引号后的 "!"，'Sales Q1'!A1 退化成一个孤立表名。
+            // A quoted sheet name with a space had to lex as a whole reference: the old tokenizer never consumed
+            // the "!" after the closing quote, so 'Sales Q1'!A1 collapsed to a bare sheet name.
+            Fx(wb, "'Sales Q1'!A1*2", 14.0);
             Fx(wb, "SUM(Data!A1:A2)", 300.0);
             Fx(wb, "VLOOKUP(2,Lookup!A1:B3,2,FALSE)", "two");
             Fx(wb, "MATCH(3,Lookup!A1:A3,0)", 3.0);
@@ -114,6 +175,9 @@ namespace Wisdom.Office.Tests
             lk.GetCell("A1").Value = 1.0; lk.GetCell("B1").Value = "one";
             lk.GetCell("A2").Value = 2.0; lk.GetCell("B2").Value = "two";
             lk.GetCell("A3").Value = 3.0; lk.GetCell("B3").Value = "three";
+
+            Worksheet spaced = wb.AddWorksheet("Sales Q1");
+            spaced.GetCell("A1").Value = 7.0;
             return wb;
         }
 

@@ -101,11 +101,21 @@ namespace Wisdom.Office.Core.Formulas
             return FxValue.Txt(sb.ToString());
         }
 
+        /// <summary>
+        /// TEXTJOIN(delimiter, ignore_empty, text1, ...)：Excel 的参数顺序是分隔符在前、第二个才忽略空值。
+        /// 早先实现正好读反，<c>TEXTJOIN(",",TRUE,B1:B2)</c> 把 "," 当成"是否忽略空值"（恒为真）、把 TRUE 当分隔符，
+        /// 结果是 "1TRUE2"。分隔符超过 255 字符按 Excel 返回 #VALUE!。
+        /// TEXTJOIN(delimiter, ignore_empty, text1, ...) takes the delimiter first and the ignore-empty flag second.
+        /// The old implementation read them the other way round, so TEXTJOIN(",",TRUE,B1:B2) treated "," as the
+        /// ignore-empty flag (always true) and TRUE as the delimiter, yielding "1TRUE2". A delimiter longer than
+        /// 255 characters returns #VALUE! as Excel does.
+        /// </summary>
         private static FxValue TextJoin(Evaluator ev, Worksheet sheet, List<FxValue> a)
         {
-            if (a.Count < 2) return Err(FxError.Value);
-            bool ignoreEmpty = BoolAt(a, 0);
-            string delim = TextAt(a, 1);
+            if (a.Count < 3) return Err(FxError.Value);
+            string delim = TextAt(a, 0);
+            if (delim.Length > 255) return Err(FxError.Value);
+            bool ignoreEmpty = BoolAt(a, 1);
             StringBuilder sb = new StringBuilder();
             bool first = true;
             for (int i = 2; i < a.Count; i++)
@@ -542,14 +552,34 @@ namespace Wisdom.Office.Core.Formulas
 
         private static FxValue ColumnFn(Evaluator ev, Worksheet sheet, List<FxValue> a)
         {
-            if (a.Count == 0 || a[0].Kind != FxKind.Range) return Err(FxError.Value);
-            return FxValue.Num(a[0].C1);
+            int row, col;
+            if (a.Count == 0 || !RefTopLeft(a[0], out row, out col)) return Err(FxError.Value);
+            return FxValue.Num(col);
         }
 
         private static FxValue RowFn(Evaluator ev, Worksheet sheet, List<FxValue> a)
         {
-            if (a.Count == 0 || a[0].Kind != FxKind.Range) return Err(FxError.Value);
-            return FxValue.Num(a[0].R1);
+            int row, col;
+            if (a.Count == 0 || !RefTopLeft(a[0], out row, out col)) return Err(FxError.Value);
+            return FxValue.Num(row);
+        }
+
+        /// <summary>
+        /// 读取引用参数的左上角坐标；值不带坐标时返回 false。
+        /// ROW / COLUMN / OFFSET 原先只认 <c>Kind == Range</c>，而单格引用求值成标量后坐标就丢了，
+        /// 于是 <c>ROW(B2)</c> 恒报 #VALUE!、<c>OFFSET(B2,1,0)</c> 恒报 #REF!。现在看的是求值器盖在返回值上的
+        /// 坐标戳（见 <c>Evaluator.StampReference</c>），区域和单格都能走同一条路。
+        /// Reads a reference argument's top-left coordinate; false when the value carries no coordinate.
+        /// ROW / COLUMN / OFFSET accepted only <c>Kind == Range</c>, and a single-cell reference collapses to a
+        /// scalar, so ROW(B2) always returned #VALUE! and OFFSET(B2,1,0) always #REF!. They now read the
+        /// coordinate stamp the evaluator puts on the returned value (see <c>Evaluator.StampReference</c>), so
+        /// ranges and single cells travel the same path.
+        /// </summary>
+        private static bool RefTopLeft(FxValue v, out int row, out int col)
+        {
+            row = v.R1;
+            col = v.C1;
+            return v.Sheet != null && row > 0 && col > 0;
         }
 
         private static FxValue WidthOf(List<FxValue> a)
@@ -583,13 +613,16 @@ namespace Wisdom.Office.Core.Formulas
         {
             if (a.Count < 3) return Err(FxError.Value);
             FxValue reference = a[0];
+            // 单格引用到这里是带坐标戳的标量（见 Evaluator.StampReference），所以 OFFSET 认坐标而不认 Kind==Range。
+            // A single-cell reference arrives as a coordinate-stamped scalar (see Evaluator.StampReference), so
+            // OFFSET keys off the coordinate rather than Kind == Range.
             if (reference.Sheet == null) return Err(FxError.Ref);
             double rowsD, colsD;
             if (!NumberAt(a, 1, out rowsD) || !NumberAt(a, 2, out colsD)) return FirstError(a) ?? Err(FxError.Value);
             int height = a.Count >= 4 ? (int)NumOr(a, 3, 1) : 1;
             int width = a.Count >= 5 ? (int)NumOr(a, 4, 1) : 1;
-            int baseRow = reference.Kind == FxKind.Range ? reference.R1 : reference.R1;
-            int baseCol = reference.Kind == FxKind.Range ? reference.C1 : reference.C1;
+            int baseRow = reference.R1;
+            int baseCol = reference.C1;
             int r1 = baseRow + (int)rowsD;
             int c1 = baseCol + (int)colsD;
             int r2 = r1 + height - 1;

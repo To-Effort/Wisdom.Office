@@ -130,6 +130,27 @@ sheet.SetPrintArea("A1:D20");
 
 图表 / 条件格式 / 图片的完整用法见 `Wisdom.Excel` 的说明文档——模型定义在本包，落盘与回读由 XLSX 实现。
 
+## 公式引擎
+
+`Wisdom.Office.Core.Formulas.FormulaEngine` 直接以 `OfficeWorkbook` 为上下文求值，写出前即可补齐缓存值：
+
+```csharp
+using Wisdom.Office.Core.Formulas;
+
+Worksheet sheet = workbook.AddWorksheet("报表");
+sheet.GetCell(1, 1).Value = 1;
+sheet.GetCell(2, 1).Value = 2;
+sheet.GetCell(3, 1).Value = 3;
+sheet.GetCell(4, 1).Formula = "SUM(A1:A3)";
+
+FormulaEngine.Calculate(workbook);                       // 整簿重算，写回 Cell.Value，保留 Formula 文本
+Console.WriteLine(sheet.GetCell(4, 1).Value);            // 6
+object twice = FormulaEngine.Evaluate(workbook, "A1*2"); // 2（单条公式）
+int count = FormulaEngine.SupportedFunctionCount;        // 137
+```
+
+支持 A1 与 `$` 绝对引用、区域、跨表引用（`Sheet!A1`、`'带 空格'!A1`）以及运算符优先级，内置 137 个函数，覆盖数学三角、统计、文本、日期时间、查找引用、逻辑与财务（`FV` / `PV` / `PMT` / `NPV`）。重算是显式触发的：不调用 `Calculate` 就不会改动任何单元格值，写出字节保持不变。循环引用返回 `#VALUE!` 而不是死循环；不实现数组公式（CSE 块）、外部工作簿引用、R1C1 样式与迭代计算。
+
 ## 演示文稿模型（PowerPoint）
 
 层级为 `OfficePresentation` → `Slide` → `SlideShape`，形状派生出 `TextBoxShape`、`AutoShape`、`PictureShape`、`TableShape`。所有几何量以 **磅** 为单位，原点为幻灯片左上角。
@@ -217,6 +238,7 @@ string text = TemplateEngine.Replace("{{customerName}} 的订单 {{order.id}} �
 | --- | --- |
 | `CompoundFile` | OLE2 复合文档（`.doc`/`.xls` 容器）读取：`HasStream`、流枚举 |
 | `PackageArchive` | ZIP 包安全打开：立即物化中央目录，把 .NET Framework 上延迟抛出的 `ArgumentException` 统一转为 `InvalidDataException` |
+| `AtomicFileWriter` | 目标文件原子写入：先写同目录临时文件，写完再 `File.Replace` / `File.Move` 换上去；写失败只删临时文件，目标保持原样。各包的 `Write(..., path)` / `Save(..., path)` 都走它，因此「中途异常把用户原文件截成 0 字节」不再可能 |
 | `OfficePackageLimits` | 包解压上限：`MaxEntryBytes`（默认 256 MB）、`MaxTotalBytes`（默认 1 GB）、`ReadEntryBytes`、`ReadAllBytes` / `CopyBounded`（按上限分块复制，不凭部件声明的长度预分配内存） |
 | `OfficeXmlText` | 写出前的 XML 文本防护：`Strip(string)` 丢掉 XML 1.0 不接受的字符（`0x00`–`0x08`、未配对代理项等），`Sanitize(XDocument)` 就地清理整棵树；文本干净时返回原实例，不额外分配 |
 | `Zlib` / `Adler32` | 自研 DEFLATE 解压，供 PDF 与 XLSX 使用，不依赖第三方压缩库 |

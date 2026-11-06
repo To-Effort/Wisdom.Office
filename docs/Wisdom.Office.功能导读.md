@@ -204,7 +204,7 @@ byte[] pdfBytes = file.ToArray(OfficeFileFormat.Pdf);
 
 另外三条实测边界：
 
-- **`.doc` / `.xls` 只能作为源。** 旧版二进制格式只实现了解析，写回会抛 `NotSupportedException`。而且 `.xls` 的公式**只保留缓存值**——用 `XlsReader` 读一份优化器求解结果工作簿，实测 `公式单元格数 = 0`，所有数值都是 BIFF8 里存的最后计算结果。指望读回公式再重算的，要另找方案。
+- **`.doc` / `.xls` 只能作为源。** 旧版二进制格式只实现了解析，写回会抛 `NotSupportedException`。而且 `.xls` 的公式**只保留缓存值**——用 `XlsReader` 读一份优化器求解结果工作簿，实测 `公式单元格数 = 0`，所有数值都是 BIFF8 里存的最后计算结果；因为没有公式文本，`FormulaEngine` 也无从重算。`.xlsx` 不存在这个问题：公式文本会完整读出，需要时调用 `FormulaEngine.Calculate` 即可重算并写回缓存值。
 - **PDF → PPTX 是通的，但只出一页。** 走的是 `Pdf → OfficeDocument → OfficePresentation`，拆页依据是标题层级，普通 PDF 没有标题就落在单页里。
 - **Markdown 的目标只有三种可回头**：`md → pdf/docx/pptx/md`。反向 `xxx → md` 也全通（实测 `data.xlsx → md` 只有 63 字节——电子表格进 Markdown 就是一张 GFM 表），但 `.md` 作为源没有内容签名，见 2.1。
 

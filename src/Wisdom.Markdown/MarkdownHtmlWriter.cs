@@ -879,7 +879,7 @@ namespace Wisdom.Markdown
                    .Append("\" alt=\"\" />");
         }
 
-        /// <summary>按图片格式返回 MIME 类型；未知格式回退 image/png。Returns the MIME type for the image format; unknown formats fall back to image/png.</summary>
+        /// <summary>按图片格式返回 MIME 类型；识别不出的字节回退 image/png。Returns the MIME type for the image format; unrecognised bytes fall back to image/png.</summary>
         /// <param name="image">图片数据。The image data.</param>
         /// <returns>MIME 类型字符串。The MIME type string.</returns>
         private static string GetMimeType(OfficeImage image)
@@ -887,6 +887,14 @@ namespace Wisdom.Markdown
             if (image.Format == OfficeImageFormat.Jpeg)
             {
                 return "image/jpeg";
+            }
+            if (image.Format == OfficeImageFormat.Gif)
+            {
+                return "image/gif";
+            }
+            if (image.Format == OfficeImageFormat.Bmp)
+            {
+                return "image/bmp";
             }
             return "image/png";
         }

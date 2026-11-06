@@ -138,11 +138,22 @@ namespace Wisdom.Excel
             return value == "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>将浮点数格式化为不变区域设置的 G17 文本，保证读写往返精度。 Formats a double as invariant-culture G17 text so that values survive a read/write round trip.</summary>
+        /// <summary>
+        /// 将浮点数格式化为不变区域设置的 G17 文本，保证读写往返精度；非有限值按 0 处理。
+        /// Formats a double as invariant-culture G17 text so that values survive a read/write round trip,
+        /// mapping non-finite values to 0.
+        /// </summary>
+        /// <remarks>
+        /// NaN 与无穷大会被 G17 写成 "NaN"/"Infinity"，它们是 XML 数值属性的非法取值，Excel 打开时整份
+        /// 工作簿都会判为损坏；宁可回落到 0 让文件可读。
+        /// G17 renders NaN and infinity as "NaN"/"Infinity", which are illegal values for XML numeric
+        /// attributes; Excel then flags the whole workbook as corrupt, so a 0 fallback keeps the file openable.
+        /// </remarks>
         /// <param name="value">待格式化的数值。 Value to format.</param>
         /// <returns>格式化后的字符串。 The formatted string.</returns>
         public static string ToInvariant(double value)
         {
+            if (double.IsNaN(value) || double.IsInfinity(value)) return "0";
             return value.ToString("G17", CultureInfo.InvariantCulture);
         }
 
@@ -180,9 +191,13 @@ namespace Wisdom.Excel
         }
 
         /// <summary>
-        /// 为流式读取创建安全 XmlReader：禁止 DTD 且不解析外部实体，其余保持默认（不忽略空白，保证与 XDocument 读入一致）。
-        /// Creates a safe XmlReader for streaming: DTD processing is prohibited and external entities are never resolved,
-        /// everything else stays default (whitespace is not ignored, so content matches the XDocument path).
+        /// 为流式读取创建安全 XmlReader：禁止 DTD、不解析外部实体，并显式关闭忽略空白。
+        /// 默认设置会把纯空白节点吞在读取器内部，<c>&lt;v&gt; &lt;/v&gt;</c> 连 Whitespace 都不上报，
+        /// 与带 PreserveWhitespace 的 XDocument 路径不一致。
+        /// Creates a safe XmlReader for streaming: DTD processing is prohibited, external entities are never
+        /// resolved and whitespace reporting is turned on explicitly. The default settings swallow whitespace
+        /// nodes inside the reader, so <c>&lt;v&gt; &lt;/v&gt;</c> never even surfaces as a Whitespace node, which
+        /// diverges from the XDocument path loaded with PreserveWhitespace.
         /// </summary>
         /// <param name="input">部件输入流。 The part input stream.</param>
         /// <returns>定位到文档起点的读取器。 A reader positioned at the start of the document.</returns>
@@ -191,6 +206,7 @@ namespace Wisdom.Excel
             XmlReaderSettings settings = new XmlReaderSettings();
             settings.DtdProcessing = DtdProcessing.Prohibit;
             settings.XmlResolver = null;
+            settings.IgnoreWhitespace = false;
             return XmlReader.Create(input, settings);
         }
 
