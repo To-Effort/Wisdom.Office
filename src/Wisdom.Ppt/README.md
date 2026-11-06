@@ -119,7 +119,7 @@ static TextBoxShape FindContent(Slide slide)
 | --- | --- | --- |
 | `TextBoxShape` | `slide.AddTextBox(left, top, width, height, text)` | `Paragraphs` 列表、`VerticalAlignment`、四边内边距、`ShrinkToFit` |
 | `AutoShape` | `slide.AddShape(AutoShapeKind, ...)` | `FillColor`、`Outline`、`CornerRadius` |
-| `PictureShape` | `slide.AddImage(new OfficeImage(bytes), ...)` | 仅 PNG / JPEG；`AlternativeText` 作为替代文字 |
+| `PictureShape` | `slide.AddImage(new OfficeImage(bytes), ...)` | 仅 PNG / JPEG；`AlternativeText` 作为替代文字；`FillColor`、`Outline` 与 `AutoShape` 同一口径（设过才写、读得回） |
 | `TableShape` | `slide.AddTable(left, top, width, height)` | 内部就是一个 `Table`，复用 Word 侧的行列与合并单元格语义 |
 
 ```csharp
@@ -155,6 +155,8 @@ table.Table.AddRow("华南", "384", "30%");
 线型分两处编码。`BorderLine.Style` 取 `None`、`Single`、`Dashed`、`Dotted`、`Double`：虚线与点线是**划线图案**，写进 `a:ln` 下的 `a:prstDash`（`dash` 与 `sysDot`）；双线不是图案，是一种**复合线**，写在 `a:ln@cmpd="dbl"` 上——`ST_PresetLineDashVal` 的取值集合里根本没有 `dbl` 这一档。从前写出器把 Double 塞进 `prstDash`，文件里落下一个架构不接受的枚举值，读端又认不出来，双线边框存一次盘就静默降成单线；点线当时映射成 `sysDash`（长划图案），画出来是虚线而不是点。现在形状描边与表格边线两条路径都按 `cmpd` 写双线，读端优先看 `cmpd="dbl"`，同时继续认旧文件里 `prstDash val="dbl"` 这份历史写法，早前版本存出的双线不会读成实线。单线与虚线的字节不变（`cmpd` 缺省即 `sng`，形状描边非双线时不写这个属性）。
 
 表格边框认六个方向。`Table.Borders` 的 `Top`/`Bottom`/`Left`/`Right` 管外圈那四条边，`InsideHorizontal`/`InsideVertical` 管内部的两条分隔线；写出器按单元格落在网格的哪一格来决定每条边取哪一份声明，跨多行多列的合并块按它自己的首末行列判定，`TableCell.Borders` 再逐边覆盖（四边的 `TableCellBorders` 优先于表格方向）。从前这四条边一律取 `InsideHorizontal`，另外五份声明连一个字节都写不出门——外圈加粗、内部变淡这种最常见的写法，存一次盘就塌回一种线。`TableBorders` 的六个方向默认都是 0.5 磅黑色细实线，没动过 `Borders` 的稿子字节不变。`BorderStyle.None` 是「这条边不画」，写出 `<a:lnT><a:noFill/></a:lnT>`（同库 DOCX 侧写 `w:val="nil"`，同一个意思）；从前这里不看线型，照旧补一条 `a:solidFill`，于是 `Table.Borders = TableBorders.None()` 存出门是一张满黑格的表，声明被反着执行。读端也解析这四条边线，逐格落进 `TableCell.Borders`：四条里一条都没声明的单元格保持 `null`，让表级六向继续做主。`a:noFill` 认成 `BorderStyle.None`（「这条边不画」），不是「没说过」。要说边界：`.pptx` 没有表级边框元素，六向声明本来就摊在每格的边线上，所以 `Table.Borders` 不会从文件里回来——载入别人的表格后权威在逐格那一份，整表改边框得先清掉每格的 `Borders`。划线图案的细档（`dashDot`、`lgDash` 这类）在统一模型里归成 `Dashed`，`a:lnX@algn` 与逐格的 `marT`/`marB`/`marR` 内边距不往返。
+
+图片的底色与描边走与 `p:sp` 同一条规矩：**设过才写**。写出器过去给每张 `p:pic` 恒补一条 `<a:ln><a:noFill/></a:ln>`，等于替调用者宣布「这张图不要边框」，而模型里从没说过这句话；`BorderStyle.None` 是调用者自己说的，照旧写出。另一半在读端：`ReadPicture` 过去既不调 `ReadFill` 也不调 `ReadOutline`（`p:sp` 那条路这两行都在），写端留在盘上的 `a:solidFill` 与 `a:ln` 载回来就没了——自家稿子 Load+Save 一趟把明写过的两条声明双双抹掉，第三方稿的图片底色与边框第一次读就丢。现在两条路对齐：文件里没写时读回 `null`（不是「不要线」），二次写出既不补 `a:ln` 也不吞声明，图形页两次写出 `slide5.xml` 字节一致。产物字节的变化有两处：从没设过描边的图片少掉那条恒补的 `a:ln`（这一变化本身就是修复）；设过底色或描边的图片，其声明现在能活过第二次保存。
 
 ## 入场动画、自动换页与主题深改
 
@@ -217,7 +219,7 @@ foreach (Slide slide in loaded.Slides)
 string plain = PptxReader.ExtractText("review.pptx");          // 只要纯文本时用这个
 ```
 
-读取覆盖页数与幻灯片尺寸、版式类别、占位符类型、形状几何与填充、段落与行内格式（粗体、斜体、下划线、删除线、上下标、字号、字体、颜色）、项目符号、表格（含合并单元格）、图片字节与替代文字、演讲者备注、切换效果、入场动画（类别 / 延迟 / 时长）、`advTm` 自动换页、主题深改字段（`PresentationTheme`，`.potx` 同样可加载）以及 `core.xml` 里的文档元数据。
+读取覆盖页数与幻灯片尺寸、版式类别、占位符类型、形状几何与填充、段落与行内格式（粗体、斜体、下划线、删除线、上下标、字号、字体、颜色）、项目符号、表格（含合并单元格）、图片字节与替代文字、图片自身的底色与描边（`p:spPr` 上的 `a:solidFill` 与 `a:ln`）、演讲者备注、切换效果、入场动画（类别 / 延迟 / 时长）、`advTm` 自动换页、主题深改字段（`PresentationTheme`，`.potx` 同样可加载）以及 `core.xml` 里的文档元数据。
 
 `.pptx` 里没有可直接对照的"版式类别"字段，读回时按形状推断（`PptxReader.InferLayoutKind`）：先看图片形状或 `pic` 占位符，再看表格形状与 `tbl` / `chart` 占位符，都没有时按标题与内容占位符的个数归入 `TitleAndContent` / `TwoContent` / `Title` / `Blank`。因此往返后版式名可能被"修正"，实测两条：`AddSlide(TitleAndTable)` 生成的表格占位符按 `obj` 类型写出，回读变成 `TitleAndContent`；反过来，`AddSlide(TitleAndContent)` 上手工 `AddTable(...)` 的真实表格形状，回读会被推断成 `TitleAndTable`。占位符几何（实测 `Left` 60 原样读回）、图片字节与 alt 文本、备注、切换类型与时长（`Push` / 2.25 秒）、背景色（`#F2F7FF`）与自选图形（`RoundedRectangle` 填充 `#00B050`、`CornerRadius` 默认 0.15）都按原值读回；表格的列定义 `Table.Columns` 写出时不入库（实测写出为 2 行 0 列），回读按每行单元格数补齐（2 行 2 列）。
 

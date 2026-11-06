@@ -9,17 +9,17 @@
 ```text
 out/
   logo.png            教程自己写出的 1 x 1 PNG，70 字节
-  review.pptx         五页回顾（标题页 / 要点页 / 双栏页 / 表格页 / 图形页），18027 字节
+  review.pptx         五页回顾（标题页 / 要点页 / 双栏页 / 表格页 / 图形页），17934 字节
   review.pdf          review.pptx 渲染出的 PDF，87714 字节 / 5 页
   review.docx         review.pptx 转出的 Word，4761 字节 / 15 块
   facade.pdf          门面 Save 出的同一份 PDF，87714 字节
-  roadmap.pptx        由 Word 文档反向拆出的 3 页，9544 字节
+  roadmap.pptx        由 Word 文档反向拆出的 3 页，9445 字节
   plain.pptx          无一级标题的文档 → 1 页
   long.pptx           25 段正文 + 1 个一级标题 → 3 页
-  review-stream.pptx  流写出，17991 字节
-  motion.pptx         五个入场动画 + 3 秒自动换页，7716 字节
-  brand.potx          品牌主题写出的 PowerPoint 模板，7010 字节
-  brand-again.potx    模板回读后再写一次，6783 字节
+  review-stream.pptx  流写出，17927 字节
+  motion.pptx         五个入场动画 + 3 秒自动换页，7707 字节
+  brand.potx          品牌主题写出的 PowerPoint 模板，6994 字节
+  brand-again.potx    模板回读后再写一次，6770 字节
 ```
 
 工程入口先建目录，后面全部用相对路径：
@@ -95,7 +95,7 @@ Console.WriteLine("[1] 页数=" + presentation.Slides.Count
     + "，文件=" + new FileInfo("out/review.pptx").Length + " 字节");
 ```
 
-实测输出：`[1] 页数=2，文件=10667 字节`。此时只有两页——`Write` 可以反复调用，模型改到哪一页就写到哪一页，不必一次成型。
+实测输出：`[1] 页数=2，文件=10624 字节`。此时只有两页——`Write` 可以反复调用，模型改到哪一页就写到哪一页，不必一次成型。
 
 ## 2. 双栏版式与自己的文本框
 
@@ -195,9 +195,9 @@ PptxWriter.Write(presentation, "out/review.pptx");
 Console.WriteLine("[4] 写出=" + new FileInfo("out/review.pptx").Length + " 字节，页数=" + presentation.Slides.Count);
 ```
 
-实测输出：`[4] 形状=3，图片字节=70` 与 `[4] 写出=18027 字节，页数=5`。
+实测输出：`[4] 形状=3，图片字节=70` 与 `[4] 写出=17934 字节，页数=5`。
 
-`BorderLine` 的构造顺序是 `(BorderStyle, 粗细磅, OfficeColor)`；`CornerRadius` 写出为 `roundRect` 的 `adj val="25000"`（0.25 x 100000）。`AddImage` 只接受 PNG / JPEG 字节（`OfficeImage.FromFile` 与 `new OfficeImage(bytes)` 两条路都行），`AlternativeText` 写进图片的 `p:cNvPr@descr`，读回时仍在 `PictureShape.AlternativeText` 上。
+`BorderLine` 的构造顺序是 `(BorderStyle, 粗细磅, OfficeColor)`；`CornerRadius` 写出为 `roundRect` 的 `adj val="25000"`（0.25 x 100000）。`AddImage` 只接受 PNG / JPEG 字节（`OfficeImage.FromFile` 与 `new OfficeImage(bytes)` 两条路都行），`AlternativeText` 写进图片的 `p:cNvPr@descr`，读回时仍在 `PictureShape.AlternativeText` 上。图片的 `FillColor` 与 `Outline` 跟 `AutoShape` 同一口径：**设过才写**，写进 `p:pic/p:spPr`，读回时也回到模型；没设过描边的图片整条 `a:ln` 都不出现（过去恒补一条 `<a:ln><a:noFill/></a:ln>`，等于替调用者宣布这张图不要边框），图形页 `slide5.xml` 因此两次写出字节一致。
 
 ## 5. 回读校验
 
@@ -356,7 +356,7 @@ Console.WriteLine("[8] 文档块=" + CountBlocks(source) + "，拆出页数=" + 
     + new FileInfo("out/roadmap.pptx").Length + " 字节");
 ```
 
-实测输出：`[8] 文档块=6，拆出页数=3，首页标题="上半年：报表引擎"，文件=9544 字节`。六个文档块（3 标题 + 3 正文）压成三页，说明拆分依据是**标题层级**而不是块数。
+实测输出：`[8] 文档块=6，拆出页数=3，首页标题="上半年：报表引擎"，文件=9445 字节`。六个文档块（3 标题 + 3 正文）压成三页，说明拆分依据是**标题层级**而不是块数。
 
 ## 9. 流、字节与 4:3 画布
 
@@ -376,9 +376,9 @@ Console.WriteLine("[9] 流写出=" + new FileInfo("out/review-stream.pptx").Leng
     + (int)standard.SlideWidth + "x" + (int)standard.SlideHeight);
 ```
 
-实测输出：`[9] 流写出=17991 字节，字节写出=17991 字节，4:3 画布=720x540`。
+实测输出：`[9] 流写出=17927 字节，字节写出=17927 字节，4:3 画布=720x540`。
 
-同一份模型两次写出（流与字节）字节数相同，说明包内容不含时间戳之类的随机量。但它比第 4 步的 18027 字节少 36 字节：`loaded` 是读回来的模型，读取器没解析的属性不会重新写出，所以**别拿字节数当等价性断言**，要断言就按第 5 步逐页比内容。
+同一份模型两次写出（流与字节）字节数相同，说明包内容不含时间戳之类的随机量。但它比第 4 步的 17934 字节少 7 字节：`loaded` 是读回来的模型，读取器没解析的属性不会重新写出——实测这 7 个字节全在主题名一处（`a:theme@name` 回读再写时成了内置默认值）。更要紧的是**字节数相同不代表内容相同**：表格表头底色这种等长替换在包大小上一点痕迹都没有，所以别拿字节数当等价性断言，要断言就按第 5 步逐页比内容。
 
 ## 10. 拆分规则的两条边界
 
@@ -457,7 +457,7 @@ for (int i = 0; i < motionAgain.Shapes.Count; i++)
 实测输出：
 
 ```text
-[11] 写出=7716 字节，形状数=6，自动换页=3s
+[11] 写出=7707 字节，形状数=6，自动换页=3s
      Shape 动画=FlyIn 时长=0.8s 延迟=0.5s
      Shape 动画=Wipe 时长=0.5s 延迟=0s
      Shape 动画=Zoom 时长=1s 延迟=0s
@@ -514,7 +514,7 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 
 ```text
 [12] 主题名="品牌主题"，dk1=#1A1A2E，lt1=#FAFAF5，dk2=#2F4D6B，超链接=#C0392B，主字体=微软雅黑，次字体=Consolas
-[12] 首次写出=7010 字节，回读再写=6783 字节
+[12] 首次写出=6994 字节，回读再写=6770 字节
 [12] 门面识别=PowerPoint 模板，AsPresentation 页数=1
 ```
 
@@ -555,5 +555,7 @@ Console.WriteLine("[12] 门面识别=" + OfficeFileFormats.GetDisplayName(templa
 **只想改字号，保存后连字体一起被换了。** 不会。写出器只把**显式设过**的字符属性落进 `<a:rPr>`：`run.Format.FontSize = 11` 只写 `sz="1100"`，字体与颜色仍由版式、母版决定。以前 `TextFormat` 构造器预置的 Arial / 11 磅 / 黑色会被当成调用者的意图，于是母版里 18pt 的主题字体被一个显式 `a:latin` 压成 11pt Arial。判定依据是 `TextFormat` 的三个只读标记 `HasExplicitFontFamily`、`HasExplicitFontSize`、`HasExplicitColor`：`new TextFormat()` 的预置值不点亮它们，`new TextFormat("Calibri", 18)` 三项都点亮。第 2 步里那句 `Format.FontSize = 11` 因此只影响字号，读回来的 `FontSize` 仍是 11（没写进文件的属性按模型默认值读回）。
 
 **图片读回来字节不对 / 打不开。** 只支持 PNG 与 JPEG；`.emf`、`.svg`、`.gif` 不解析。教程里那颗 1 x 1 的 PNG（70 字节）就是最省事的自造图片。
+
+**图片的底色或描边存一次盘就没了。** 已修，两处各占一半。写端：写出器过去给每张 `p:pic` 恒补一条 `<a:ln><a:noFill/></a:ln>`，那是替调用者宣布「这张图不要边框」，可模型里从没说过——现在跟 `p:sp` 同一条规矩，设过才写，没设过整条 `a:ln` 都不出现，`BorderStyle.None` 仍是调用者说过的话，照写不误。读端：`ReadPicture` 过去既不调 `ReadFill` 也不调 `ReadOutline`（`p:sp` 那条路这两行都在），盘上的 `a:solidFill` 与 `a:ln` 载回来就没了，自家稿子 Load+Save 一趟把明写过的两条声明双双抹掉，第三方稿的图片底色与边框第一次读就丢。现在两条路对齐，第 4 步的图形页两次写出 `slide5.xml` 字节一致。
 
 **要不要装 Office。** 不需要。`.pptx` 与 `.potx` 由 `ZipArchive` + LINQ to XML 直接读写；旧版二进制 `.ppt`、图表、SmartArt、OLE 对象都不在支持范围，母版只暴露主题色板与主/次字体这一层深改（第 12 步），动画只支持入场类别（第 11 步），详见包说明的「已知限制」。

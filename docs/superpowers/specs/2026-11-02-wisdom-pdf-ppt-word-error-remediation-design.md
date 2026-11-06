@@ -340,6 +340,13 @@
 - 目标行为：两处文档改写为「逐形状写得出、读得回，差别只在触发方式」，属性名按 `p:spTgt/@spid` 写并注明旧形态兼容；本轮无产出字节变化，纠正的是口径。
 - 取证：新增 `RunNonFirstShapeAnimationDelayTest`——四个形状 `1.2 / 0.8 / 0.4 / 0` 秒，要求 `p:cond@delay` 里出现 1200/800/400，回读逐形状相等。该测试在当前代码上直接通过，正是「代码已对、文档过期」的证据。
 
+### PT16｜图片的描边被恒补成「本图不要线」，底色与描边又只出不进，一趟往返两条声明双双丢失　A
+
+- 位置：`src/Wisdom.Ppt/Pptx/PptxWriter.cs` 的 `WritePicture`（`p:spPr` 那一串，现 `1153-1160`）与 `src/Wisdom.Ppt/Pptx/PptxReader.cs:849-876` 的 `ReadPicture`。
+- 后果：写端对每张 `p:pic` 恒补一条 `<a:ln><a:noFill/></a:ln>`——那是「本图不要边框」的一句声明，说这句话的资格在调用者身上，模型里从没说过就把版式与图片样式本来要给的线框压掉；读端 `ReadPicture` 既不调 `_session.ReadFill` 也不调 `ReadOutline`（`p:sp` 那条路 `827-828` 两行都在），于是写端留在盘上的 `a:solidFill` 与 `a:ln` 载回来一律为空。自家稿子 `Load` + `Save` 一趟把调用者明写的两条声明双双抹掉，第三方稿的图片底色与边框第一次读就丢。
+- 目标行为：与 `p:sp` 同一条口径。设过才写：没设过描边整条 `a:ln` 不出现，显式 `BorderStyle.None` 仍写 `a:ln/noFill`；读端两条路对齐，文件里没写时读回 `null`（不是「不要线」），二次写出既不补也不吞。
+- 取证：两批测试。`RunPictureUnsetOutlineNotFabricatedTest` 钉写端（没设描边的图片不得出现 `a:ln`，设过虚线的必须留住 `a:ln` 与 `a:prstDash`），`RunPictureFillAndOutlineRoundTripTest` 钉读端（先从盘上取证 `solidFill` 与 `a:ln` 确实在文件里，再要求回读 `FFE8D9`／`Dashed`／2.0 磅，二次写出声明仍在、没设过的那张也不补线）。
+
 ---
 
 ## 6. P1 —— Word 新增出错路径（`WE*`）
@@ -508,6 +515,8 @@
 | `PT15` | 产出字节不变：写端与读端维持现状，纠正的是文档里「动画延迟只对第一个形状有效」与 `p:spid/@val` 这两个过期口径；补一条测试钉住逐形状的延迟往返 | `docs/Wisdom.Ppt.Tutorial.md` 第 11 步规则与常见问题「形状动画没出现」改写；`docs/Wisdom.Office.功能导读.md` 动画一段改写 |
 
 | `PD29` | `/Info` 日期的时区标注读写成对：读端补认 `Z` 与 `±hh[':']mm`，把数字按标注时区折成时刻再落回本地（此前只取前 14 位数字，带 `Z` 的稿件偏一个时区）；写端 `Kind=Utc` 的值先折成本地墙上时间再贴本地偏移（此前数字与偏移各说各话）。两份重复的数字解析收进 `PdfObjectWriter.ParsePdfDate` 一处。本库自产稿写的是本地墙上时间配本地偏移，读回再写出仍是同一串数字，产出字节不变；变化只落在带 `Z`／异国偏移的第三方稿与 `Kind=Utc` 的调用方入参——那两处原本记的就是错的时刻 | `src/Wisdom.Pdf/README.md`「解析 PDF」补 `/Info` 日期一段、「已知不支持」补一行标注识别边界；`docs/Wisdom.Pdf.Tutorial.md` 第 5 步补一段读写口径、常见问题补「创建时间比阅读器里显示的差几个钟头」 |
+| `PT16` | 图片描边由「恒补一条 `a:ln/noFill`」改为设过才写（与 `p:sp`、文本框同口径，显式 `BorderStyle.None` 照写），读端 `ReadPicture` 补调 `ReadFill` 与 `ReadOutline`，两条声明不再一趟往返就丢。没设过描边的图片产物少掉那条恒补的 `a:ln`（变化本身就是修复），设过底色或描边的图片其声明现在能活过第二次保存；教程与包说明的实测字节数按当前代码刷新 | `src/Wisdom.Ppt/README.md` 形状表 PictureShape 一行补口径、新增「图片的底色与描边」一段、「读取覆盖」补一句；`docs/Wisdom.Ppt.Tutorial.md` 第 4 步补一段、常见问题补「图片的底色或描边存一次盘就没了」，并把 12 步实测字节数整批刷新 |
+
 
 ---
 
@@ -898,6 +907,21 @@ Test failed: doubling a dictionary from 20000 to 40000 keys multiplied parsing f
   - 只认紧跟数字的 `Z` 与 `±hh[':']mm`：`hh:mm` 这种阅读器写法顺手认，但标注残缺（位数不足、`+` 后无数字）一律退回「没有标注」按本地时间处理，不做猜测式宽容——猜错等于凭空造一个时刻偏移。
   - 返回一律 `Kind=Unspecified` 的本地墙上时间，与写出端「本地墙上时间配本地偏移」同一币种；`FormatPdfDate` 只对 `Kind=Utc` 做折算，`Unspecified`/`Local` 按调用方给的墙上时间原样配本地偏移。
   - 字节口径：自产稿不变——写的是本地墙上时间配本地偏移，读回再写出还是同一串数字（数字 − 本地偏移 + 本地偏移 = 数字）。变化只发生在带 `Z` 或异国偏移的第三方稿（载入再存盘不再被搬走时刻），以及 `Kind=Utc` 的入参（那处原本就记错了时刻）。
+  - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
+
+- `PT16` 图片的底色与描边：写端恒补「不要线」＋读端整条不看（`cd45868` 取证 + `503bfda` 写端 + `c4e5577` 取证 + `9307554` 读端）：`WritePicture` 走的是 `CreateLine` 而不是 `CreateOptionalLine`，`ReadPicture` 两条 `p:sp` 那条路都有的读取一行没有。
+  - 修复前失败原文（`net8.0`，写端与读端两条）：
+    ```text
+    Unhandled exception. System.InvalidOperationException: Test failed: a picture that never set an outline still got an a:ln element, silencing the inherited line
+      at Wisdom.Office.Tests.Program.RunPictureUnsetOutlineNotFabricatedTest() ... RemediationPptPhaseFourTests.cs:line 1240
+
+    Unhandled exception. System.InvalidOperationException: Test failed: the picture's FillColor was written to the file but never read back:
+      at Wisdom.Office.Tests.Program.RunPictureFillAndOutlineRoundTripTest() ... RemediationPptPhaseFourTests.cs:line 1290
+    ```
+  - 第二条的红测先取证再断读回：`ReadPictureProperties` 直接从盘上确认 `a:solidFill` 与 `a:ln` 都写进去了，缺席的是读端——否则这条红测会被误读成写端漏写。写端那半的判据是「设过才写」，读端那半的判据是「没写读回 null」，两条闭合才是完整往返。
+  - 读端补的两行与 `p:sp` 同源：`_session.ReadFill(spPr)` 认 `a:solidFill`/`a:noFill`，`ReadOutline(spPr)` 在 `a:ln` 缺席或 `a:ln/noFill` 时返回 null、宽度按 EMU/12700 折算、`cmpd="dbl"` 认成双线。图片的底色与 `a:blipFill` 里的图像字节是两回事，各归各字段。
+  - 字节口径：本库自产稿里没设过描边的图片少掉恒补的 `<a:ln><a:noFill/></a:ln>`，教程 `review.pptx` 因此从 18027 降到 17934；图形页 `slide5.xml` 第一次与第二次写出改为逐字节一致。设过底色或描边的图片，声明在第二次保存后仍在原地。
+  - 顺带把 `docs/Wisdom.Ppt.Tutorial.md` 的实测数字整批重跑刷新（12 步全部代码块拼成一次性 harness）：`[1]` 10667→10624、`[4]` 18027→17934、`[8]` 9544→9445、`[9]` 17991→17927、`[11]` 7716→7707、`[12]` 7010/6783→6994/6770。`[7]` 的 DOCX 字节数按现状没动——那一跳要等 Word 侧在飞的改动落地才测得准。第 9 步那句「少 36 字节」改为「少 7 字节」，并记下这 7 字节全在 `a:theme@name` 一处，另有一处等长替换（表头底色 `1F3A5F` 回读再写变成主题强调色）字节数看不出来，两条各自另立条目跟进。
   - 验证：`net8.0` 与 `net461` 双目标均到末行 `All tests finished.`，构建 0 警告 0 错误。
 
 - 后续按 §10 顺序推进；`PD3` 的单页字元与片段上限、`PdfTextFont` 的 ToUnicode 降级上报，都并入「文档级告警与降级通道」那一批（与 Word `WE7`/`WE9` 同批设计）。
