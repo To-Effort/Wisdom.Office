@@ -42,6 +42,7 @@ namespace Wisdom.Office.Tests
             RunSignatureFieldGuardTest();
             RunFormDefaultAppearanceInheritanceTest();
             RunDefaultAppearanceCmykTest();
+            RunPdfDateDesignatorTest();
             RunRemediationDecodeBudgetTest();
             RunRemediationWordPhaseFourTest();
             RunRemediationPptPhaseFourTest();
@@ -962,6 +963,93 @@ namespace Wisdom.Office.Tests
             Require(cmyk != null && Near(cmyk[0], 191.0 / 255.0) && Near(cmyk[1], 48.0 / 255.0) && Near(cmyk[2], 48.0 / 255.0),
                 "a CMYK default appearance of 0 0.75 0.75 0.25 k painted " + DescribeTriple(cmyk)
                     + " instead of the brick red it describes");
+        }
+
+        /// <summary>
+        /// PD29：<c>/Info</c> 日期串的时区标注（<c>Z</c> 与 <c>±hh'mm'</c>）在两端都不参与换算——写出端恒按本地
+        /// 时间加本地偏移，读回端却把标注整段丢掉，于是别人按 UTC 记的稿子读回来墙上时间原样不动，比真实时刻差几个小时。
+        /// PD29: the time-zone designator of an /Info date string — <c>Z</c> or <c>±hh'mm'</c> — takes part in
+        /// neither end. The writer always stamps local time plus the local offset, while the reader drops the
+        /// designator, so a document stamped in UTC comes back with the wall clock unchanged, hours away from
+        /// the instant it records.
+        /// </summary>
+        private static void RunPdfDateDesignatorTest()
+        {
+            // 控制用例：没有任何时区标注时规范就按本地时间理解，墙上时间一读一写都不许动。
+            // Control: with no designator the spec means local time, so the wall clock must stay put.
+            DateTime plain = ReadCreationDate("D:20260115120000");
+            Require(plain.Ticks == new DateTime(2026, 1, 15, 12, 0, 0).Ticks,
+                "a date without a designator reads " + plain.ToString("O", CultureInfo.InvariantCulture)
+                    + " instead of 2026-01-15 12:00:00 local");
+
+            DateTime utc = ReadCreationDate("D:20260115120000Z");
+            DateTime expectedUtc = ToLocalWallTime(new DateTime(2026, 1, 15, 12, 0, 0, DateTimeKind.Utc));
+            Require(utc.Ticks == expectedUtc.Ticks,
+                "the UTC designator is dropped: D:20260115120000Z reads "
+                    + utc.ToString("O", CultureInfo.InvariantCulture) + ", the instant it records is "
+                    + expectedUtc.ToString("O", CultureInfo.InvariantCulture));
+
+            DateTime zero = ReadCreationDate("D:20260115120000+00'00'");
+            Require(zero.Ticks == expectedUtc.Ticks,
+                "an explicit +00'00' offset reads " + zero.ToString("O", CultureInfo.InvariantCulture));
+
+            // +05'30'：12:00 是该偏移下的墙上时间，落到本地就是 06:30 UTC 那一刻。
+            // 12:00 is the wall clock at +05:30, so the instant is 06:30 UTC.
+            DateTime half = ReadCreationDate("D:20260115120000+05'30'");
+            DateTime expectedHalf = ToLocalWallTime(new DateTime(2026, 1, 15, 6, 30, 0, DateTimeKind.Utc));
+            Require(half.Ticks == expectedHalf.Ticks,
+                "a +05'30' date reads " + half.ToString("O", CultureInfo.InvariantCulture) + " instead of "
+                    + expectedHalf.ToString("O", CultureInfo.InvariantCulture));
+
+            DateTime minus = ReadCreationDate("D:20260115120000-08'00'");
+            DateTime expectedMinus = ToLocalWallTime(new DateTime(2026, 1, 15, 20, 0, 0, DateTimeKind.Utc));
+            Require(minus.Ticks == expectedMinus.Ticks,
+                "a -08'00' date reads " + minus.ToString("O", CultureInfo.InvariantCulture) + " instead of "
+                    + expectedMinus.ToString("O", CultureInfo.InvariantCulture));
+
+            // 只有年份的简写仍然要能用，且不带任何时分秒。
+            // The year-only shorthand still has to work, with the clock left at zero.
+            DateTime year = ReadCreationDate("D:2026");
+            Require(year.Ticks == new DateTime(2026, 1, 1, 0, 0, 0).Ticks,
+                "D:2026 reads " + year.ToString("O", CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>把一份只带 <c>/Info</c> 日期的 PDF 交给两条读取路径，要求读出的创建时间一致。Feeds a PDF whose /Info carries only a date to both readers and requires the same creation date back.</summary>
+        /// <param name="literal">日期串正文。The date literal.</param>
+        /// <returns>读出的创建时间。The creation date as read.</returns>
+        private static DateTime ReadCreationDate(string literal)
+        {
+            byte[] pdf = BuildInfoDatePdf(literal);
+            DateTime? fromFile = PdfFile.Load(pdf).Info.CreationDate;
+            DateTime? fromDocument = PdfDocument.Load(pdf).Info.CreationDate;
+            Require(fromFile.HasValue, "PdfFile read no creation date from " + literal);
+            Require(fromDocument.HasValue, "PdfDocument read no creation date from " + literal);
+            Require(fromFile.Value.Ticks == fromDocument.Value.Ticks,
+                "the two readers disagree on " + literal + ": " + fromFile.Value.ToString("O", CultureInfo.InvariantCulture)
+                    + " against " + fromDocument.Value.ToString("O", CultureInfo.InvariantCulture));
+            return fromFile.Value;
+        }
+
+        /// <summary>把 UTC 时刻换成本地墙上时间（Kind 抹平，便于逐刻比较）。Converts a UTC instant into the local wall clock with Kind stripped so the ticks compare.</summary>
+        /// <param name="instant">带 UTC 标记的时刻。The UTC-marked instant.</param>
+        /// <returns>本地墙上时间。The local wall time.</returns>
+        private static DateTime ToLocalWallTime(DateTime instant)
+        {
+            return DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(instant, TimeZoneInfo.Local), DateTimeKind.Unspecified);
+        }
+
+        /// <summary>拼一份单页 PDF，<c>/Info</c> 里只有那一条创建与修改日期。Assembles a one-page PDF whose /Info holds only the given creation and modification date.</summary>
+        /// <param name="literal">日期串正文。The date literal.</param>
+        /// <returns>PDF 字节。The PDF bytes.</returns>
+        private static byte[] BuildInfoDatePdf(string literal)
+        {
+            return AssembleClassicPdf(new string[]
+            {
+                "<< /Type /Catalog /Pages 2 0 R >>",
+                "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+                "<< /CreationDate (" + literal + ") /ModDate (" + literal + ") >>",
+            }, 1, null, "/Info 4 0 R ");
         }
 
         /// <summary>取外观正文里第一条 <c>rg</c> 填充色的三个分量。Reads the three channels of the first rg fill operator in an appearance body.</summary>
