@@ -38,6 +38,7 @@ namespace Wisdom.Office.Tests
             RunBaselineAndSpacingRoundTripTest();
             RunVerticalMergeGridTest();
             RunPictureUnsetOutlineNotFabricatedTest();
+            RunPictureFillAndOutlineRoundTripTest();
 
             Console.WriteLine("[remediation] ppt phase-four shapes and media ok");
         }
@@ -1246,6 +1247,66 @@ namespace Wisdom.Office.Tests
             Require(linedLn != null, "the picture with an explicit outline lost its a:ln");
             Require(linedLn != null && linedLn.Element(A + "prstDash") != null,
                 "the dashed outline set on a picture did not reach the file");
+        }
+
+        /// <summary>
+        /// PT16 第二批：图片的填充色与描边写得出门，读端却不认——<c>ReadPicture</c> 里既没有
+        /// <c>ReadFill</c> 也没有 <c>ReadOutline</c>，自选图形那两行在图片路径上整个缺席。
+        /// 于是自家稿子走一遍 Load+Save 就少一份声明，别人给的图片底彩与边框第一次读就没收回来。
+        /// PT16, second batch: a picture's fill and outline reach the file but never come back - ReadPicture
+        /// calls neither ReadFill nor ReadOutline, so the two lines the auto-shape path runs are simply
+        /// missing here. A round trip through our own deck therefore drops a declaration the writer put on
+        /// disk, and a third-party picture loses its background and frame on the very first read.
+        /// </summary>
+        private static void RunPictureFillAndOutlineRoundTripTest()
+        {
+            OfficePresentation deck = OfficePresentation.Widescreen();
+            Slide slide = deck.AddSlide(SlideLayoutKind.Blank);
+            PictureShape plain = slide.AddImage(new OfficeImage(CreateTestPng(8, 6)), 40, 40, 120, 90);
+            PictureShape styled = slide.AddImage(new OfficeImage(CreateTestPng(8, 6)), 220, 40, 120, 90);
+            styled.FillColor = new OfficeColor(0xFF, 0xE8, 0xD9);
+            styled.Outline = new BorderLine(BorderStyle.Dashed, 2.0, new OfficeColor(0xC0, 0x39, 0x2B));
+
+            byte[] written = WriteToBuffer(deck);
+            OfficePresentation loaded = PptxReader.Load(written);
+            Slide back = loaded.Slides[0];
+            Require(back.Shapes.Count == 2, "expected two shapes after the round trip, got " + back.Shapes.Count);
+
+            // 取证：声明确实写在文件里，缺席的是读端（写端这一半由上一条测试负责）。
+            // Evidence first: the declarations are on disk, so the reader is the half that is missing (the
+            // writer's own rule belongs to the test above).
+            XElement[] declared = ReadPictureProperties(written, "ppt/slides/slide1.xml");
+            Require(declared.Length == 2 && declared[1].Element(A + "solidFill") != null
+                    && declared[1].Element(A + "ln") != null,
+                "the picture's solidFill and a:ln never reached the file, so the read side has nothing to lose");
+
+            PictureShape plainBack = (PictureShape)back.Shapes[0];
+            Require(!plainBack.FillColor.HasValue,
+                "the picture that never set a fill came back claiming one: " + plainBack.FillColor);
+            Require(plainBack.Outline == null,
+                "the picture that never set an outline came back with one: " + plainBack.Outline);
+
+            PictureShape styledBack = (PictureShape)back.Shapes[1];
+            Require(styledBack.FillColor.HasValue && styledBack.FillColor.Value.ToHex() == "FFE8D9",
+                "the picture's FillColor was written to the file but never read back: " + styledBack.FillColor);
+            Require(styledBack.Outline != null && styledBack.Outline.Style == BorderStyle.Dashed,
+                "the picture's dashed Outline was written to the file but never read back");
+            Require(styledBack.Outline != null && Math.Abs(styledBack.Outline.Width - 2.0) < 0.05,
+                "the picture's outline width did not survive: " + (styledBack.Outline == null ? -1 : styledBack.Outline.Width));
+
+            // 二次写出还得把这两份声明留在原地，读端补的字段不能只是内存里好看。
+            // The second write has to keep both declarations on disk; a field the reader fills in cannot be
+            // a memory-only consolation.
+            byte[] again = WriteToBuffer(loaded);
+            XElement[] props = ReadPictureProperties(again, "ppt/slides/slide1.xml");
+            Require(props.Length == 2, "expected two p:pic after the round trip, got " + props.Length);
+            Require(props[0].Element(A + "ln") == null,
+                "the second write re-invented an a:ln for the picture nobody styled");
+            XElement styledLn = props[1].Element(A + "ln");
+            Require(props[1].Element(A + "solidFill") != null,
+                "the second write dropped the picture's solidFill");
+            Require(styledLn != null && styledLn.Element(A + "prstDash") != null,
+                "the second write dropped the picture's dashed outline");
         }
 
         /// <summary>
