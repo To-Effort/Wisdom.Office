@@ -1012,6 +1012,24 @@ namespace Wisdom.Office.Tests
             DateTime year = ReadCreationDate("D:2026");
             Require(year.Ticks == new DateTime(2026, 1, 1, 0, 0, 0).Ticks,
                 "D:2026 reads " + year.ToString("O", CultureInfo.InvariantCulture));
+
+            // 写出端必须成对：Kind 为 Utc 的时刻要落成本地墙上时间加本地偏移，
+            // 不能把 UTC 的数字原样贴上一个本地偏移，那等于把时刻说早了几个小时。
+            // The writer has to match: a UTC-kind instant must land as the local wall clock plus the local
+            // offset, never the UTC digits stamped with a local offset, which shifts the recorded instant.
+            DateTime instant = new DateTime(2026, 1, 15, 12, 0, 0, DateTimeKind.Utc);
+            DateTime localWall = ToLocalWallTime(instant);
+            int offsetMinutes = (int)TimeZoneInfo.Local.GetUtcOffset(localWall).TotalMinutes;
+            string stamped = PdfObjectWriter.FormatPdfDate(instant);
+            string expectDigits = localWall.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+            Require(stamped.StartsWith("D:" + expectDigits, StringComparison.Ordinal),
+                "a UTC-kind date is stamped as its own digits instead of the local wall clock: " + stamped
+                    + ", expected the digits " + expectDigits);
+            string sign = offsetMinutes >= 0 ? "+" : "-";
+            int total = Math.Abs(offsetMinutes);
+            Require(stamped.EndsWith(sign + (total / 60).ToString("00", CultureInfo.InvariantCulture)
+                    + "'" + (total % 60).ToString("00", CultureInfo.InvariantCulture) + "'", StringComparison.Ordinal),
+                "the stamped offset does not describe the local zone: " + stamped);
         }
 
         /// <summary>把一份只带 <c>/Info</c> 日期的 PDF 交给两条读取路径，要求读出的创建时间一致。Feeds a PDF whose /Info carries only a date to both readers and requires the same creation date back.</summary>
