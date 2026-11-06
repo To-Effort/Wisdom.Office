@@ -871,6 +871,10 @@ namespace Wisdom.Ppt
                 picture.Image = new OfficeImage(bytes);
                 picture.AlternativeText = Ppt.Attribute(Ppt.Child(Ppt.Child(pic, "nvPicPr"), "cNvPr"), "descr");
                 ApplyGeometry(picture, spPr, PlaceholderKey(ph, "pic"), transform);
+                // 图片与 p:sp 一样把底色与边框写在 p:spPr 上，这两行过去只有 p:sp 那条路有，等于写端的声明
+                // 载回来就丢。 Pictures carry fill and line on p:spPr like p:sp; only this path lacked the read.
+                picture.FillColor = _session.ReadFill(spPr);
+                picture.Outline = ReadOutline(spPr);
                 RegisterShapeId(pic, picture);
                 AddShape(slide, picture);
             }
