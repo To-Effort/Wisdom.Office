@@ -81,13 +81,13 @@ dotnet build tests/Wisdom.Office.Tests/Wisdom.Office.Tests.csproj -c Release -f 
 
 ## 安装（NuGet）
 
-> 七个包当前同为 `1.0.2`，版本号齐步前进；门面包 `Wisdom.Office` 会把六个依赖按同一版本递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
+> 七个包当前同为 `1.0.3`，版本号齐步前进；门面包 `Wisdom.Office` 会把六个依赖按同一版本递传下来，所以 `dotnet add package Wisdom.Office` 一条命令即可。引用门面包 `Wisdom.Office` 即可获得全部能力；只需要单一格式时可只装 `Wisdom.Word`、`Wisdom.Excel`、`Wisdom.Ppt`、`Wisdom.Pdf`、`Wisdom.Markdown` 或 `Wisdom.Office.Core`。
 
 ```bash
 dotnet add package Wisdom.Office
 
 # 或指定版本
-dotnet add package Wisdom.Office --version 1.0.2
+dotnet add package Wisdom.Office --version 1.0.3
 ```
 
 ## 支持的运行环境

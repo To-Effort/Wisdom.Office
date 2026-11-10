@@ -3,7 +3,7 @@
 `Wisdom.Ppt` 负责 **PowerPoint 侧的全部读写**：用统一演示文稿模型 `OfficePresentation` 构建幻灯片并写出 PPTX，或把 `.pptx` 读回同一模型。全部由 `System.IO.Compression.ZipArchive` + LINQ to XML 直接处理 PresentationML，不依赖 Office、WPS 或任何第三方库。
 
 - 包名：`Wisdom.Ppt`
-- 版本：`1.0.2`
+- 版本：`1.0.3`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不要求安装 Microsoft Office 或 WPS
 - 命名空间：`Wisdom.Ppt`（读写器）、`Wisdom.Office.Core`（`OfficePresentation`、`Slide`、各形状类型）
@@ -26,7 +26,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Ppt --version 1.0.2
+dotnet add package Wisdom.Ppt --version 1.0.3
 ```
 
 需要把演示文稿转成 PDF / Word 时请改引 `Wisdom.Office` 门面包（本包不依赖 `Wisdom.Pdf` 与 `Wisdom.Word`）。

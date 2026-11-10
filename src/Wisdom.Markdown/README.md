@@ -3,7 +3,7 @@
 `Wisdom.Markdown` 负责 **Markdown 侧的全部读写**：把 Markdown 文本解析为统一文档模型 `OfficeDocument`，把文档模型回写为 Markdown，并在两者之间提供 HTML 渲染。解析结果可以直接交给 `Wisdom.Word` / `Wisdom.Pdf` 生成 DOCX 或 PDF。
 
 - 包名：`Wisdom.Markdown`
-- 版本：`1.0.2`
+- 版本：`1.0.3`
 - 依赖：`Wisdom.Office.Core`（唯一依赖）
 - 第三方依赖：无；不依赖 Markdig、CommonMark.NET 等外部解析器
 - 命名空间：`Wisdom.Markdown`
@@ -26,7 +26,7 @@
 ## 安装
 
 ```bash
-dotnet add package Wisdom.Markdown --version 1.0.2
+dotnet add package Wisdom.Markdown --version 1.0.3
 ```
 
 需要把 Markdown 转成 PDF / Word 时请改引 `Wisdom.Office` 门面包。
